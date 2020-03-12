@@ -134,6 +134,7 @@ pub fn describe_statement(
             materialized,
             ..
         } => {
+            ////// I think this is where we need to split this out into different values for sinks
             let col_name = object_type_as_plural_str(object_type);
             (
                 Some(if full {
@@ -337,6 +338,8 @@ fn handle_show_objects(
     from: Option<ObjectName>,
     filter: Option<ShowStatementFilter>,
 ) -> Result<Plan, failure::Error> {
+    println!("handle_show_objects {}", object_type);
+
     let classify_id = |id| match id {
         GlobalId::System(_) => "SYSTEM",
         GlobalId::User(_) => "USER",
@@ -349,7 +352,7 @@ fn handle_show_objects(
         }
     };
 
-    if let ObjectType::Schema = object_type {
+    if ObjectType::Schema == object_type {
         if filter.is_some() {
             bail!("SHOW SCHEMAS ... {LIKE | WHERE} is not supported");
         }
@@ -392,6 +395,7 @@ fn handle_show_objects(
         rows.sort_unstable_by(move |a, b| a.unpack_first().cmp(&b.unpack_first()));
         Ok(Plan::SendRows(rows))
     } else {
+        println!("handle_show_objects {} not schema", object_type);
         let like_regex = match filter {
             Some(ShowStatementFilter::Like(pattern)) => like_pattern::build_regex(&pattern)?,
             Some(ShowStatementFilter::Where(_)) => bail!("SHOW ... WHERE is not supported"),
@@ -436,6 +440,8 @@ fn handle_show_objects(
                     && like_regex.is_match(&entry.name().to_string())
             });
 
+        println!("items {:?}", items);
+
         if object_type == ObjectType::View || object_type == ObjectType::Source {
             Ok(Plan::ShowViews {
                 ids: filtered_items
@@ -446,8 +452,12 @@ fn handle_show_objects(
                 limit_materialized: materialized,
             })
         } else {
+            println!("handle_show_objects {} not view or source", object_type);
             let mut rows = filtered_items
-                .map(|(name, entry)| make_row(name, classify_id(entry.id())))
+                .map(|(name, entry)| {
+                    println!("name {}", name);
+                    make_row(name, classify_id(entry.id()))
+                })
                 .collect::<Vec<_>>();
             rows.sort_unstable_by(move |a, b| a.unpack_first().cmp(&b.unpack_first()));
             Ok(Plan::SendRows(rows))
