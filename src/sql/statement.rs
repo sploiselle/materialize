@@ -88,6 +88,15 @@ pub fn describe_statement(
             vec![],
         ),
 
+        Statement::ShowCreateSink { .. } => (
+            Some(
+                RelationDesc::empty()
+                    .add_column("Sink", ScalarType::String)
+                    .add_column("Create Sink", ScalarType::String),
+            ),
+            vec![],
+        ),
+
         Statement::ShowColumns { .. } => (
             Some(
                 RelationDesc::empty()
@@ -255,6 +264,7 @@ pub fn handle_statement(
         } => handle_show_columns(scx, extended, full, table_name, filter.as_ref()),
         Statement::ShowCreateView { view_name } => handle_show_create_view(scx, view_name),
         Statement::ShowCreateSource { source_name } => handle_show_create_source(scx, source_name),
+        Statement::ShowCreateSink { sink_name } => handle_show_create_sink(scx, sink_name),
         Statement::Explain { stage, query } => handle_explain(scx, stage, *query, params),
 
         _ => bail!("unsupported SQL statement: {:?}", stmt),
@@ -608,6 +618,22 @@ fn handle_show_create_source(
     } else {
         bail!("{} is not a source", name);
     }
+}
+
+fn handle_show_create_sink(
+    scx: &StatementContext,
+    view_name: ObjectName,
+) -> Result<Plan, failure::Error> {
+    let view_name = scx.resolve_name(view_name)?;
+    let create_sql = if let CatalogItem::View(view) = scx.catalog.get(&view_name)?.item() {
+        &view.create_sql
+    } else {
+        bail!("'{}' is not a view", view_name);
+    };
+    Ok(Plan::SendRows(vec![Row::pack(&[
+        Datum::String(&view_name.to_string()),
+        Datum::String(create_sql),
+    ])]))
 }
 
 fn handle_create_sink(scx: &StatementContext, stmt: Statement) -> Result<Plan, failure::Error> {
