@@ -2312,7 +2312,7 @@ impl Parser {
             })
         } else if self.parse_keywords(vec!["CREATE", "SINK"]) {
             Ok(Statement::ShowCreateSink {
-                source_name: self.parse_object_name()?,
+                sink_name: self.parse_object_name()?,
             })
         } else {
             Ok(Statement::ShowVariable {

@@ -622,16 +622,16 @@ fn handle_show_create_source(
 
 fn handle_show_create_sink(
     scx: &StatementContext,
-    view_name: ObjectName,
+    sink_name: ObjectName,
 ) -> Result<Plan, failure::Error> {
-    let view_name = scx.resolve_name(view_name)?;
-    let create_sql = if let CatalogItem::View(view) = scx.catalog.get(&view_name)?.item() {
-        &view.create_sql
+    let sink_name = scx.resolve_name(sink_name)?;
+    let create_sql = if let CatalogItem::Sink(sink) = scx.catalog.get(&sink_name)?.item() {
+        &sink.create_sql
     } else {
-        bail!("'{}' is not a view", view_name);
+        bail!("'{}' is not a sink", sink_name);
     };
     Ok(Plan::SendRows(vec![Row::pack(&[
-        Datum::String(&view_name.to_string()),
+        Datum::String(&sink_name.to_string()),
         Datum::String(create_sql),
     ])]))
 }

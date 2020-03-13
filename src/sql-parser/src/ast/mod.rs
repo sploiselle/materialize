@@ -870,7 +870,7 @@ pub enum Statement {
         source_name: ObjectName,
     },
     /// `SHOW CREATE SINK <sink>`
-    ShowCreateSource {
+    ShowCreateSink {
         sink_name: ObjectName,
     },
     /// `{ BEGIN [ TRANSACTION | WORK ] | START TRANSACTION } ...`
