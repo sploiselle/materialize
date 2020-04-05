@@ -685,6 +685,7 @@ dependencies = [
  "expr",
  "failure",
  "interchange",
+ "log",
  "rdkafka",
  "regex",
  "repr",

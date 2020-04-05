@@ -1101,7 +1101,10 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
                             }
                         }
                         Some("sasl_plaintext") => {
-                            Some(KafkaAuth::sasl_palintext_kerberos_settings(&mut with_options)?)
+                            match KafkaAuth::sasl_palintext_kerberos_settings(&mut with_options) {
+                                Ok(auth) => Some(auth),
+                                Err(e) => bail!("Cannot CREATE SOURCE {}... with sasl_plaintext: {}", name, e)
+                            }
                         }
                         _ => {
                             match ssl_certificate_file {
