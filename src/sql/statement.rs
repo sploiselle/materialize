@@ -945,15 +945,17 @@ pub async fn purify_statement(mut stmt: Statement) -> Result<Statement, failure:
         let with_options_map = normalize::with_options(with_options);
 
         match connector {
-            Connector::Kafka { broker, .. } if !broker.contains(':') => {
-                *broker += ":9092";
+            Connector::Kafka { broker, .. } => {
+                if !broker.contains(':') {
+                    *broker += ":9092";
+                }
 
                 // Tests that with_options are valid for generating describing the
                 // Kafka's security options and, only in the case of creating SASL
                 // plaintext connections to Kerberized Kafka clusters, tests the
                 // configuration.
                 let specified_options =
-                    kafka_util::extract_kafka_security_options(&mut with_options_map.clone())?;
+                    kafka_util::extract_security_options(&mut with_options_map.clone())?;
                 kafka_util::test_config(&specified_options)?;
             }
             Connector::AvroOcf { path, .. } => {
@@ -1089,8 +1091,7 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
             let mut consistency = Consistency::RealTime;
             let (external_connector, mut encoding) = match connector {
                 Connector::Kafka { broker, topic, .. } => {
-                    let config_options =
-                        kafka_util::extract_kafka_security_options(&mut with_options)?;
+                    let config_options = kafka_util::extract_security_options(&mut with_options)?;
 
                     consistency = match with_options.remove("consistency") {
                         None => Consistency::RealTime,

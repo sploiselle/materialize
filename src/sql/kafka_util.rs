@@ -33,7 +33,7 @@ use sql_parser::ast::Value;
 ///
 /// - Incompatible options
 /// - Invalid values for known options
-pub fn extract_kafka_security_options(
+pub fn extract_security_options(
     mut with_options: &mut HashMap<String, Value>,
 ) -> Result<Vec<(String, String)>, failure::Error> {
     let security_protocol = match with_options.remove("security_protocol") {
@@ -56,15 +56,12 @@ pub fn extract_kafka_security_options(
         Some(_) => bail!("ssl_certificate_file must be a string"),
     };
 
-    let options = match (security_protocol.as_deref(), ssl_certificate_file) {
-        (None, None) => {
-            let v: Vec<(String, String)> = Vec::new();
-            v
-        }
+    let options: Vec<(String, String)> = match (security_protocol.as_deref(), ssl_certificate_file)
+    {
+        (None, None) => Vec::new(),
         (Some("sasl_plaintext"), None) => sasl_plaintext_kerberos_settings(&mut with_options)?,
         (Some("ssl"), Some(path)) | (None, Some(path)) => vec![
-            // See
-            // https://github.com/edenhill/librdkafka/wiki/Using-SSL-with-librdkafka
+            // See https://github.com/edenhill/librdkafka/wiki/Using-SSL-with-librdkafka
             // for more details on this librdkafka option
             ("security.protocol".to_string(), "ssl".to_string()),
             ("ssl.ca.location".to_string(), path),
@@ -84,7 +81,8 @@ pub fn extract_kafka_security_options(
 }
 
 /// Return a list of key-value pairs to authenticate `rdkafka` to connect
-/// to a Kerberized Kafka cluster.
+/// to a Kerberized Kafka cluster. You can find more detail about these settings
+/// in [librdkafka's documentation](https://github.com/edenhill/librdkafka/wiki/Using-SASL-with-librdkafka).
 ///
 /// # Arguments
 ///
@@ -148,7 +146,7 @@ fn sasl_plaintext_kerberos_settings(
 ///   value)`. You can find valid setting names in [`librdkafka`'s
 ///   documentation](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md).
 ///
-///   `extract_kafka_security_options`' output is viable for input.
+///   `extract_security_options`' output is viable for input.
 ///
 /// # Errors
 ///
