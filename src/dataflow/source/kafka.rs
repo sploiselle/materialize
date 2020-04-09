@@ -56,7 +56,11 @@ pub fn kafka<G>(
 where
     G: Scope<Timestamp = Timestamp>,
 {
-    let KafkaSourceConnector { url, topic, auth } = connector.clone();
+    let KafkaSourceConnector {
+        url,
+        topic,
+        config_options,
+    } = connector.clone();
 
     let ts = if read_kafka {
         let prev = timestamp_histories
@@ -86,9 +90,8 @@ where
             .set("fetch.message.max.bytes", "134217728")
             .set("enable.sparse.connections", "true")
             .set("bootstrap.servers", &url.to_string());
-
-        if let Some(auth) = auth {
-            auth.configure_client(&mut config);
+        for (k, v) in &config_options {
+            config.set(k, v);
         }
 
         let mut consumer: Option<BaseConsumer<GlueConsumerContext>> = if read_kafka {

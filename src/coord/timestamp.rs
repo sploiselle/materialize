@@ -483,8 +483,9 @@ impl Timestamper {
             .set("fetch.message.max.bytes", "134217728")
             .set("enable.sparse.connections", "true")
             .set("bootstrap.servers", &kc.url.to_string());
-        if let Some(auth) = kc.auth {
-            auth.configure_client(&mut config);
+
+        for (k, v) in &kc.config_options {
+            config.set(k, v);
         }
 
         let k_consumer: BaseConsumer = config.create().expect("Failed to create Kakfa consumer");
@@ -608,8 +609,8 @@ impl Timestamper {
             .set("fetch.message.max.bytes", "134217728")
             .set("enable.sparse.connections", "true")
             .set("bootstrap.servers", &kc.url.to_string());
-        if let Some(auth) = kc.auth {
-            auth.configure_client(&mut config);
+        for (k, v) in &kc.config_options {
+            config.set(k, v);
         }
 
         let k_consumer: BaseConsumer = config.create().expect("Failed to create Kakfa consumer");

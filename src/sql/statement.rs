@@ -25,9 +25,8 @@ use catalog::names::{DatabaseSpecifier, FullName, PartialName};
 use catalog::{Catalog, CatalogItem, SchemaType};
 use dataflow_types::{
     AvroEncoding, AvroOcfSinkConnectorBuilder, Consistency, CsvEncoding, DataEncoding, Envelope,
-    ExternalSourceConnector, FileSourceConnector, KafkaAuth, KafkaSinkConnectorBuilder,
-    KafkaSourceConnector, KinesisSourceConnector, PeekWhen, ProtobufEncoding, SinkConnectorBuilder,
-    SourceConnector,
+    ExternalSourceConnector, FileSourceConnector, KafkaSinkConnectorBuilder, KafkaSourceConnector,
+    KinesisSourceConnector, PeekWhen, ProtobufEncoding, SinkConnectorBuilder, SourceConnector,
 };
 use expr::{like_pattern, GlobalId, RowSetFinishing};
 use interchange::avro::Encoder;
@@ -40,6 +39,7 @@ use sql_parser::ast::{
     Statement, Value,
 };
 
+use crate::kafka_util;
 use crate::query::QueryLifetime;
 use crate::{normalize, query, Index, Params, Plan, PlanSession, Sink, Source, View};
 use regex::Regex;
@@ -947,6 +947,14 @@ pub async fn purify_statement(mut stmt: Statement) -> Result<Statement, failure:
         match connector {
             Connector::Kafka { broker, .. } if !broker.contains(':') => {
                 *broker += ":9092";
+
+                // Tests that with_options are valid for generating describing the
+                // Kafka's security options and, only in the case of creating SASL
+                // plaintext connections to Kerberized Kafka clusters, tests the
+                // configuration.
+                let specified_options =
+                    kafka_util::extract_kafka_security_options(&mut with_options_map.clone())?;
+                kafka_util::test_config(&specified_options)?;
             }
             Connector::AvroOcf { path, .. } => {
                 let path = path.clone();
@@ -967,11 +975,6 @@ pub async fn purify_statement(mut stmt: Statement) -> Result<Statement, failure:
         if let sql_parser::ast::Envelope::Upsert(format) = envelope {
             purify_format(format, connector, col_names).await?;
         }
-
-        // Tests that with_options are valid for generating auth and, only in
-        // the case of creating SASL plaintext connections to Kerberized Kafka
-        // clusters, tests the configuration.
-        KafkaAuth::create_from_with_options(&mut with_options_map.clone(), true)?;
     }
     Ok(stmt)
 }
@@ -1086,7 +1089,8 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
             let mut consistency = Consistency::RealTime;
             let (external_connector, mut encoding) = match connector {
                 Connector::Kafka { broker, topic, .. } => {
-                    let auth = KafkaAuth::create_from_with_options(&mut with_options, false)?;
+                    let config_options =
+                        kafka_util::extract_kafka_security_options(&mut with_options)?;
 
                     consistency = match with_options.remove("consistency") {
                         None => Consistency::RealTime,
@@ -1097,7 +1101,7 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
                     let connector = ExternalSourceConnector::Kafka(KafkaSourceConnector {
                         url: broker.parse()?,
                         topic: topic.clone(),
-                        auth,
+                        config_options,
                     });
                     let encoding = get_encoding(format)?;
                     (connector, encoding)
