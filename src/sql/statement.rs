@@ -1005,8 +1005,7 @@ pub async fn purify_statement(mut stmt: Statement) -> Result<Statement, failure:
                 }
 
                 // Verify that the provided security options are valid and then test them.
-                specified_options =
-                    kafka_util::extract_security_options(&mut with_options_map.clone())?;
+                specified_options = kafka_util::extract_config(&mut with_options_map.clone())?;
                 kafka_util::test_config(&specified_options)?;
             }
             Connector::AvroOcf { path, .. } => {
@@ -1070,8 +1069,7 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
                             AvroSchema::CsrUrl { url, seed } => {
                                 let url: Url = url.parse()?;
                                 let mut with_options_map = normalize::with_options(with_options);
-                                let config =
-                                    kafka_util::extract_security_options(&mut with_options_map)?;
+                                let config = kafka_util::extract_config(&mut with_options_map)?;
 
                                 if let Some(seed) = seed {
                                     Schema {
@@ -1146,8 +1144,7 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
             let mut consistency = Consistency::RealTime;
             let (external_connector, mut encoding) = match connector {
                 Connector::Kafka { broker, topic, .. } => {
-                    let mut config_options =
-                        kafka_util::extract_security_options(&mut with_options)?;
+                    let mut config_options = kafka_util::extract_config(&mut with_options)?;
 
                     consistency = match with_options.remove("consistency") {
                         None => Consistency::RealTime,
@@ -1171,13 +1168,6 @@ fn handle_create_source(scx: &StatementContext, stmt: Statement) -> Result<Plan,
                         "statistics.interval.ms".to_string(),
                         verbose_stats_ms.to_string(),
                     );
-
-                    let kafka_client_id = match with_options.remove("kafka_client_id") {
-                        None => "materialized".to_string(),
-                        Some(Value::SingleQuotedString(s)) => s,
-                        Some(_) => bail!("kafka_client_id must be a string"),
-                    };
-                    config_options.insert("client.id".to_string(), kafka_client_id);
 
                     // THIS IS EXPERIMENTAL - DO NOT DOCUMENT IT
                     // until we have had time to think about what the right UX/design is on a non-urgent timeline!

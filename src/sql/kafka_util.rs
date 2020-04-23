@@ -19,6 +19,75 @@ use rdkafka::consumer::BaseConsumer;
 use rdkafka::ClientConfig;
 use sql_parser::ast::Value;
 
+struct Config {
+    option_name: &'static str,
+    actual_config_name: Option<&'static str>,
+    default_val: Option<&'static str>,
+    check_val_file_exists: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            option_name: "",
+            actual_config_name: None,
+            default_val: None,
+            check_val_file_exists: false,
+        }
+    }
+}
+
+impl Config {
+    pub fn new(
+        option_name: &'static str,
+        actual_config_name: Option<&'static str>,
+        default_val: Option<&'static str>,
+        check_val_file_exists: bool,
+    ) -> Self {
+        Config {
+            option_name,
+            actual_config_name,
+            default_val,
+            check_val_file_exists,
+        }
+    }
+
+    pub fn simple(option_name: &'static str) -> Self {
+        Config {
+            option_name,
+            ..Default::default()
+        }
+    }
+}
+
+pub fn extract_config(
+    mut with_options: &mut HashMap<String, Value>,
+) -> Result<HashMap<String, String>, failure::Error> {
+    let mut config = extract_security_options(&mut with_options)?;
+
+    let allowed_configs = [
+        Config::new(
+            "kafka_client_id",
+            Some("client.id"),
+            Some("materialized"),
+            false,
+        ),
+        Config::new(
+            "group_id_prefix",
+            Some("group_id_prefix"),
+            Some("materialize"),
+            false,
+        ),
+    ];
+
+    config.extend(extract_config_from_with_options(
+        &mut with_options,
+        &allowed_configs,
+    )?);
+
+    Ok(config)
+}
+
 /// Parse the `with_options` from a `CREATE SOURCE` statement to determine Kafka
 /// security strategy, and extract any additional supplied configurations.
 ///
@@ -57,14 +126,26 @@ pub fn extract_security_options(
 fn ssl_settings(
     mut with_options: &mut HashMap<String, Value>,
 ) -> Result<HashMap<String, String>, failure::Error> {
-    let allowed_settings = vec![
-        ("ssl_ca_location", true),
-        ("ssl_certificate_location", true),
-        ("ssl_key_location", true),
-        ("ssl_key_password", false),
+    let allowed_conifg = [
+        Config {
+            option_name: "ssl_ca_location",
+            check_val_file_exists: true,
+            ..Default::default()
+        },
+        Config {
+            option_name: "ssl_certificate_location",
+            check_val_file_exists: true,
+            ..Default::default()
+        },
+        Config {
+            option_name: "ssl_key_location",
+            check_val_file_exists: true,
+            ..Default::default()
+        },
+        Config::simple("ssl_key_password"),
     ];
     let mut specified_options =
-        extract_settings_from_with_options(&mut with_options, &allowed_settings)?;
+        extract_config_from_with_options(&mut with_options, &allowed_conifg)?;
 
     specified_options.insert("security.protocol".to_string(), "ssl".to_string());
 
@@ -89,16 +170,21 @@ fn sasl_plaintext_kerberos_settings(
     // missing-but-necessary options are surfaced by `librdkafka` either
     // erroring or logging an error.
     let allowed_settings = vec![
-        ("sasl_kerberos_keytab", true),
-        ("sasl_kerberos_kinit_cmd", false),
-        ("sasl_kerberos_min_time_before_relogin", false),
-        ("sasl_kerberos_principal", false),
-        ("sasl_kerberos_service_name", false),
-        ("sasl_mechanisms", false),
+        Config {
+            option_name: "sasl_kerberos_keytab",
+            check_val_file_exists: true,
+            ..Default::default()
+        },
+        Config::simple("sasl_kerberos_kinit_cmd"),
+        Config::simple("sasl_kerberos_min_time_before_relogin"),
+        Config::simple("sasl_kerberos_principal"),
+        Config::simple("sasl_kerberos_service_name"),
+        Config::simple("sasl_mechanisms"),
     ];
 
     let mut specified_options =
-        extract_settings_from_with_options(&mut with_options, &allowed_settings)?;
+        extract_config_from_with_options(&mut with_options, &allowed_settings)?;
+
     specified_options.insert(
         "security.protocol".to_string(),
         "sasl_plaintext".to_string(),
@@ -109,30 +195,38 @@ fn sasl_plaintext_kerberos_settings(
 
 // Filters `with_options` on `allowed_settings.0`, and performs a check if files
 // exist if key exists and `allowed_settings.1==true`.
-fn extract_settings_from_with_options(
+fn extract_config_from_with_options(
     with_options: &mut HashMap<String, Value>,
-    allowed_settings: &[(&str, bool)],
+    allowed_configs: &[Config],
 ) -> Result<HashMap<String, String>, failure::Error> {
     let mut specified_options: HashMap<String, String> = HashMap::new();
 
-    for setting in allowed_settings {
-        // See if option name was specified.
-        match with_options.remove(setting.0) {
-            Some(Value::SingleQuotedString(v)) => {
-                // If setting is a path, ensure that it is valid.
-                if setting.1 && metadata(&v).is_err() {
-                    bail!(
-                        "Invalid WITH option: {}='{}', file does not exist",
-                        setting.0,
-                        v
-                    )
-                }
-                // Track options and values.
-                specified_options.insert(setting.0.replace("_", "."), v);
-            }
-            Some(_) => bail!("{}'s value must be a single-quoted string", setting.0),
-            None => {}
+    for config in allowed_configs {
+        let value;
+        match (with_options.remove(config.option_name), config.default_val) {
+            (Some(Value::SingleQuotedString(v)), _) => value = v,
+            (Some(_), _) => bail!(
+                "{}'s value must be a single-quoted string",
+                config.option_name
+            ),
+            (None, Some(default)) => value = default.to_string(),
+            (None, None) => continue,
         }
+        let key = match config.actual_config_name {
+            Some(actual_config_name) => actual_config_name.to_string(),
+            None => config.option_name.replace("_", "."),
+        };
+
+        // If setting is a path, ensure that it is valid.
+        if config.check_val_file_exists && metadata(&value).is_err() {
+            bail!(
+                "Invalid WITH option: {}='{}', file does not exist",
+                config.option_name,
+                value
+            )
+        }
+
+        specified_options.insert(key, value);
     }
 
     Ok(specified_options)
@@ -145,7 +239,7 @@ fn extract_settings_from_with_options(
 /// and test its ability to create an
 /// [`rdkafka::consumer::BaseConsumer`](https://docs.rs/rdkafka/latest/rdkafka/consumer/base_consumer/struct.BaseConsumer.html).
 ///
-/// Expected to test the output of `extract_security_options`.
+/// Expected to test the output of `extract_config`.
 ///
 /// # Errors
 ///
