@@ -417,7 +417,11 @@ impl From<Significand> for Datum<'static> {
 
 impl From<chrono::Duration> for Datum<'static> {
     fn from(duration: chrono::Duration) -> Datum<'static> {
-        Datum::Interval(Interval::new(0, 0, duration.num_nanoseconds().unwrap_or(0)))
+        Datum::Interval(Interval::new(
+            0,
+            duration.num_seconds(),
+            duration.num_nanoseconds().unwrap_or(0) % 1_000_000_000,
+        ))
     }
 }
 
@@ -743,7 +747,8 @@ pub struct Interval {
     pub months: i64,
     /// A timespan represented in nanoseconds.
     ///
-    /// Irrespective of values, will not be carried over into months.
+    /// Irrespective of values, `duration` will not be carried over into
+    /// `months`.
     pub duration: i128,
 }
 
@@ -781,6 +786,20 @@ impl std::ops::Neg for Interval {
             months: -self.months,
             duration: -self.duration,
         }
+    }
+}
+
+/// Converts this `Interval`'s duration into `chrono::Duration`.alloc
+///
+/// Note that this _does not_ include the `Interval`'s months;
+/// `chrono::Duration` deftly avoids the responsibility of handling the notion
+/// of months entirely.
+impl From<Interval> for chrono::Duration {
+    fn from(i: Interval) -> chrono::Duration {
+        use chrono::Duration;
+        // https://github.com/chronotope/chrono/pull/426
+        Duration::seconds(i.dur_as_secs() as i64)
+            + Duration::nanoseconds(i.dur_subsec_nanos() as i64)
     }
 }
 
