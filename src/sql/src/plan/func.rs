@@ -18,8 +18,9 @@ use lazy_static::lazy_static;
 use repr::ScalarType;
 use sql_parser::ast::{BinaryOperator, Expr};
 
+use super::cast::{rescale_decimal, CastTo};
 use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc, VariadicFunc};
-use super::query::{rescale_decimal, CastContext, CoerceTo, ExprContext};
+use super::query::{CoerceTo, ExprContext};
 use crate::unsupported;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,7 +58,7 @@ impl TypeCategory {
             | ScalarType::Time
             | ScalarType::Timestamp
             | ScalarType::TimestampTz => TypeCategory::DateTime,
-            ScalarType::Decimal(_, _)
+            ScalarType::Decimal(..)
             | ScalarType::Float32
             | ScalarType::Float64
             | ScalarType::Int32
@@ -584,7 +585,7 @@ impl<'a> ArgImplementationMatcher<'a> {
         // contexts.
         if let ParamList::Exact(ref mut param_list) = f.params {
             for (i, param) in param_list.iter_mut().enumerate() {
-                if let Plain(Decimal(_, _)) = param {
+                if let Plain(Decimal(..)) = param {
                     *param = Plain(types[i].clone());
                 }
             }
@@ -644,19 +645,15 @@ impl<'a> ArgImplementationMatcher<'a> {
     /// Checks that `arg_type` is coercible to the parameter type without
     /// actually planning the coercion.
     fn is_coercion_possible(&self, arg_type: &ScalarType, to_typ: &ParamType) -> bool {
-        use super::query::CastAllowedInContext::*;
+        use CastTo::*;
 
-        let s: ScalarType = to_typ.into();
+        let cast_to = match to_typ {
+            ParamType::Plain(s) => Implicit(s.clone()),
+            ParamType::JsonbAny => JsonbAny,
+            ParamType::ExplicitStringAny | ParamType::StringAny => Explicit(ScalarType::String),
+        };
 
-        match (
-            to_typ,
-            super::query::VALID_CASTS.get(&(arg_type.desaturate(), s.desaturate())),
-        ) {
-            (ParamType::Plain(_), Some(Implicit(_))) => true,
-            (ParamType::Plain(_), _) => false,
-            (_, Some(_)) => true,
-            (_, _) => false,
-        }
+        super::cast::get_cast(arg_type, &cast_to).is_some()
     }
 
     /// Generates `ScalarExpr` necessary to coerce `Expr` into the `ScalarType`
@@ -667,6 +664,7 @@ impl<'a> ArgImplementationMatcher<'a> {
         arg: CoercibleScalarExpr,
         typ: &ParamType,
     ) -> Result<ScalarExpr, failure::Error> {
+        use super::cast::CastTo::*;
         let coerce_to = match typ {
             ParamType::Plain(s) => CoerceTo::Plain(s.clone()),
             ParamType::JsonbAny => CoerceTo::JsonbAny,
@@ -676,13 +674,23 @@ impl<'a> ArgImplementationMatcher<'a> {
         };
 
         let arg = super::query::plan_coerce(self.ecx, arg, coerce_to)?;
-        let (ccx, to_typ) = match typ {
-            ParamType::JsonbAny => (CastContext::JsonbAny(self.ident), ScalarType::Jsonb),
-            ParamType::ExplicitStringAny => (CastContext::Explicit, ScalarType::String),
-            ParamType::StringAny => (CastContext::Internal(self.ident), ScalarType::String),
-            ParamType::Plain(s) => (CastContext::Implicit(self.ident), s.clone()),
+        let to_typ = match typ {
+            ParamType::Plain(s) => Implicit(s.clone()),
+            ParamType::JsonbAny => JsonbAny,
+            ParamType::ExplicitStringAny => Explicit(ScalarType::String),
+            ParamType::StringAny => {
+                // This is the raison d'être for the distinction between
+                // `ExplicitStringAny` and `StringAny`: getting either implicit
+                // or explicit cast behavior out of casting boolean values to
+                // strings.
+                if self.ecx.scalar_type(&arg) == ScalarType::Bool {
+                    Implicit(ScalarType::String)
+                } else {
+                    Explicit(ScalarType::String)
+                }
+            }
         };
-        super::query::plan_cast_internal(self.ecx, ccx, arg, to_typ)
+        super::query::plan_cast_internal(self.ident, self.ecx, arg, to_typ)
     }
 }
 

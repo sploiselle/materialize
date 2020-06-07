@@ -625,8 +625,7 @@ impl<'a> ScalarType {
     /// equality.
     pub fn desaturate(&self) -> ScalarType {
         match self {
-            ScalarType::Decimal(_, _) => ScalarType::Decimal(0, 0),
-            ScalarType::List(_) => panic!("ScalarType::List cannot currently be desaturated"),
+            ScalarType::Decimal(..) => ScalarType::Decimal(0, 0),
             _ => self.clone(),
         }
     }
