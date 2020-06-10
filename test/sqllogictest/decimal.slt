@@ -85,27 +85,27 @@ SELECT a * 0.2 FROM basic
 query R
 SELECT a + 2 FROM basic
 ----
-2.1
+2
 
 query R
 SELECT a - 2 FROM basic
 ----
--1.9
+-2
 
 query R
 SELECT a * 2 FROM basic
 ----
-0.2
+0
 
 query R
 SELECT a / 2 FROM basic
 ----
-0.0500000
+0.000000
 
 query R
 SELECT a % 2 FROM basic
 ----
-0.1
+0
 
 # Arithmetic that involves simple rescaling.
 
@@ -187,7 +187,7 @@ select sum(a) from agg
 query R
 select avg(a) from agg
 ----
-0.2333333
+0.000000
 
 query R
 select min(a) from agg
@@ -233,12 +233,12 @@ SELECT
 query R
 SELECT 1.0 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1
 ----
-1.0
+1
 
 query R
 SELECT 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1 * 1.0
 ----
-1.0
+1
 
 ### e-notation ###
 query R
@@ -276,7 +276,7 @@ SELECT 0.03142529E2E2;
 query R
 SELECT 314.2529E-2-2;
 ----
-1.142529
+1
 
 # Overflow
 statement error numeric literal overflows i128

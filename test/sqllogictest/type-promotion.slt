@@ -61,7 +61,7 @@ EXPLAIN RAW PLAN FOR
 ----
 %0 =
 | Constant ()
-| Map ((i32todec(1) * 10dec) > 11dec)
+| Map (i32todec(1) > (11dec / 10dec))
 | Project (#0)
 | Map
 
@@ -74,7 +74,7 @@ EXPLAIN RAW PLAN FOR
 ----
 %0 =
 | Constant ()
-| Map ((i64todec(i32toi64(1)) * 100000dec) > 111111dec)
+| Map (i64todec(i32toi64(1)) > (111111dec / 100000dec))
 | Project (#0)
 | Map
 

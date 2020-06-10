@@ -54,8 +54,11 @@ impl ParamList {
     fn match_scalartypes(&self, types: &[ScalarType]) -> bool {
         use ParamList::*;
         match self {
-            Exact(p) => types.iter().zip(p.iter()).all(|(t, p)| t == p),
-            Repeat(p) => types.iter().enumerate().all(|(i, t)| t == &p[i % p.len()]),
+            Exact(p) => p.iter().zip(types.iter()).all(|(p, t)| p.accepts(t)),
+            Repeat(p) => types
+                .iter()
+                .enumerate()
+                .all(|(i, t)| p[i % p.len()].accepts(t)),
         }
     }
 }
@@ -99,15 +102,25 @@ fn is_lhs_preferred_type_for_rhs(param_type: &ScalarType, arg_type: &ScalarType)
     }
 }
 
+impl ParamType {
+    fn accepts(&self, t: &ScalarType) -> bool {
+        use ScalarType::*;
+        match (self, t) {
+            (ParamType::StringAny, _)
+            | (ParamType::ExplicitStringAny, _)
+            | (ParamType::JsonbAny, _) => true,
+            (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
+        }
+    }
+}
+
 impl PartialEq<ScalarType> for ParamType {
     fn eq(&self, other: &ScalarType) -> bool {
         use ScalarType::*;
         match (self, other) {
-            (ParamType::StringAny, _) | (ParamType::ExplicitStringAny, _) => true,
-            (ParamType::JsonbAny, o) => match o {
-                Bool | Float64 | Float32 | Jsonb | String => true,
-                _ => false,
-            },
+            (ParamType::StringAny, _)
+            | (ParamType::ExplicitStringAny, _)
+            | (ParamType::JsonbAny, _) => false,
             (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
         }
     }
@@ -185,6 +198,7 @@ impl From<VariadicFunc> for OperationType {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Candidate<'a> {
     fimpl: &'a FuncImpl,
     exact_matches: usize,
@@ -258,7 +272,6 @@ impl<'a> ArgImplementationMatcher<'a> {
     /// Note that `types` must be the caller's argument's types to preserve
     /// Decimal scale and precision, which are used in `Self::saturate_decimals`.
     fn get_implementation(&self, types: &[ScalarType]) -> Option<FuncImpl> {
-        println!("types {:?}", types);
         let matching_impls: Vec<&FuncImpl> = self
             .impls
             .iter()
@@ -286,9 +299,7 @@ impl<'a> ArgImplementationMatcher<'a> {
             .iter()
             .map(|e| self.ecx.column_type(e).map(|t| t.scalar_type))
             .collect();
-        let all_types_known = types.iter().all(|t: &Option<ScalarType>| t.is_some());
-
-        println!("arg types {:?}", types);
+        let all_types_known = types.iter().all(|t| t.is_some());
 
         // Check for exact match.
         if all_types_known {
@@ -300,16 +311,15 @@ impl<'a> ArgImplementationMatcher<'a> {
 
         // No exact match. Apply PostgreSQL's best match algorithm.
         let mut max_exact_matches = 0;
-        let mut max_preferred_types = 0;
 
-        let candidates: Vec<Candidate> = self
+        let mut candidates: Vec<Candidate> = self
             .impls
             .iter()
             .filter_map(|fimpl| {
                 let mut valid_candidate = true;
                 let mut exact_matches = 0;
                 let mut preferred_types = 0;
-                let resolved_types: Vec<ScalarType> = Vec::new();
+                let mut resolved_types: Vec<ScalarType> = Vec::new();
 
                 for (i, raw_arg_type) in types.iter().enumerate() {
                     let param_type = match &fimpl.params {
@@ -320,11 +330,12 @@ impl<'a> ArgImplementationMatcher<'a> {
                     let arg = match raw_arg_type {
                         Some(raw_arg_type) if param_type == raw_arg_type => {
                             exact_matches += 1;
-                            raw_arg_type.clone();
+                            raw_arg_type.clone()
                         }
                         Some(raw_arg_type) => {
                             if !self.is_coercion_possible(raw_arg_type, &param_type) {
-                                return None;
+                                valid_candidate = false;
+                                break;
                             }
                             if is_lhs_preferred_type_for_rhs(&param_type.into(), raw_arg_type) {
                                 preferred_types += 1;
@@ -348,19 +359,21 @@ impl<'a> ArgImplementationMatcher<'a> {
                     resolved_types.push(arg);
                 }
 
-                max_exact_matches = std::cmp::max(max_exact_matches, exact_matches);
-                max_preferred_types = std::cmp::max(max_preferred_types, preferred_types);
-
-                Some(Candidate {
-                    fimpl,
-                    exact_matches,
-                    preferred_types,
-                    resolved_types,
-                })
+                if valid_candidate {
+                    max_exact_matches = std::cmp::max(max_exact_matches, exact_matches);
+                    Some(Candidate {
+                        fimpl,
+                        exact_matches,
+                        preferred_types,
+                        resolved_types,
+                    })
+                } else {
+                    None
+                }
             })
             .collect();
 
-        if self.impls.is_empty() {
+        if candidates.is_empty() {
             bail!(
                 "arguments cannot be implicitly cast to any implementation's parameters; \
                  try providing explicit casts"
@@ -375,8 +388,6 @@ impl<'a> ArgImplementationMatcher<'a> {
         // input types. Keep all candidates if none have exact matches.
         candidates.retain(|c| c.exact_matches >= max_exact_matches);
 
-        println!("candidates after exact match filters {:?}", self.impls);
-
         if let Some(func) = self.maybe_get_last_candidate(&candidates)? {
             return Ok(func);
         }
@@ -384,6 +395,10 @@ impl<'a> ArgImplementationMatcher<'a> {
         // 4.d. Run through all candidates and keep those that accept preferred types
         // (of the input data type's type category) at the most positions where
         // type conversion will be required.
+        let mut max_preferred_types = 0;
+        for c in &candidates {
+            max_preferred_types = std::cmp::max(max_preferred_types, c.preferred_types);
+        }
         candidates.retain(|c| c.preferred_types >= max_preferred_types);
 
         if let Some(func) = self.maybe_get_last_candidate(&candidates)? {
@@ -454,18 +469,17 @@ impl<'a> ArgImplementationMatcher<'a> {
 
                     let preferred_type = selected_category.preferred_type();
                     let mut found_preferred_type_candidate = false;
-                    self.impls.retain(|fimpl| {
+                    candidates.retain(|c| {
                         if let Some(typ) = &preferred_type {
                             found_preferred_type_candidate =
-                                *typ == fimpl.params[i].into() || found_preferred_type_candidate;
+                                *typ == c.resolved_types[i] || found_preferred_type_candidate;
                         }
-                        selected_category == TypeCategory::from_param(&fimpl.params[i])
+                        selected_category == TypeCategory::from_type(&c.resolved_types[i])
                     });
 
                     if found_preferred_type_candidate {
                         let preferred_type = preferred_type.unwrap();
-                        self.impls
-                            .retain(|fimpl| fimpl.params[i].into() == preferred_type);
+                        candidates.retain(|c| preferred_type == c.resolved_types[i]);
                     }
                 }
                 Some(typ) => {
@@ -492,8 +506,7 @@ impl<'a> ArgImplementationMatcher<'a> {
             let common_type = common_type.unwrap();
             for (i, raw_arg_type) in types.iter().enumerate() {
                 if raw_arg_type.is_none() {
-                    self.impls
-                        .retain(|fimpl| common_type == fimpl.params[i].into());
+                    candidates.retain(|c| common_type == c.resolved_types[i]);
                 }
             }
 
@@ -512,8 +525,9 @@ impl<'a> ArgImplementationMatcher<'a> {
         &self,
         candidates: &[Candidate],
     ) -> Result<Option<FuncImpl>, failure::Error> {
+        // println!("\n\nmaybe get last candidates {:?}", candidates);
         if candidates.len() == 1 {
-            let c = candidates[0];
+            let c = &candidates[0];
             if c.fimpl.params.match_scalartypes(&c.resolved_types) {
                 Ok(Some(c.fimpl.clone()))
             } else {
