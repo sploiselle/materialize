@@ -18,81 +18,10 @@ use lazy_static::lazy_static;
 use repr::ScalarType;
 use sql_parser::ast::{BinaryOperator, Expr};
 
-use super::cast::{rescale_decimal, CastTo};
+use super::cast::{rescale_decimal, CastTo, TypeCategory};
 use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc, VariadicFunc};
 use super::query::{CoerceTo, ExprContext};
 use crate::unsupported;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Mirrored from [PostgreSQL's `typcategory`][typcategory].
-///
-/// [typcategory]: https://www.postgresql.org/docs/9.6/catalog-pg-type.html#CATALOG-TYPCATEGORY-TABLE
-enum TypeCategory {
-    Bool,
-    DateTime,
-    Numeric,
-    String,
-    Timespan,
-    UserDefined,
-}
-
-impl TypeCategory {
-    /// Extracted from PostgreSQL 9.6.
-    /// ```ignore
-    /// SELECT array_agg(typname), typcategory
-    /// FROM pg_catalog.pg_type
-    /// WHERE typname IN (
-    ///  'bool', 'bytea', 'date', 'float4', 'float8', 'int4', 'int8', 'interval', 'jsonb',
-    ///  'numeric', 'text', 'time', 'timestamp', 'timestamptz'
-    /// )
-    /// GROUP BY typcategory
-    /// ORDER BY typcategory;
-    /// ```
-    fn from_type(typ: &ScalarType) -> TypeCategory {
-        match typ {
-            ScalarType::Bool => TypeCategory::Bool,
-            ScalarType::Bytes | ScalarType::Jsonb | ScalarType::List(_) => {
-                TypeCategory::UserDefined
-            }
-            ScalarType::Date
-            | ScalarType::Time
-            | ScalarType::Timestamp
-            | ScalarType::TimestampTz => TypeCategory::DateTime,
-            ScalarType::Decimal(..)
-            | ScalarType::Float32
-            | ScalarType::Float64
-            | ScalarType::Int32
-            | ScalarType::Int64 => TypeCategory::Numeric,
-            ScalarType::Interval => TypeCategory::Timespan,
-            ScalarType::String => TypeCategory::String,
-        }
-    }
-
-    /// Extracted from PostgreSQL 9.6.
-    /// ```ignore
-    /// SELECT typcategory, typname, typispreferred
-    /// FROM pg_catalog.pg_type
-    /// WHERE typispreferred = true
-    /// ORDER BY typcategory;
-    /// ```
-    fn preferred_type(&self) -> Option<ScalarType> {
-        match self {
-            TypeCategory::Bool => Some(ScalarType::Bool),
-            TypeCategory::DateTime => Some(ScalarType::TimestampTz),
-            TypeCategory::Numeric => Some(ScalarType::Float64),
-            TypeCategory::String => Some(ScalarType::String),
-            TypeCategory::Timespan => Some(ScalarType::Interval),
-            _ => None,
-        }
-    }
-}
-
-fn is_param_preferred_type_for_arg(param_type: &ScalarType, arg_type: &ScalarType) -> bool {
-    match TypeCategory::from_type(&arg_type).preferred_type() {
-        Some(preferred_type) => &preferred_type == param_type,
-        _ => false,
-    }
-}
 
 #[derive(Debug, Clone)]
 /// Describes a single function's implementation.
@@ -131,6 +60,17 @@ impl ParamList {
     }
 }
 
+impl std::ops::Index<usize> for ParamList {
+    type Output = ParamType;
+
+    fn index(&self, i: usize) -> &Self::Output {
+        match self {
+            ParamList::Exact(p) => &p[i],
+            ParamList::Repeat(p) => &p[i % p.len()],
+        }
+    }
+}
+
 /// Provides a shorthand function for writing `ParamList::Exact`.
 impl From<Vec<ParamType>> for ParamList {
     fn from(p: Vec<ParamType>) -> ParamList {
@@ -150,6 +90,13 @@ pub enum ParamType {
     ExplicitStringAny,
     /// Permits types that can be cast to `JSONB` elements.
     JsonbAny,
+}
+
+fn is_lhs_preferred_type_for_rhs(param_type: &ScalarType, arg_type: &ScalarType) -> bool {
+    match TypeCategory::from_type(&arg_type).preferred_type() {
+        Some(preferred_type) => &preferred_type == param_type,
+        _ => false,
+    }
 }
 
 impl PartialEq<ScalarType> for ParamType {
@@ -238,14 +185,11 @@ impl From<VariadicFunc> for OperationType {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
-/// Tracks candidate implementations during `ArgImplementationMatcher::best_match`.
-struct Candidate {
-    /// Represents the candidate's argument types; used to match some
-    /// implementation's parameter types.
-    arg_types: Vec<ScalarType>,
+pub struct Candidate<'a> {
+    fimpl: &'a FuncImpl,
     exact_matches: usize,
     preferred_types: usize,
+    resolved_types: Vec<ScalarType>,
 }
 
 #[derive(Clone, Debug)]
@@ -314,6 +258,7 @@ impl<'a> ArgImplementationMatcher<'a> {
     /// Note that `types` must be the caller's argument's types to preserve
     /// Decimal scale and precision, which are used in `Self::saturate_decimals`.
     fn get_implementation(&self, types: &[ScalarType]) -> Option<FuncImpl> {
+        println!("types {:?}", types);
         let matching_impls: Vec<&FuncImpl> = self
             .impls
             .iter()
@@ -341,7 +286,9 @@ impl<'a> ArgImplementationMatcher<'a> {
             .iter()
             .map(|e| self.ecx.column_type(e).map(|t| t.scalar_type))
             .collect();
-        let all_types_known = types.iter().all(|t| t.is_some());
+        let all_types_known = types.iter().all(|t: &Option<ScalarType>| t.is_some());
+
+        println!("arg types {:?}", types);
 
         // Check for exact match.
         if all_types_known {
@@ -352,67 +299,68 @@ impl<'a> ArgImplementationMatcher<'a> {
         }
 
         // No exact match. Apply PostgreSQL's best match algorithm.
-        let mut candidates = Vec::new();
         let mut max_exact_matches = 0;
         let mut max_preferred_types = 0;
 
-        // Generate candidates by assessing their compatibility with each
-        // implementation's parameters.
-        for fimpl in self.impls.iter() {
-            let mut valid_candidate = true;
-            let mut arg_types = Vec::new();
-            let mut exact_matches = 0;
-            let mut preferred_types = 0;
+        let candidates: Vec<Candidate> = self
+            .impls
+            .iter()
+            .filter_map(|fimpl| {
+                let mut valid_candidate = true;
+                let mut exact_matches = 0;
+                let mut preferred_types = 0;
+                let resolved_types: Vec<ScalarType> = Vec::new();
 
-            for (i, raw_arg_type) in types.iter().enumerate() {
-                let param_type = match &fimpl.params {
-                    ParamList::Exact(p) => &p[i],
-                    ParamList::Repeat(p) => &p[i % p.len()],
-                };
+                for (i, raw_arg_type) in types.iter().enumerate() {
+                    let param_type = match &fimpl.params {
+                        ParamList::Exact(p) => &p[i],
+                        ParamList::Repeat(p) => &p[i % p.len()],
+                    };
 
-                let arg_type = match raw_arg_type {
-                    Some(raw_arg_type) if param_type == raw_arg_type => {
-                        exact_matches += 1;
-                        raw_arg_type.clone()
-                    }
-                    Some(raw_arg_type) => {
-                        if !self.is_coercion_possible(raw_arg_type, &param_type) {
-                            valid_candidate = false;
-                            break;
+                    let arg = match raw_arg_type {
+                        Some(raw_arg_type) if param_type == raw_arg_type => {
+                            exact_matches += 1;
+                            raw_arg_type.clone();
                         }
-                        if is_param_preferred_type_for_arg(&param_type.into(), raw_arg_type) {
-                            preferred_types += 1;
-                        }
-                        param_type.into()
-                    }
-                    None => {
-                        let s: ScalarType = param_type.into();
-                        if TypeCategory::from_type(&s).preferred_type() == Some(s) {
-                            preferred_types += 1;
-                        }
-                        param_type.into()
-                    }
-                };
+                        Some(raw_arg_type) => {
+                            if !self.is_coercion_possible(raw_arg_type, &param_type) {
+                                return None;
+                            }
+                            if is_lhs_preferred_type_for_rhs(&param_type.into(), raw_arg_type) {
+                                preferred_types += 1;
+                            }
 
-                arg_types.push(arg_type);
-            }
+                            param_type.into()
+                        }
+                        None => {
+                            let s: ScalarType = param_type.into();
+                            if TypeCategory::from_param(&param_type)
+                                .preferred_type()
+                                .as_ref()
+                                == Some(&s)
+                            {
+                                preferred_types += 1;
+                            }
+                            s
+                        }
+                    };
 
-            // 4.a. Discard candidate functions for which the input types do not match
-            // and cannot be converted (using an implicit conversion) to match.
-            // unknown literals are assumed to be convertible to anything for this
-            // purpose.
-            if valid_candidate {
+                    resolved_types.push(arg);
+                }
+
                 max_exact_matches = std::cmp::max(max_exact_matches, exact_matches);
                 max_preferred_types = std::cmp::max(max_preferred_types, preferred_types);
-                candidates.push(Candidate {
-                    arg_types,
+
+                Some(Candidate {
+                    fimpl,
                     exact_matches,
                     preferred_types,
-                });
-            }
-        }
+                    resolved_types,
+                })
+            })
+            .collect();
 
-        if candidates.is_empty() {
+        if self.impls.is_empty() {
             bail!(
                 "arguments cannot be implicitly cast to any implementation's parameters; \
                  try providing explicit casts"
@@ -426,6 +374,8 @@ impl<'a> ArgImplementationMatcher<'a> {
         // 4.c. Run through all candidates and keep those with the most exact matches on
         // input types. Keep all candidates if none have exact matches.
         candidates.retain(|c| c.exact_matches >= max_exact_matches);
+
+        println!("candidates after exact match filters {:?}", self.impls);
 
         if let Some(func) = self.maybe_get_last_candidate(&candidates)? {
             return Ok(func);
@@ -464,7 +414,7 @@ impl<'a> ArgImplementationMatcher<'a> {
                     found_unknown = true;
 
                     for c in candidates.iter() {
-                        let this_category = TypeCategory::from_type(&c.arg_types[i]);
+                        let this_category = TypeCategory::from_type(&c.resolved_types[i]);
                         match (&selected_category, &this_category) {
                             // 4.e. cont: At each  position, select the string category if
                             // any candidate accepts that category. (This bias
@@ -504,17 +454,18 @@ impl<'a> ArgImplementationMatcher<'a> {
 
                     let preferred_type = selected_category.preferred_type();
                     let mut found_preferred_type_candidate = false;
-                    candidates.retain(|c| {
+                    self.impls.retain(|fimpl| {
                         if let Some(typ) = &preferred_type {
                             found_preferred_type_candidate =
-                                c.arg_types[i] == *typ || found_preferred_type_candidate;
+                                *typ == fimpl.params[i].into() || found_preferred_type_candidate;
                         }
-                        selected_category == TypeCategory::from_type(&c.arg_types[i])
+                        selected_category == TypeCategory::from_param(&fimpl.params[i])
                     });
 
                     if found_preferred_type_candidate {
                         let preferred_type = preferred_type.unwrap();
-                        candidates.retain(|c| c.arg_types[i] == preferred_type);
+                        self.impls
+                            .retain(|fimpl| fimpl.params[i].into() == preferred_type);
                     }
                 }
                 Some(typ) => {
@@ -541,7 +492,8 @@ impl<'a> ArgImplementationMatcher<'a> {
             let common_type = common_type.unwrap();
             for (i, raw_arg_type) in types.iter().enumerate() {
                 if raw_arg_type.is_none() {
-                    candidates.retain(|c| common_type == c.arg_types[i]);
+                    self.impls
+                        .retain(|fimpl| common_type == fimpl.params[i].into());
                 }
             }
 
@@ -561,12 +513,11 @@ impl<'a> ArgImplementationMatcher<'a> {
         candidates: &[Candidate],
     ) -> Result<Option<FuncImpl>, failure::Error> {
         if candidates.len() == 1 {
-            match self.get_implementation(&candidates[0].arg_types) {
-                Some(func) => Ok(Some(func)),
-                None => unreachable!(
-                    "unable to get final function implementation with provided \
-                    arguments"
-                ),
+            let c = candidates[0];
+            if c.fimpl.params.match_scalartypes(&c.resolved_types) {
+                Ok(Some(c.fimpl.clone()))
+            } else {
+                unreachable!("My last candidate cannot access my final impl")
             }
         } else {
             Ok(None)
@@ -895,6 +846,7 @@ lazy_static! {
         use BinaryOperator::*;
         use super::expr::BinaryFunc::*;
         use OperationType::*;
+        use ParamType::*;
         let mut m = impls! {
             // ARITHMETIC
             Plus => {
@@ -1022,6 +974,14 @@ lazy_static! {
                         .call_binary(rhs, MatchLikePattern)
                         .call_unary(UnaryFunc::Not)
                 })
+            },
+
+            // CONCAT
+            Concat => {
+                vec![Plain(String), ExplicitStringAny] => TextConcat,
+                vec![ExplicitStringAny, Plain(String)] => TextConcat,
+                params!(String, String) => TextConcat,
+                params!(Jsonb, Jsonb) => JsonbConcat
             },
 
             //JSON
@@ -1207,9 +1167,9 @@ pub fn plan_binary_op<'a>(
     right: &'a Expr,
 ) -> Result<ScalarExpr, failure::Error> {
     // Nonstandard implementations go here.
-    if let BinaryOperator::Concat = op {
-        return concat_impl(ecx, left, right);
-    }
+    // if let BinaryOperator::Concat = op {
+    //     return concat_impl(ecx, left, right);
+    // }
     // Generalizable implementations.
     let impls = match BINARY_OP_IMPLS.get(&op) {
         Some(i) => i,
