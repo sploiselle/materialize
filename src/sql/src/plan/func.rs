@@ -18,10 +18,78 @@ use lazy_static::lazy_static;
 use repr::ScalarType;
 use sql_parser::ast::{BinaryOperator, Expr};
 
-use super::cast::{rescale_decimal, CastContext, CastTo, TypeCategory};
+use super::cast::{rescale_decimal, CastContext, CastTo};
 use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc, VariadicFunc};
 use super::query::{CoerceTo, ExprContext};
 use crate::unsupported;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Mirrored from [PostgreSQL's `typcategory`][typcategory].
+///
+/// Note that Materialize also uses a number of pseudotypes when planning, but
+/// we have yet to need to integrate them with `TypeCategory`.
+///
+/// [typcategory]:
+/// https://www.postgresql.org/docs/9.6/catalog-pg-type.html#CATALOG-TYPCATEGORY-TABLE
+pub enum TypeCategory {
+    Bool,
+    DateTime,
+    Numeric,
+    String,
+    Timespan,
+    UserDefined,
+}
+
+impl TypeCategory {
+    /// Extracted from PostgreSQL 9.6.
+    /// ```ignore
+    /// SELECT array_agg(typname), typcategory
+    /// FROM pg_catalog.pg_type
+    /// WHERE typname IN (
+    ///  'bool', 'bytea', 'date', 'float4', 'float8', 'int4', 'int8', 'interval', 'jsonb',
+    ///  'numeric', 'text', 'time', 'timestamp', 'timestamptz'
+    /// )
+    /// GROUP BY typcategory
+    /// ORDER BY typcategory;
+    /// ```
+    pub fn from_type(typ: &ScalarType) -> TypeCategory {
+        match typ {
+            ScalarType::Bool => TypeCategory::Bool,
+            ScalarType::Bytes | ScalarType::Jsonb | ScalarType::List(_) => {
+                TypeCategory::UserDefined
+            }
+            ScalarType::Date
+            | ScalarType::Time
+            | ScalarType::Timestamp
+            | ScalarType::TimestampTz => TypeCategory::DateTime,
+            ScalarType::Decimal(..)
+            | ScalarType::Float32
+            | ScalarType::Float64
+            | ScalarType::Int32
+            | ScalarType::Int64 => TypeCategory::Numeric,
+            ScalarType::Interval => TypeCategory::Timespan,
+            ScalarType::String => TypeCategory::String,
+        }
+    }
+
+    /// Extracted from PostgreSQL 9.6.
+    /// ```ignore
+    /// SELECT typcategory, typname, typispreferred
+    /// FROM pg_catalog.pg_type
+    /// WHERE typispreferred = true
+    /// ORDER BY typcategory;
+    /// ```
+    pub fn preferred_type(&self) -> Option<ScalarType> {
+        match self {
+            TypeCategory::Bool => Some(ScalarType::Bool),
+            TypeCategory::DateTime => Some(ScalarType::TimestampTz),
+            TypeCategory::Numeric => Some(ScalarType::Float64),
+            TypeCategory::String => Some(ScalarType::String),
+            TypeCategory::Timespan => Some(ScalarType::Interval),
+            TypeCategory::UserDefined => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 /// Describes a single function's implementation.
@@ -63,17 +131,6 @@ impl ParamList {
     }
 }
 
-impl std::ops::Index<usize> for ParamList {
-    type Output = ParamType;
-
-    fn index(&self, i: usize) -> &Self::Output {
-        match self {
-            ParamList::Exact(p) => &p[i],
-            ParamList::Repeat(p) => &p[i % p.len()],
-        }
-    }
-}
-
 /// Provides a shorthand function for writing `ParamList::Exact`.
 impl From<Vec<ParamType>> for ParamList {
     fn from(p: Vec<ParamType>) -> ParamList {
@@ -86,26 +143,30 @@ impl From<Vec<ParamType>> for ParamList {
 /// added flexibility.
 pub enum ParamType {
     Plain(ScalarType),
-    /// Permits any type, but requires it to be cast to a `ScalarType::String`.
+    /// A pseudotype permitting any type, but requires it to be cast to a `ScalarType::String`.
     StringAny,
     /// Like `StringAny`, but pretends the argument was explicitly cast to
     /// a `ScalarType::String`, rather than implicitly cast.
     ExplicitStringAny,
-    /// Permits types that can be cast to `JSONB` elements.
+    /// A pseudotype permitting any type, but requires it to be cast to a
+    /// [`ScalarType::Jsonb`], or an element within a `Jsonb`.
     JsonbAny,
 }
 
 impl ParamType {
+    // Does this parameter accept `t`?
     fn accepts(&self, t: &ScalarType) -> bool {
-        use ScalarType::*;
         match (self, t) {
+            (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
             (ParamType::StringAny, _)
             | (ParamType::ExplicitStringAny, _)
             | (ParamType::JsonbAny, _) => true,
-            (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
         }
     }
 
+    // Does `t`'s [`TypeCategory`] prefer this parameter? This question is a
+    // little easier to understand if you understand that pseudotypes are never
+    // preferred.
     fn is_preferred_by(&self, t: &ScalarType) -> bool {
         if let Some(pt) = TypeCategory::from_type(t).preferred_type() {
             *self == pt
@@ -117,12 +178,12 @@ impl ParamType {
 
 impl PartialEq<ScalarType> for ParamType {
     fn eq(&self, other: &ScalarType) -> bool {
-        use ScalarType::*;
         match (self, other) {
+            (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
+            // Pseudotypes do not equal concrete types.
             (ParamType::StringAny, _)
             | (ParamType::ExplicitStringAny, _)
             | (ParamType::JsonbAny, _) => false,
-            (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
         }
     }
 }
@@ -268,25 +329,6 @@ impl<'a> ArgImplementationMatcher<'a> {
         })
     }
 
-    /// Returns a `FuncImpl` if `types` matches an implementation's parameters.
-    ///
-    /// Note that `types` must be the caller's argument's types to preserve
-    /// Decimal scale and precision, which are used in `Self::saturate_decimals`.
-    fn get_implementation(&self, types: &[ScalarType]) -> Option<FuncImpl> {
-        let matching_impls: Vec<&FuncImpl> = self
-            .impls
-            .iter()
-            .filter(|i| i.params.match_scalartypes(types))
-            .collect();
-
-        if matching_impls.len() == 1 {
-            let f = Self::saturate_decimals(matching_impls[0], types);
-            Some(f)
-        } else {
-            None
-        }
-    }
-
     /// Finds an exact match based on the arguments, or, if no exact match,
     /// finds the best match available. Patterned after [PostgreSQL's type
     /// conversion matching algorithm][pgparser].
@@ -305,7 +347,14 @@ impl<'a> ArgImplementationMatcher<'a> {
         // Check for exact match.
         if all_types_known {
             let types: Vec<_> = types.iter().map(|t| t.clone().unwrap()).collect();
-            if let Some(func) = self.get_implementation(&types) {
+            let matching_impls: Vec<&FuncImpl> = self
+                .impls
+                .iter()
+                .filter(|i| i.params.match_scalartypes(&types))
+                .collect();
+
+            if matching_impls.len() == 1 {
+                let func = Self::saturate_decimals(matching_impls[0], &types);
                 return Ok(func);
             }
         }
@@ -541,6 +590,15 @@ impl<'a> ArgImplementationMatcher<'a> {
         use ScalarType::*;
 
         let mut f = f.clone();
+        // TODO(sploiselle): Add support for saturating decimals in other
+        // contexts.
+        if let ParamList::Exact(ref mut param_list) = f.params {
+            for (i, param) in param_list.iter_mut().enumerate() {
+                if let Plain(Decimal(..)) = param {
+                    *param = Plain(types[i].clone());
+                }
+            }
+        }
 
         f.op = match f.op {
             Unary(UnaryFunc::CeilDecimal(_)) => match types[0] {
@@ -565,15 +623,6 @@ impl<'a> ArgImplementationMatcher<'a> {
             },
             other => other,
         };
-        // TODO(sploiselle): Add support for saturating decimals in other
-        // contexts.
-        if let ParamList::Exact(ref mut param_list) = f.params {
-            for (i, param) in param_list.iter_mut().enumerate() {
-                if let Plain(Decimal(..)) = param {
-                    *param = Plain(types[i].clone());
-                }
-            }
-        }
 
         f
     }
@@ -657,19 +706,14 @@ macro_rules! params(
 /// Provides shorthand for inserting [`FuncImpl`]s into arbitrary `HashMap`s.
 macro_rules! insert_impl(
     ($hashmap:ident, $key:expr, $($params:expr => $op:expr),+) => {
-        let mut impls = vec![
+        let impls = vec![
             $(FuncImpl {
                 params: $params.into(),
                 op: $op.clone().into(),
             },)+
         ];
 
-        // Append existing impls to new impls.
-        if let Some(v) = $hashmap.get(&$key) {
-            impls.extend(v.to_vec());
-        }
-
-        $hashmap.insert($key, impls);
+        $hashmap.entry($key).or_default().extend(impls);
     };
 );
 
@@ -1133,33 +1177,6 @@ fn rescale_decimals_to_same(
         (_, _) => unreachable!(),
     }
 }
-
-// Concat cannot be easily generalized because it's implementations are:
-// ```
-// (!String, String) | (String, !String) | (String, String) | (Jsonb, Jsonb)
-// ```
-// Our framework doesn't support the concept of exclusionary parameters, and no
-// other functions currently require it, so we instead side-channel this
-// implementation.
-// fn concat_impl(ecx: &ExprContext, left: &Expr, right: &Expr) -> Result<ScalarExpr, failure::Error> {
-//     use ScalarType::*;
-//     let lexpr = super::query::plan_expr(ecx, left, Some(String))?;
-//     let ltype = ecx.scalar_type(&lexpr);
-//     let rexpr = super::query::plan_expr(ecx, right, Some(String))?;
-//     let rtype = ecx.scalar_type(&rexpr);
-
-//     match (&ltype, &rtype) {
-//         (Jsonb, Jsonb) => Ok(lexpr.call_binary(rexpr, BinaryFunc::JsonbConcat)),
-//         (String, _) | (_, String) => {
-//             let lexpr =
-//                 super::query::plan_cast_internal("||", ecx, lexpr, CastTo::Explicit(String))?;
-//             let rexpr =
-//                 super::query::plan_cast_internal("||", ecx, rexpr, CastTo::Explicit(String))?;
-//             Ok(lexpr.call_binary(rexpr, BinaryFunc::TextConcat))
-//         }
-//         (_, _) => bail!("no overload for {} || {}", ltype, rtype),
-//     }
-// }
 
 /// Plans a function compatible with the `BinaryOperator`.
 pub fn plan_binary_op<'a>(

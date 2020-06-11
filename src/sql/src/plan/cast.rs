@@ -18,7 +18,6 @@ use lazy_static::lazy_static;
 use repr::{ColumnType, Datum, ScalarType};
 
 use super::expr::{BinaryFunc, ScalarExpr, UnaryFunc};
-use super::func::ParamType;
 use super::query::ExprContext;
 
 /// Describes methods of planning a conversion between [`ScalarType`]s, which
@@ -414,78 +413,4 @@ pub fn determine_best_common_type(types: &[Option<ScalarType>]) -> Option<Scalar
     }
 
     None
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Mirrored from [PostgreSQL's `typcategory`][typcategory].
-///
-/// [typcategory]: https://www.postgresql.org/docs/9.6/catalog-pg-type.html#CATALOG-TYPCATEGORY-TABLE
-pub enum TypeCategory {
-    Bool,
-    DateTime,
-    Numeric,
-    Pseudo,
-    String,
-    Timespan,
-    UserDefined,
-}
-
-impl TypeCategory {
-    /// Extracted from PostgreSQL 9.6.
-    /// ```ignore
-    /// SELECT array_agg(typname), typcategory
-    /// FROM pg_catalog.pg_type
-    /// WHERE typname IN (
-    ///  'bool', 'bytea', 'date', 'float4', 'float8', 'int4', 'int8', 'interval', 'jsonb',
-    ///  'numeric', 'text', 'time', 'timestamp', 'timestamptz'
-    /// )
-    /// GROUP BY typcategory
-    /// ORDER BY typcategory;
-    /// ```
-    pub fn from_type(typ: &ScalarType) -> TypeCategory {
-        match typ {
-            ScalarType::Bool => TypeCategory::Bool,
-            ScalarType::Bytes | ScalarType::Jsonb | ScalarType::List(_) => {
-                TypeCategory::UserDefined
-            }
-            ScalarType::Date
-            | ScalarType::Time
-            | ScalarType::Timestamp
-            | ScalarType::TimestampTz => TypeCategory::DateTime,
-            ScalarType::Decimal(..)
-            | ScalarType::Float32
-            | ScalarType::Float64
-            | ScalarType::Int32
-            | ScalarType::Int64 => TypeCategory::Numeric,
-            ScalarType::Interval => TypeCategory::Timespan,
-            ScalarType::String => TypeCategory::String,
-        }
-    }
-
-    pub fn from_param(param: &ParamType) -> TypeCategory {
-        match param {
-            ParamType::StringAny | ParamType::ExplicitStringAny | ParamType::JsonbAny => {
-                TypeCategory::Pseudo
-            }
-            ParamType::Plain(s) => Self::from_type(s),
-        }
-    }
-
-    /// Extracted from PostgreSQL 9.6.
-    /// ```ignore
-    /// SELECT typcategory, typname, typispreferred
-    /// FROM pg_catalog.pg_type
-    /// WHERE typispreferred = true
-    /// ORDER BY typcategory;
-    /// ```
-    pub fn preferred_type(&self) -> Option<ScalarType> {
-        match self {
-            TypeCategory::Bool => Some(ScalarType::Bool),
-            TypeCategory::DateTime => Some(ScalarType::TimestampTz),
-            TypeCategory::Numeric => Some(ScalarType::Float64),
-            TypeCategory::String => Some(ScalarType::String),
-            TypeCategory::Timespan => Some(ScalarType::Interval),
-            TypeCategory::UserDefined | TypeCategory::Pseudo => None,
-        }
-    }
 }
