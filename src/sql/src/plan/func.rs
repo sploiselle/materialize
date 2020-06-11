@@ -18,7 +18,7 @@ use lazy_static::lazy_static;
 use repr::ScalarType;
 use sql_parser::ast::{BinaryOperator, Expr};
 
-use super::cast::{rescale_decimal, CastTo, TypeCategory};
+use super::cast::{rescale_decimal, CastContext, CastTo, TypeCategory};
 use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc, VariadicFunc};
 use super::query::{CoerceTo, ExprContext};
 use crate::unsupported;
@@ -95,13 +95,6 @@ pub enum ParamType {
     JsonbAny,
 }
 
-fn is_lhs_preferred_type_for_rhs(param_type: &ScalarType, arg_type: &ScalarType) -> bool {
-    match TypeCategory::from_type(&arg_type).preferred_type() {
-        Some(preferred_type) => &preferred_type == param_type,
-        _ => false,
-    }
-}
-
 impl ParamType {
     fn accepts(&self, t: &ScalarType) -> bool {
         use ScalarType::*;
@@ -110,6 +103,14 @@ impl ParamType {
             | (ParamType::ExplicitStringAny, _)
             | (ParamType::JsonbAny, _) => true,
             (ParamType::Plain(s), o) => s.desaturate() == o.desaturate(),
+        }
+    }
+
+    fn is_preferred_by(&self, t: &ScalarType) -> bool {
+        if let Some(pt) = TypeCategory::from_type(t).preferred_type() {
+            *self == pt
+        } else {
+            false
         }
     }
 }
@@ -337,25 +338,19 @@ impl<'a> ArgImplementationMatcher<'a> {
                                 valid_candidate = false;
                                 break;
                             }
-                            if is_lhs_preferred_type_for_rhs(&param_type.into(), raw_arg_type) {
+                            if param_type.is_preferred_by(raw_arg_type) {
                                 preferred_types += 1;
                             }
-
                             param_type.into()
                         }
                         None => {
-                            let s: ScalarType = param_type.into();
-                            if TypeCategory::from_param(&param_type)
-                                .preferred_type()
-                                .as_ref()
-                                == Some(&s)
-                            {
+                            let t: ScalarType = param_type.into();
+                            if param_type.is_preferred_by(&t) {
                                 preferred_types += 1;
                             }
-                            s
+                            t
                         }
                     };
-
                     resolved_types.push(arg);
                 }
 
@@ -529,7 +524,7 @@ impl<'a> ArgImplementationMatcher<'a> {
         if candidates.len() == 1 {
             let c = &candidates[0];
             if c.fimpl.params.match_scalartypes(&c.resolved_types) {
-                Ok(Some(c.fimpl.clone()))
+                Ok(Some(Self::saturate_decimals(c.fimpl, &c.resolved_types)))
             } else {
                 unreachable!("My last candidate cannot access my final impl")
             }
@@ -618,7 +613,7 @@ impl<'a> ArgImplementationMatcher<'a> {
             ParamType::ExplicitStringAny | ParamType::StringAny => Explicit(ScalarType::String),
         };
 
-        super::cast::get_cast(arg_type, &cast_to).is_some()
+        super::cast::get_cast(CastContext::Internal(self.ident), arg_type, &cast_to).is_some()
     }
 
     /// Generates `ScalarExpr` necessary to coerce `Expr` into the `ScalarType`
@@ -629,7 +624,7 @@ impl<'a> ArgImplementationMatcher<'a> {
         arg: CoercibleScalarExpr,
         typ: &ParamType,
     ) -> Result<ScalarExpr, failure::Error> {
-        use super::cast::CastTo::*;
+        use CastTo::*;
         let coerce_to = match typ {
             ParamType::Plain(s) => CoerceTo::Plain(s.clone()),
             ParamType::JsonbAny => CoerceTo::JsonbAny,
@@ -639,23 +634,16 @@ impl<'a> ArgImplementationMatcher<'a> {
         };
 
         let arg = super::query::plan_coerce(self.ecx, arg, coerce_to)?;
-        let to_typ = match typ {
-            ParamType::Plain(s) => Implicit(s.clone()),
-            ParamType::JsonbAny => JsonbAny,
-            ParamType::ExplicitStringAny => Explicit(ScalarType::String),
-            ParamType::StringAny => {
-                // This is the raison d'être for the distinction between
-                // `ExplicitStringAny` and `StringAny`: getting either implicit
-                // or explicit cast behavior out of casting boolean values to
-                // strings.
-                if self.ecx.scalar_type(&arg) == ScalarType::Bool {
-                    Implicit(ScalarType::String)
-                } else {
-                    Explicit(ScalarType::String)
-                }
-            }
+        let (ccx, to_typ) = match typ {
+            ParamType::Plain(s) => (CastContext::Internal(self.ident), Implicit(s.clone())),
+            ParamType::JsonbAny => (CastContext::CastFunc, JsonbAny),
+            ParamType::ExplicitStringAny => (CastContext::CastFunc, Explicit(ScalarType::String)),
+            ParamType::StringAny => (
+                CastContext::Internal(self.ident),
+                Explicit(ScalarType::String),
+            ),
         };
-        super::query::plan_cast_internal(self.ident, self.ecx, arg, to_typ)
+        super::query::plan_cast_internal(ccx, self.ecx, arg, to_typ)
     }
 }
 
@@ -1153,25 +1141,25 @@ fn rescale_decimals_to_same(
 // Our framework doesn't support the concept of exclusionary parameters, and no
 // other functions currently require it, so we instead side-channel this
 // implementation.
-fn concat_impl(ecx: &ExprContext, left: &Expr, right: &Expr) -> Result<ScalarExpr, failure::Error> {
-    use ScalarType::*;
-    let lexpr = super::query::plan_expr(ecx, left, Some(String))?;
-    let ltype = ecx.scalar_type(&lexpr);
-    let rexpr = super::query::plan_expr(ecx, right, Some(String))?;
-    let rtype = ecx.scalar_type(&rexpr);
+// fn concat_impl(ecx: &ExprContext, left: &Expr, right: &Expr) -> Result<ScalarExpr, failure::Error> {
+//     use ScalarType::*;
+//     let lexpr = super::query::plan_expr(ecx, left, Some(String))?;
+//     let ltype = ecx.scalar_type(&lexpr);
+//     let rexpr = super::query::plan_expr(ecx, right, Some(String))?;
+//     let rtype = ecx.scalar_type(&rexpr);
 
-    match (&ltype, &rtype) {
-        (Jsonb, Jsonb) => Ok(lexpr.call_binary(rexpr, BinaryFunc::JsonbConcat)),
-        (String, _) | (_, String) => {
-            let lexpr =
-                super::query::plan_cast_internal("||", ecx, lexpr, CastTo::Explicit(String))?;
-            let rexpr =
-                super::query::plan_cast_internal("||", ecx, rexpr, CastTo::Explicit(String))?;
-            Ok(lexpr.call_binary(rexpr, BinaryFunc::TextConcat))
-        }
-        (_, _) => bail!("no overload for {} || {}", ltype, rtype),
-    }
-}
+//     match (&ltype, &rtype) {
+//         (Jsonb, Jsonb) => Ok(lexpr.call_binary(rexpr, BinaryFunc::JsonbConcat)),
+//         (String, _) | (_, String) => {
+//             let lexpr =
+//                 super::query::plan_cast_internal("||", ecx, lexpr, CastTo::Explicit(String))?;
+//             let rexpr =
+//                 super::query::plan_cast_internal("||", ecx, rexpr, CastTo::Explicit(String))?;
+//             Ok(lexpr.call_binary(rexpr, BinaryFunc::TextConcat))
+//         }
+//         (_, _) => bail!("no overload for {} || {}", ltype, rtype),
+//     }
+// }
 
 /// Plans a function compatible with the `BinaryOperator`.
 pub fn plan_binary_op<'a>(

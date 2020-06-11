@@ -64,7 +64,7 @@ fn to_jsonb_any_string_cast(ecx: &ExprContext, e: ScalarExpr, _: CastTo) -> Scal
     let s = ecx.scalar_type(&e);
     let to = CastTo::Explicit(ScalarType::String);
 
-    let cast_op = get_cast(&s, &to).unwrap();
+    let cast_op = get_cast(CastContext::CastFunc, &s, &to).unwrap();
 
     cast_op
         .gen_expr(ecx, e, to)
@@ -76,7 +76,7 @@ fn to_jsonb_any_f64_cast(ecx: &ExprContext, e: ScalarExpr, _: CastTo) -> ScalarE
     let s = ecx.scalar_type(&e);
     let to = CastTo::Explicit(ScalarType::Float64);
 
-    let cast_op = get_cast(&s, &to).unwrap();
+    let cast_op = get_cast(CastContext::Internal(""), &s, &to).unwrap();
 
     cast_op
         .gen_expr(ecx, e, to)
@@ -85,8 +85,24 @@ fn to_jsonb_any_f64_cast(ecx: &ExprContext, e: ScalarExpr, _: CastTo) -> ScalarE
 
 // Cast `e` (`Jsonb`) to `Float64` and then to `cast_to`.
 fn from_jsonb_f64_cast(ecx: &ExprContext, e: ScalarExpr, cast_to: CastTo) -> ScalarExpr {
-    let from_f64_to_cast = get_cast(&ScalarType::Float64, &cast_to).unwrap();
+    let from_f64_to_cast =
+        get_cast(CastContext::Internal(""), &ScalarType::Float64, &cast_to).unwrap();
     from_f64_to_cast.gen_expr(ecx, e.call_unary(UnaryFunc::CastJsonbToFloat64), cast_to)
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+pub enum CastContext<'a> {
+    Internal(&'a str),
+    CastFunc,
+}
+
+impl<'a> fmt::Display for CastContext<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CastContext::Internal(func) => write!(f, "{}", func),
+            CastContext::CastFunc => write!(f, "CAST"),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
@@ -143,7 +159,6 @@ lazy_static! {
 
         casts! {
             // BOOL
-            (Bool, Implicit(String)) => CastBoolToStringImplicit,
             (Bool, Explicit(String)) => CastBoolToStringExplicit,
             (Bool, Explicit(Jsonb)) => CastJsonbOrNullToJsonb,
             (Bool, JsonbAny) => CastJsonbOrNullToJsonb,
@@ -307,8 +322,9 @@ lazy_static! {
 /// over allowing implicit or explicit casts using [`CastTo`].
 ///
 /// Use the returned [`CastOp`] with [`CastOp::gen_expr`].
-pub fn get_cast<'a>(from: &ScalarType, cast_to: &CastTo) -> Option<&'a CastOp> {
+pub fn get_cast<'a>(ccx: CastContext, from: &ScalarType, cast_to: &CastTo) -> Option<&'a CastOp> {
     use CastTo::*;
+    use UnaryFunc::*;
 
     if *from == cast_to.scalar_type() {
         return Some(&CastOp::F(noop_cast));
@@ -322,10 +338,15 @@ pub fn get_cast<'a>(from: &ScalarType, cast_to: &CastTo) -> Option<&'a CastOp> {
 
     let cast = VALID_CASTS.get(&(from.desaturate(), cast_to.clone()));
 
-    match (cast, cast_to) {
+    match (ccx, cast, cast_to) {
+        (CastContext::Internal(_), Some(CastOp::U(CastBoolToStringExplicit)), _) => {
+            Some(&CastOp::U(CastBoolToStringImplicit))
+        }
         // If no explicit implementation, look for an implicit one.
-        (None, CastTo::Explicit(t)) => VALID_CASTS.get(&(from.desaturate(), CastTo::Implicit(t))),
-        (c, _) => c,
+        (_, None, CastTo::Explicit(t)) => {
+            VALID_CASTS.get(&(from.desaturate(), CastTo::Implicit(t)))
+        }
+        (_, c, _) => c,
     }
 }
 
@@ -374,21 +395,20 @@ pub fn determine_best_common_type(types: &[Option<ScalarType>]) -> Option<Scalar
     // Determine best cast type among known types.
     if let Some(btt) = get_most_compatible_cast_type(known_types.clone()) {
         // Ensure this is a valid cast for all types.
-        if known_types
-            .iter()
-            .all(|t| get_cast(t, &CastTo::Implicit(btt.clone())).is_some())
-        {
+        if known_types.iter().all(|t| {
+            get_cast(CastContext::Internal(""), t, &CastTo::Implicit(btt.clone())).is_some()
+        }) {
             if let ScalarType::Decimal(_, _) = btt {
                 // Determine best decimal scale (i.e. largest).
                 let mut max_s = 0;
                 for t in known_types {
                     if let ScalarType::Decimal(_, s) = t {
                         max_s = std::cmp::max(s, max_s);
-                        return Some(ScalarType::Decimal(38, max_s));
-                    } else {
-                        return Some(btt);
                     }
                 }
+                return Some(ScalarType::Decimal(38, max_s));
+            } else {
+                return Some(btt);
             }
         }
     }
@@ -465,7 +485,7 @@ impl TypeCategory {
             TypeCategory::Numeric => Some(ScalarType::Float64),
             TypeCategory::String => Some(ScalarType::String),
             TypeCategory::Timespan => Some(ScalarType::Interval),
-            _ => None,
+            TypeCategory::UserDefined | TypeCategory::Pseudo => None,
         }
     }
 }
