@@ -15,7 +15,7 @@ use std::fmt;
 use std::time::SystemTime;
 
 use expr::{GlobalId, ScalarExpr};
-use repr::RelationDesc;
+use repr::{RelationDesc, RelationType};
 
 use crate::names::{DatabaseSpecifier, FullName, PartialName};
 use crate::plan::PlanContext;
@@ -147,6 +147,15 @@ pub trait CatalogItem {
     /// an index), it returns an error.
     fn desc(&self) -> Result<&RelationDesc, failure::Error>;
 
+    /// Returns a [`View`]'s or [`Source`]'s [`RelationType`]. Errors if called
+    /// on another type.
+    ///
+    /// Note that this potentially differs from the `RelationType` available
+    /// from `Self::desc`; when called on views, it returns the
+    /// `OptimizedRelationExpr`'s `RelationType`, rather the
+    /// `RelationDescription`'s `RelationType`.
+    fn relation_type(&self) -> Result<RelationType, failure::Error>;
+
     /// Returns the type of the catalog item.
     fn item_type(&self) -> CatalogItemType;
 
@@ -167,10 +176,6 @@ pub trait CatalogItem {
     /// Returns the index details associated with the catalog item, if the
     /// catalog item is an index.
     fn index_details(&self) -> Option<(&[ScalarExpr], GlobalId)>;
-
-    /// Returns a [`View`]'s or [`Source`]'s primary index keys. Errors if
-    /// called on another type.
-    fn primary_idx_keys(&self) -> Result<Vec<usize>, failure::Error>;
 }
 
 /// The type of a [`CatalogItem`].

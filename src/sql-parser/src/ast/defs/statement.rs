@@ -120,8 +120,8 @@ pub enum Statement {
         name: Option<Ident>,
         /// `ON` table or view name
         on_name: ObjectName,
-        /// Expressions that form part of the index key. If not included, will
-        /// create a "default" index using `on_name`'s primary index keys.
+        /// Expressions that form part of the index key. If not included, the
+        /// key_parts will be inferred from the named object.
         key_parts: Option<Vec<Expr>>,
         if_not_exists: bool,
     },

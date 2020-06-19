@@ -756,21 +756,16 @@ fn handle_create_index(
     scx: &StatementContext,
     mut stmt: Statement,
 ) -> Result<Plan, failure::Error> {
-    let (name, on_name, key_parts, if_not_exists) = match stmt {
+    let (name, on_name, key_parts, if_not_exists) = match &stmt {
         Statement::CreateIndex {
-            ref name,
-            ref on_name,
-            ref key_parts,
+            name,
+            on_name,
+            key_parts,
             if_not_exists,
-        } => (
-            name.clone(),
-            on_name.clone(),
-            key_parts.clone(),
-            if_not_exists,
-        ),
+        } => (name, on_name, key_parts, *if_not_exists),
         _ => unreachable!(),
     };
-    let on_name = scx.resolve_item(on_name)?;
+    let on_name = scx.resolve_item(on_name.clone())?;
     let catalog_entry = scx.catalog.get_item(&on_name);
 
     if CatalogItemType::View != catalog_entry.item_type()
@@ -785,14 +780,15 @@ fn handle_create_index(
 
     let on_desc = catalog_entry.desc()?;
 
-    let filled_key_parts = match &key_parts {
+    let filled_key_parts = match key_parts {
         Some(kp) => kp.to_vec(),
         None => {
             // `key_parts` is None if we're creating a "default" index, i.e.
             // creating the index as if the index had been created alongside the
             // view source, e.g. `CREATE MATERIALIZED...`
             catalog_entry
-                .primary_idx_keys()?
+                .relation_type()?
+                .default_key()
                 .iter()
                 .map(|i| match on_desc.get_unambiguous_name(*i) {
                     Some(n) => Expr::Identifier(vec![Ident::new(n.to_string())]),
@@ -807,7 +803,7 @@ fn handle_create_index(
         FullName {
             database: on_name.database.clone(),
             schema: on_name.schema.clone(),
-            item: normalize::ident(name),
+            item: normalize::ident(name.clone()),
         }
     } else {
         let mut idx_name_base = on_name.clone();
@@ -831,17 +827,16 @@ fn handle_create_index(
             i += 1;
             index_name = idx_name_base.clone();
             index_name.item += &i.to_string();
+            cat_schema_iter = scx.catalog.list_items(&on_name.database, &on_name.schema);
         }
 
         index_name
     };
 
     // Normalize `stmt`.
-    match stmt {
+    match &mut stmt {
         Statement::CreateIndex {
-            ref mut name,
-            ref mut key_parts,
-            ..
+            name, key_parts, ..
         } => {
             *name = Some(Ident::new(index_name.item.clone()));
             *key_parts = Some(filled_key_parts);

@@ -1508,14 +1508,11 @@ impl Parser {
             Some(name)
         };
         let on_name = self.parse_object_name()?;
-        let key_parts = if self.consume_token(&Token::LParen) {
-            if default_index {
-                return self.expected(
-                    self.peek_range(),
-                    "end of CREATE DEFAULT INDEX",
-                    self.peek_token(),
-                );
-            }
+
+        let key_parts = if default_index {
+            None
+        } else {
+            self.expect_token(&Token::LParen)?;
             if self.consume_token(&Token::RParen) {
                 Some(vec![])
             } else {
@@ -1527,8 +1524,6 @@ impl Parser {
                 self.expect_token(&Token::RParen)?;
                 Some(key_parts)
             }
-        } else {
-            None
         };
 
         Ok(Statement::CreateIndex {

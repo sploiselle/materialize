@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use dataflow_types::{SinkConnector, SinkConnectorBuilder, SourceConnector};
 use expr::{GlobalId, Id, IdHumanizer, OptimizedRelationExpr, ScalarExpr};
-use repr::{RelationDesc, Row};
+use repr::{RelationDesc, RelationType, Row};
 use sql::names::{DatabaseSpecifier, FullName, PartialName};
 use sql::plan::{Params, Plan, PlanContext};
 use transform::Optimizer;
@@ -1191,6 +1191,17 @@ impl sql::catalog::CatalogItem for CatalogEntry {
         Ok(self.desc()?)
     }
 
+    fn relation_type(&self) -> Result<RelationType, failure::Error> {
+        match self.item() {
+            CatalogItem::View(View { optimized_expr, .. }) => Ok(optimized_expr.as_ref().typ()),
+            CatalogItem::Source(Source { desc, .. }) => Ok(desc.typ().clone()),
+            _ => bail!(
+                "Can only get relation_type from View or Source, called on {:#?}",
+                self.item()
+            ),
+        }
+    }
+
     fn create_sql(&self) -> &str {
         match self.item() {
             CatalogItem::Source(Source { create_sql, .. }) => create_sql,
@@ -1232,18 +1243,5 @@ impl sql::catalog::CatalogItem for CatalogEntry {
 
     fn used_by(&self) -> &[GlobalId] {
         self.used_by()
-    }
-
-    fn primary_idx_keys(&self) -> Result<Vec<usize>, failure::Error> {
-        match self.item() {
-            CatalogItem::View(View { optimized_expr, .. }) => {
-                Ok(optimized_expr.as_ref().typ().get_primary_index_keys())
-            }
-            CatalogItem::Source(Source { desc, .. }) => Ok(desc.typ().get_primary_index_keys()),
-            _ => bail!(
-                "Can only get primary_idx_keys from View or Source, called on {:#?}",
-                self.item()
-            ),
-        }
     }
 }

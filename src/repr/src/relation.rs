@@ -120,9 +120,8 @@ impl RelationType {
         self.column_types.len()
     }
 
-    // Gets the keys used when creating a `primary_idx` on `self`. Note that
-    // these are not equivalent to "primary keys", in the RDBMS sense.
-    pub fn get_primary_index_keys(&self) -> Vec<usize> {
+    /// Gets the keys used when creating a default index.
+    pub fn default_key(&self) -> Vec<usize> {
         if let Some(keys) = self.keys.first() {
             keys.clone()
         } else {

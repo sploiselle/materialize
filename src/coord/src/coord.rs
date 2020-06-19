@@ -2393,7 +2393,7 @@ pub fn auto_generate_src_idx(
 ) -> catalog::Index {
     auto_generate_primary_idx(
         index_name,
-        &source.desc.typ().get_primary_index_keys(),
+        &source.desc.typ().default_key(),
         source_name,
         source_id,
         &source.desc,
@@ -2408,7 +2408,7 @@ pub fn auto_generate_view_idx(
 ) -> catalog::Index {
     auto_generate_primary_idx(
         index_name,
-        &view.optimized_expr.as_ref().typ().get_primary_index_keys(),
+        &view.optimized_expr.as_ref().typ().default_key(),
         view_name,
         view_id,
         &view.desc,
