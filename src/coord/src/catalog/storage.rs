@@ -351,6 +351,19 @@ impl Transaction<'_> {
         }
     }
 
+    pub fn rename_item(&self, name: &str, id: GlobalId) -> Result<(), Error> {
+        let n = self
+            .inner
+            .prepare_cached("UPDATE items SET name = ? WHERE gid = ?")?
+            .execute(params![name, SqlVal(id)])?;
+        assert!(n <= 1);
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(Error::new(ErrorKind::UnknownItem(id.to_string())))
+        }
+    }
+
     pub fn commit(self) -> Result<(), rusqlite::Error> {
         self.inner.commit()
     }

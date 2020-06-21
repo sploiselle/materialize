@@ -113,7 +113,8 @@ pub fn describe_statement(
         | Statement::SetVariable { .. }
         | Statement::StartTransaction { .. }
         | Statement::Rollback { .. }
-        | Statement::Commit { .. } => (None, vec![]),
+        | Statement::Commit { .. }
+        | Statement::AlterObjectRename { .. } => (None, vec![]),
 
         Statement::Explain {
             stage, explainee, ..
@@ -292,9 +293,45 @@ pub fn handle_statement(
             explainee,
             options,
         } => handle_explain(scx, stage, explainee, options, params),
+        Statement::AlterObjectRename {
+            object_type,
+            if_exists,
+            name,
+            to_item_name,
+        } => handle_alter_object_rename(scx, object_type, if_exists, name, to_item_name),
 
         _ => bail!("unsupported SQL statement: {:?}", stmt),
     }
+}
+
+fn handle_alter_object_rename(
+    scx: &StatementContext,
+    object_type: ObjectType,
+    if_exists: bool,
+    name: ObjectName,
+    to_item_name: Ident,
+) -> Result<Plan, failure::Error> {
+    let id = match scx.resolve_item(name.clone()) {
+        Ok(from_name) => {
+            let entry = scx.catalog.get_item(&from_name);
+            if entry.item_type() != object_type {
+                bail!("{} is a {} not a {}", name, entry.item_type(), object_type)
+            }
+            Some(entry.id())
+        }
+        Err(_) if if_exists => {
+            // TODO(benesch): generate a notice indicating this
+            // item does not exist.
+            None
+        }
+        Err(err) => return Err(err),
+    };
+
+    Ok(Plan::AlterItemRename {
+        id,
+        to_name: to_item_name.to_string(),
+        object_type,
+    })
 }
 
 fn handle_set_variable(

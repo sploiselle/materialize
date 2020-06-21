@@ -146,6 +146,11 @@ pub enum Plan {
         show_queryable: bool,
         limit_materialized: bool,
     },
+    AlterItemRename {
+        id: Option<GlobalId>,
+        to_name: String,
+        object_type: ObjectType,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -241,6 +241,11 @@ impl CatalogEntry {
         &self.item
     }
 
+    /// Returns a `&mut CatalogItem` for the item associated with this catalog entry.
+    pub fn item_mut(&mut self) -> &mut CatalogItem {
+        &mut self.item
+    }
+
     /// Returns the global ID of this catalog entry.
     pub fn id(&self) -> GlobalId {
         self.id
@@ -734,6 +739,10 @@ impl Catalog {
                 schema_name: String,
             },
             DropItem(GlobalId),
+            RenameItem {
+                id: GlobalId,
+                to_name: String,
+            },
         }
 
         let temporary_ids = self.temporary_ids(&ops)?;
@@ -821,6 +830,10 @@ impl Catalog {
                         tx.remove_item(id)?;
                     }
                     Action::DropItem(id)
+                }
+                Op::RenameItem { id, to_name } => {
+                    tx.rename_item(&to_name, id)?;
+                    Action::RenameItem { id, to_name }
                 }
             })
         }
@@ -918,6 +931,49 @@ impl Catalog {
                         indexes.remove(i);
                     }
                     OpStatus::DroppedItem(metadata)
+                }
+
+                Action::RenameItem { id, to_name } => {
+                    let mut entry = self.by_id.remove(&id).unwrap();
+
+                    let from_name = entry.name().clone();
+                    let from = &from_name.to_string();
+                    let mut to_full_name = from_name.clone();
+                    to_full_name.item = to_name;
+
+                    entry.name = to_full_name;
+                    let to = &entry.name.to_string();
+
+                    println!("from {:?} to {:?}", from, to);
+
+                    for id in entry.used_by() {
+                        let dependent_item = self.by_id.get_mut(&id).unwrap();
+                        match dependent_item.item_mut() {
+                            CatalogItem::Index(Index { create_sql, .. }) => {
+                                *create_sql = create_sql.replace(from, to);
+                            }
+                            CatalogItem::Sink(Sink { create_sql, .. }) => {
+                                *create_sql = create_sql.replace(from, to);
+                            }
+                            CatalogItem::Source(Source { create_sql, .. }) => {
+                                *create_sql = create_sql.replace(from, to);
+                            }
+                            CatalogItem::View(View { create_sql, .. }) => {
+                                *create_sql = create_sql.replace(from, to);
+                            }
+                        }
+                    }
+
+                    let conn_id = entry.item().conn_id().unwrap_or(SYSTEM_CONN_ID);
+                    let schema_items = &mut self
+                        .get_schema_mut(&entry.name.database, &entry.name.schema, conn_id)
+                        .expect("catalog out of sync")
+                        .items;
+                    schema_items.remove(&from_name.item);
+                    schema_items.insert(entry.name.item.clone(), entry.id);
+                    self.by_id.insert(id, entry);
+
+                    OpStatus::RenamedItem
                 }
             })
             .collect())
@@ -1051,6 +1107,10 @@ pub enum Op {
     /// IDs come from the output of `plan_remove`; otherwise consistency rules
     /// may be violated.
     DropItem(GlobalId),
+    RenameItem {
+        id: GlobalId,
+        to_name: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1061,6 +1121,7 @@ pub enum OpStatus {
     DroppedDatabase,
     DroppedSchema,
     DroppedItem(CatalogEntry),
+    RenamedItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
