@@ -20,7 +20,7 @@
 
 use crate::ast::display::{self, AstDisplay, AstFormatter};
 use crate::ast::{
-    AlterTableOperation, ColumnDef, Connector, Envelope, Expr, Format, Ident, ObjectName, Query,
+    AlterOperation, ColumnDef, Connector, Envelope, Expr, Format, Ident, ObjectName, Query,
     TableConstraint, Value,
 };
 
@@ -125,11 +125,11 @@ pub enum Statement {
         key_parts: Option<Vec<Expr>>,
         if_not_exists: bool,
     },
-    /// `ALTER TABLE`
-    AlterTable {
-        /// Table name
+    /// `ALTER...`
+    Alter {
+        object_type: ObjectType,
         name: ObjectName,
-        operation: AlterTableOperation,
+        operation: AlterOperation,
     },
     DropDatabase {
         name: Ident,
@@ -500,8 +500,14 @@ impl AstDisplay for Statement {
                     f.write_str(")");
                 }
             }
-            Statement::AlterTable { name, operation } => {
-                f.write_str("ALTER TABLE ");
+            Statement::Alter {
+                object_type,
+                name,
+                operation,
+            } => {
+                f.write_str("ALTER ");
+                f.write_node(object_type);
+                f.write_str(" ");
                 f.write_node(&name);
                 f.write_str(" ");
                 f.write_node(operation);

@@ -1787,28 +1787,45 @@ impl Parser {
     }
 
     fn parse_alter(&mut self) -> Result<Statement, ParserError> {
-        self.expect_keyword("TABLE")?;
-        let _ = self.parse_keyword("ONLY");
-        let table_name = self.parse_object_name()?;
-        let operation = if self.parse_keyword("ADD") {
-            if let Some(constraint) = self.parse_optional_table_constraint()? {
-                AlterTableOperation::AddConstraint(constraint)
-            } else {
-                return self.expected(
-                    self.peek_range(),
-                    "a constraint in ALTER TABLE .. ADD",
-                    self.peek_token(),
+        use ObjectType::*;
+        let object_type = match self
+            .expect_one_of_keywords(&["SCHEMA", "TABLE", "VIEW", "SOURCE", "SINK", "INDEX"])?
+        {
+            "SCHEMA" => Schema,
+            "TABLE" => Table,
+            "VIEW" => View,
+            "SOURCE" => Source,
+            "SINK" => Sink,
+            "INDEX" => Index,
+            _ => unreachable!(),
+        };
+
+        let name = self.parse_object_name()?;
+
+        let operation = match (self.expect_one_of_keywords(&["ADD"])?, object_type) {
+            ("ADD", Table) => {
+                if let Some(constraint) = self.parse_optional_table_constraint()? {
+                    AlterOperation::AddConstraint(constraint)
+                } else {
+                    return self.expected(
+                        self.peek_range(),
+                        "a constraint in ALTER TABLE ... ADD",
+                        self.peek_token(),
+                    );
+                }
+            }
+            (keyword, _) => {
+                return parser_err!(
+                    self,
+                    self.peek_prev_range(),
+                    format!("ALTER {} ... does not support {}", object_type, keyword)
                 );
             }
-        } else {
-            return self.expected(
-                self.peek_range(),
-                "ADD after ALTER TABLE",
-                self.peek_token(),
-            );
         };
-        Ok(Statement::AlterTable {
-            name: table_name,
+
+        Ok(Statement::Alter {
+            object_type,
+            name,
             operation,
         })
     }
