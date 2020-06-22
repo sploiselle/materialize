@@ -241,11 +241,6 @@ impl CatalogEntry {
         &self.item
     }
 
-    /// Returns a `&mut CatalogItem` for the item associated with this catalog entry.
-    pub fn item_mut(&mut self) -> &mut CatalogItem {
-        &mut self.item
-    }
-
     /// Returns the global ID of this catalog entry.
     pub fn id(&self) -> GlobalId {
         self.id
@@ -332,6 +327,7 @@ impl Catalog {
                 static ref LOGGING_ERROR: Regex =
                     Regex::new("unknown catalog item 'mz_catalog.[^']*'").unwrap();
             }
+            println!("id {:?}\nname {:?}", id, name);
             let item = match catalog.deserialize_item(def) {
                 Ok(item) => item,
                 Err(e) if LOGGING_ERROR.is_match(&e.to_string()) => {
@@ -739,9 +735,10 @@ impl Catalog {
                 schema_name: String,
             },
             DropItem(GlobalId),
-            RenameItem {
+            UpdateItem {
                 id: GlobalId,
-                to_name: String,
+                name: FullName,
+                item: CatalogItem,
             },
         }
 
@@ -750,11 +747,11 @@ impl Catalog {
         let mut storage = self.storage();
         let mut tx = storage.transaction()?;
         for op in ops {
-            actions.push(match op {
-                Op::CreateDatabase { name } => Action::CreateDatabase {
+            let mut ops = match op {
+                Op::CreateDatabase { name } => vec![Action::CreateDatabase {
                     id: tx.insert_database(&name)?,
                     name,
-                },
+                }],
                 Op::CreateSchema {
                     database_name,
                     schema_name,
@@ -768,11 +765,11 @@ impl Catalog {
                             return Err(Error::new(ErrorKind::ReadOnlySystemSchema(schema_name)));
                         }
                     };
-                    Action::CreateSchema {
+                    vec![Action::CreateSchema {
                         id: tx.insert_schema(database_id, &schema_name)?,
                         database_name,
                         schema_name,
-                    }
+                    }]
                 }
                 Op::CreateItem { id, name, item } => {
                     if item.is_temporary() {
@@ -803,11 +800,11 @@ impl Catalog {
                         tx.insert_item(id, schema_id, &name.item, &serialized_item)?;
                     }
 
-                    Action::CreateItem { id, name, item }
+                    vec![Action::CreateItem { id, name, item }]
                 }
                 Op::DropDatabase { name } => {
                     tx.remove_database(&name)?;
-                    Action::DropDatabase { name }
+                    vec![Action::DropDatabase { name }]
                 }
                 Op::DropSchema {
                     database_name,
@@ -820,22 +817,90 @@ impl Catalog {
                         }
                     };
                     tx.remove_schema(database_id, &schema_name)?;
-                    Action::DropSchema {
+                    vec![Action::DropSchema {
                         database_name,
                         schema_name,
-                    }
+                    }]
                 }
                 Op::DropItem(id) => {
                     if !self.get_by_id(&id).item().is_temporary() {
                         tx.remove_item(id)?;
                     }
-                    Action::DropItem(id)
+                    vec![Action::DropItem(id)]
                 }
                 Op::RenameItem { id, to_name } => {
+                    fn update_item_create_sql(
+                        item: &CatalogItem,
+                        from: &str,
+                        to: &str,
+                    ) -> CatalogItem {
+                        match item {
+                            CatalogItem::Index(i) => {
+                                let mut i = i.clone();
+                                println!("From {:?}", i.create_sql);
+                                i.create_sql = i.create_sql.replace(from, to);
+                                println!("To {:?}", i.create_sql);
+                                CatalogItem::Index(i)
+                            }
+                            CatalogItem::Sink(s) => {
+                                let mut s = s.clone();
+                                println!("From {:?}", s.create_sql);
+                                s.create_sql = s.create_sql.replace(from, to);
+                                println!("To {:?}", s.create_sql);
+                                CatalogItem::Sink(s)
+                            }
+                            CatalogItem::Source(s) => {
+                                let mut s = s.clone();
+                                println!("From {:?}", s.create_sql);
+                                s.create_sql = s.create_sql.replace(from, to);
+                                println!("To {:?}", s.create_sql);
+                                CatalogItem::Source(s)
+                            }
+                            CatalogItem::View(v) => {
+                                let mut v = v.clone();
+                                println!("From {:?}", v.create_sql);
+                                v.create_sql = v.create_sql.replace(from, to);
+                                println!("To {:?}", v.create_sql);
+                                CatalogItem::View(v)
+                            }
+                        }
+                    };
+
+                    let mut total_actions = Vec::new();
+
+                    let entry = self.by_id.get(&id).unwrap();
                     tx.rename_item(&to_name, id)?;
-                    Action::RenameItem { id, to_name }
+                    let from = &entry.name.to_string();
+                    let mut to_full_name = entry.name.clone();
+                    to_full_name.item = to_name;
+                    let to = &to_full_name.to_string();
+
+                    let item = update_item_create_sql(&entry.item, from, to);
+                    let serialized_item = self.serialize_item(&item);
+                    tx.update_item_definition(&serialized_item, id.clone())?;
+
+                    total_actions.push(Action::UpdateItem {
+                        id,
+                        name: to_full_name,
+                        item,
+                    });
+
+                    for id in entry.used_by() {
+                        println!("Modifying dependent object {:?}", id);
+                        let dependent_item = self.by_id.get(&id).unwrap();
+                        let updated_item = update_item_create_sql(&dependent_item.item, from, to);
+                        let serialized_item = self.serialize_item(&dependent_item.item);
+                        tx.update_item_definition(&serialized_item, id.clone())?;
+                        total_actions.push(Action::UpdateItem {
+                            id: id.clone(),
+                            name: dependent_item.name.clone(),
+                            item: updated_item,
+                        });
+                    }
+                    total_actions
                 }
-            })
+            };
+            actions.append(&mut ops);
         }
         tx.commit()?;
         drop(storage); // release immutable borrow on `self` so we can borrow mutably below
@@ -933,47 +998,20 @@ impl Catalog {
                     OpStatus::DroppedItem(metadata)
                 }
 
-                Action::RenameItem { id, to_name } => {
+                Action::UpdateItem { id, name, item } => {
                     let mut entry = self.by_id.remove(&id).unwrap();
-
-                    let from_name = entry.name().clone();
-                    let from = &from_name.to_string();
-                    let mut to_full_name = from_name.clone();
-                    to_full_name.item = to_name;
-
-                    entry.name = to_full_name;
-                    let to = &entry.name.to_string();
-
-                    println!("from {:?} to {:?}", from, to);
-
-                    for id in entry.used_by() {
-                        let dependent_item = self.by_id.get_mut(&id).unwrap();
-                        match dependent_item.item_mut() {
-                            CatalogItem::Index(Index { create_sql, .. }) => {
-                                *create_sql = create_sql.replace(from, to);
-                            }
-                            CatalogItem::Sink(Sink { create_sql, .. }) => {
-                                *create_sql = create_sql.replace(from, to);
-                            }
-                            CatalogItem::Source(Source { create_sql, .. }) => {
-                                *create_sql = create_sql.replace(from, to);
-                            }
-                            CatalogItem::View(View { create_sql, .. }) => {
-                                *create_sql = create_sql.replace(from, to);
-                            }
-                        }
-                    }
-
                     let conn_id = entry.item().conn_id().unwrap_or(SYSTEM_CONN_ID);
                     let schema_items = &mut self
                         .get_schema_mut(&entry.name.database, &entry.name.schema, conn_id)
                         .expect("catalog out of sync")
                         .items;
-                    schema_items.remove(&from_name.item);
-                    schema_items.insert(entry.name.item.clone(), entry.id);
-                    self.by_id.insert(id, entry);
+                    schema_items.remove(&entry.name.item);
+                    entry.name = name;
+                    entry.item = item;
+                    schema_items.insert(entry.name.item.clone(), id);
+                    self.by_id.insert(id.clone(), entry);
 
-                    OpStatus::RenamedItem
+                    OpStatus::UpdatedItem(id)
                 }
             })
             .collect())
@@ -1018,7 +1056,9 @@ impl Catalog {
             Some(eval_env) => eval_env.into(),
         };
         let stmt = sql::parse::parse(create_sql)?.into_element();
+        println!("stmt {:?}", stmt);
         let plan = sql::plan::plan(&pcx, &self.for_system_session(), stmt, &params)?;
+        println!("plan {:?}", plan);
         Ok(match plan {
             Plan::CreateSource { source, .. } => CatalogItem::Source(Source {
                 create_sql: source.create_sql,
@@ -1121,7 +1161,7 @@ pub enum OpStatus {
     DroppedDatabase,
     DroppedSchema,
     DroppedItem(CatalogEntry),
-    RenamedItem,
+    UpdatedItem(GlobalId),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

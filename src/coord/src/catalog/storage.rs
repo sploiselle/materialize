@@ -364,6 +364,20 @@ impl Transaction<'_> {
         }
     }
 
+    pub fn update_item_definition(&self, item: &[u8], id: GlobalId) -> Result<(), Error> {
+        println!("Updating {:?} ", id);
+        let n = self
+            .inner
+            .prepare_cached("UPDATE items SET definition = ? WHERE gid = ?")?
+            .execute(params![item, SqlVal(id)])?;
+        assert!(n <= 1);
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(Error::new(ErrorKind::UnknownItem(id.to_string())))
+        }
+    }
+
     pub fn commit(self) -> Result<(), rusqlite::Error> {
         self.inner.commit()
     }
