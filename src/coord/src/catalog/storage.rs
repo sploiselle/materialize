@@ -351,25 +351,12 @@ impl Transaction<'_> {
         }
     }
 
-    pub fn rename_item(&self, name: &str, id: GlobalId) -> Result<(), Error> {
-        let n = self
-            .inner
-            .prepare_cached("UPDATE items SET name = ? WHERE gid = ?")?
-            .execute(params![name, SqlVal(id)])?;
-        assert!(n <= 1);
-        if n == 1 {
-            Ok(())
-        } else {
-            Err(Error::new(ErrorKind::UnknownItem(id.to_string())))
-        }
-    }
-
-    pub fn update_item_definition(&self, item: &[u8], id: GlobalId) -> Result<(), Error> {
+    pub fn update_item(&self, id: GlobalId, item_name: &str, item: &[u8]) -> Result<(), Error> {
         println!("Updating {:?} ", id);
         let n = self
             .inner
-            .prepare_cached("UPDATE items SET definition = ? WHERE gid = ?")?
-            .execute(params![item, SqlVal(id)])?;
+            .prepare_cached("UPDATE items SET name = ?, definition = ? WHERE gid = ?")?
+            .execute(params![item_name, item, SqlVal(id)])?;
         assert!(n <= 1);
         if n == 1 {
             Ok(())

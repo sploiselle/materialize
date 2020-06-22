@@ -829,6 +829,9 @@ impl Catalog {
                     vec![Action::DropItem(id)]
                 }
                 Op::RenameItem { id, to_name } => {
+                    fn escape_name(n: &FullName) -> String {
+                        format!("\"{}\".\"{}\".\"{}\"", n.database, n.schema, n.item)
+                    }
                     fn update_item_create_sql(
                         item: &CatalogItem,
                         from: &str,
@@ -837,30 +840,22 @@ impl Catalog {
                         match item {
                             CatalogItem::Index(i) => {
                                 let mut i = i.clone();
-                                println!("From {:?}", i.create_sql);
                                 i.create_sql = i.create_sql.replace(from, to);
-                                println!("To {:?}", i.create_sql);
                                 CatalogItem::Index(i)
                             }
                             CatalogItem::Sink(s) => {
                                 let mut s = s.clone();
-                                println!("From {:?}", s.create_sql);
                                 s.create_sql = s.create_sql.replace(from, to);
-                                println!("To {:?}", s.create_sql);
                                 CatalogItem::Sink(s)
                             }
                             CatalogItem::Source(s) => {
                                 let mut s = s.clone();
-                                println!("From {:?}", s.create_sql);
                                 s.create_sql = s.create_sql.replace(from, to);
-                                println!("To {:?}", s.create_sql);
                                 CatalogItem::Source(s)
                             }
                             CatalogItem::View(v) => {
                                 let mut v = v.clone();
-                                println!("From {:?}", v.create_sql);
                                 v.create_sql = v.create_sql.replace(from, to);
-                                println!("To {:?}", v.create_sql);
                                 CatalogItem::View(v)
                             }
                         }
@@ -869,16 +864,15 @@ impl Catalog {
                     let mut total_actions = Vec::new();
 
                     let entry = self.by_id.get(&id).unwrap();
-                    tx.rename_item(&to_name, id)?;
-                    let from = &entry.name.to_string();
                     let mut to_full_name = entry.name.clone();
                     to_full_name.item = to_name;
-                    let to = &to_full_name.to_string();
+                    let from = &escape_name(&entry.name);
+                    let to = &escape_name(&to_full_name);
 
                     let item = update_item_create_sql(&entry.item, from, to);
                     let serialized_item = self.serialize_item(&item);
-                    tx.update_item_definition(&serialized_item, id.clone())?;
 
+                    tx.update_item(id.clone(), &to_full_name.item, &serialized_item)?;
                     total_actions.push(Action::UpdateItem {
                         id,
                         name: to_full_name,
@@ -886,11 +880,11 @@ impl Catalog {
                     });
 
                     for id in entry.used_by() {
-                        println!("Modifying dependent object {:?}", id);
                         let dependent_item = self.by_id.get(&id).unwrap();
                         let updated_item = update_item_create_sql(&dependent_item.item, from, to);
-                        let serialized_item = self.serialize_item(&dependent_item.item);
-                        tx.update_item_definition(&serialized_item, id.clone())?;
+                        let serialized_item = self.serialize_item(&updated_item);
+
+                        tx.update_item(id.clone(), &dependent_item.name.item, &serialized_item)?;
                         total_actions.push(Action::UpdateItem {
                             id: id.clone(),
                             name: dependent_item.name.clone(),
