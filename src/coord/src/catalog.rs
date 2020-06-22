@@ -829,8 +829,10 @@ impl Catalog {
                     vec![Action::DropItem(id)]
                 }
                 Op::RenameItem { id, to_name } => {
+                    // Identifiers are written in this format, irrespective of
+                    // whether or not the double quotes are necessary.
                     fn escape_name(n: &FullName) -> String {
-                        format!("\"{}\".\"{}\".\"{}\"", n.database, n.schema, n.item)
+                        format!(r#""{}"."{}"."{}""#, n.database, n.schema, n.item)
                     }
                     fn update_item_create_sql(
                         item: &CatalogItem,
@@ -840,32 +842,68 @@ impl Catalog {
                         match item {
                             CatalogItem::Index(i) => {
                                 let mut i = i.clone();
-                                i.create_sql = i.create_sql.replace(from, to);
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
                                 CatalogItem::Index(i)
                             }
-                            CatalogItem::Sink(s) => {
-                                let mut s = s.clone();
-                                s.create_sql = s.create_sql.replace(from, to);
-                                CatalogItem::Sink(s)
+                            CatalogItem::Sink(i) => {
+                                let mut i = i.clone();
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
+                                CatalogItem::Sink(i)
                             }
-                            CatalogItem::Source(s) => {
-                                let mut s = s.clone();
-                                s.create_sql = s.create_sql.replace(from, to);
-                                CatalogItem::Source(s)
+                            CatalogItem::Source(i) => {
+                                let mut i = i.clone();
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
+                                CatalogItem::Source(i)
                             }
-                            CatalogItem::View(v) => {
-                                let mut v = v.clone();
-                                v.create_sql = v.create_sql.replace(from, to);
-                                CatalogItem::View(v)
+                            CatalogItem::View(i) => {
+                                let mut i = i.clone();
+                                println!("FOR A VIEW CREATE SQL IS {:?}", i);
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
+                                CatalogItem::View(i)
                             }
                         }
                     };
+
+                    // Updates all identifier-located references (i.e. not in
+                    // strings) of `from` to `to`.
+                    fn rewrite_create_sql(original: String, from: &str, to: &str) -> String {
+                        lazy_static! {
+                            // Find all SQL strings, which are single quoted.
+                            // Works with single-quote escaped SQL strings,
+                            // which are escaped with `''`, so we always have an
+                            // even number of single-quotes.
+                            static ref SQL_STRING_RE: Regex =
+                                regex::Regex::new(r"(?s)('.*?')(?-s)").unwrap();
+                        }
+                        // Find and store all matches of the existing strings in
+                        // the CREATE SQL statement.
+                        let mut found_strings = Vec::new();
+                        for mat in SQL_STRING_RE.find_iter(&original) {
+                            found_strings.push(original[mat.start()..mat.end()].to_string());
+                        }
+
+                        // Replace all strings with empty string
+                        let mut rewritten_string =
+                            SQL_STRING_RE.replace_all(&original, "''").to_string();
+                        // Replace old identifier with new identifier
+                        rewritten_string = rewritten_string.replace(from, to);
+
+                        // Iterate over stored strings and splice them back in
+                        for original_string in found_strings {
+                            rewritten_string = rewritten_string.replacen("''", &original_string, 1);
+                        }
+                        rewritten_string
+                    }
 
                     let mut total_actions = Vec::new();
 
                     let entry = self.by_id.get(&id).unwrap();
                     let mut to_full_name = entry.name.clone();
                     to_full_name.item = to_name;
+
+                    // Find all places where non-column object identifiers are
+                    // valid. Note that this will definitely need to change if
+                    // we support things like index hints.
                     let from = &escape_name(&entry.name);
                     let to = &escape_name(&to_full_name);
 

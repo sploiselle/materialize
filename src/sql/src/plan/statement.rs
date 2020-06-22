@@ -317,6 +317,12 @@ fn handle_alter_object_rename(
             if entry.item_type() != object_type {
                 bail!("{} is a {} not a {}", name, entry.item_type(), object_type)
             }
+            let mut proposed_name = name.0.clone();
+            let last = proposed_name.last_mut().unwrap();
+            *last = to_item_name.clone();
+            if let Ok(_) = scx.resolve_item(ObjectName(proposed_name)) {
+                bail!("{} is already taken by item in schema", to_item_name)
+            }
             Some(entry.id())
         }
         Err(_) if if_exists => {

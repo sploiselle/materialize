@@ -1787,22 +1787,19 @@ impl Parser {
     }
 
     fn parse_alter(&mut self) -> Result<Statement, ParserError> {
-        use ObjectType::*;
-        let object_type =
-            match self.expect_one_of_keywords(&["SCHEMA", "VIEW", "SOURCE", "SINK", "INDEX"])? {
-                "SCHEMA" => Schema,
-                "VIEW" => View,
-                "SOURCE" => Source,
-                "SINK" => Sink,
-                "INDEX" => Index,
-                _ => unreachable!(),
-            };
+        let object_type = match self.expect_one_of_keywords(&["VIEW", "SOURCE", "SINK", "INDEX"])? {
+            "VIEW" => ObjectType::View,
+            "SOURCE" => ObjectType::Source,
+            "SINK" => ObjectType::Sink,
+            "INDEX" => ObjectType::Index,
+            _ => unreachable!(),
+        };
 
         let if_exists = self.parse_if_exists()?;
 
         let name = self.parse_object_name()?;
 
-        // Right now, the only `ALTER` clause we support is `RENAME`.
+        // `RENAME` is the only `ALTER` clause we currently support.
         self.expect_keywords(&["RENAME", "TO"])?;
 
         let to_item_name = self.parse_identifier()?;
