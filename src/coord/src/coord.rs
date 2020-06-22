@@ -50,7 +50,7 @@ use sql::ast::{ExplainOptions, ObjectType, Statement};
 use sql::catalog::Catalog as _;
 use sql::names::{DatabaseSpecifier, FullName};
 use sql::plan::{MutationKind, Params, Plan, PlanContext};
-use sql_parser::ast::ExplainStage;
+use sql_parser::ast::{display::AstDisplay, ExplainStage};
 use transform::Optimizer;
 
 use crate::catalog::{self, Catalog, CatalogItem, SinkConnectorState};
@@ -2437,7 +2437,7 @@ fn index_sql(
         ),
         if_not_exists: false,
     }
-    .to_string()
+    .to_ast_string_stable()
 }
 
 fn open_catalog(
