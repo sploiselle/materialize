@@ -829,44 +829,51 @@ impl Catalog {
                     vec![Action::DropItem(id)]
                 }
                 Op::RenameItem { id, to_name } => {
-                    // Identifiers are written in this format, irrespective of
-                    // whether or not the double quotes are necessary.
-                    fn escape_name(n: &FullName) -> String {
-                        format!(r#""{}"."{}"."{}""#, n.database, n.schema, n.item)
-                    }
                     fn update_item_create_sql(
                         item: &CatalogItem,
-                        from: &str,
-                        to: &str,
-                    ) -> CatalogItem {
+                        from: &FullName,
+                        to: &FullName,
+                    ) -> Result<CatalogItem, String> {
                         match item {
                             CatalogItem::Index(i) => {
                                 let mut i = i.clone();
-                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
-                                CatalogItem::Index(i)
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to)?;
+                                Ok(CatalogItem::Index(i))
                             }
                             CatalogItem::Sink(i) => {
                                 let mut i = i.clone();
-                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
-                                CatalogItem::Sink(i)
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to)?;
+                                Ok(CatalogItem::Sink(i))
                             }
                             CatalogItem::Source(i) => {
                                 let mut i = i.clone();
-                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
-                                CatalogItem::Source(i)
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to)?;
+                                Ok(CatalogItem::Source(i))
                             }
                             CatalogItem::View(i) => {
                                 let mut i = i.clone();
                                 println!("FOR A VIEW CREATE SQL IS {:?}", i);
-                                i.create_sql = rewrite_create_sql(i.create_sql, from, to);
-                                CatalogItem::View(i)
+                                i.create_sql = rewrite_create_sql(i.create_sql, from, to)?;
+                                Ok(CatalogItem::View(i))
                             }
                         }
                     };
 
                     // Updates all identifier-located references (i.e. not in
                     // strings) of `from` to `to`.
-                    fn rewrite_create_sql(original: String, from: &str, to: &str) -> String {
+                    fn rewrite_create_sql(
+                        original: String,
+                        from: &FullName,
+                        to: &FullName,
+                    ) -> Result<String, String> {
+                        // Identifiers are written in this format, irrespective of
+                        // whether or not the double quotes are necessary.
+                        fn escape_full_name(n: &FullName) -> (String, String) {
+                            (
+                                format!(r#""{}"."{}"."{}""#, n.database, n.schema, n.item),
+                                format!(r#""{}""#, n.item),
+                            )
+                        }
                         lazy_static! {
                             // Find all SQL strings, which are single quoted.
                             // Works with single-quote escaped SQL strings,
@@ -875,6 +882,10 @@ impl Catalog {
                             static ref SQL_STRING_RE: Regex =
                                 regex::Regex::new(r"(?s)('.*?')(?-s)").unwrap();
                         }
+
+                        let (from_full, from_item) = escape_full_name(from);
+                        let (mut to_full, mut to_item) = escape_full_name(to);
+
                         // Find and store all matches of the existing strings in
                         // the CREATE SQL statement.
                         let mut found_strings = Vec::new();
@@ -885,14 +896,47 @@ impl Catalog {
                         // Replace all strings with empty string
                         let mut rewritten_string =
                             SQL_STRING_RE.replace_all(&original, "''").to_string();
+
+                        // If our from_item is used an alias, bail. We cannot
+                        // handle the complexity of column vs. table aliases
+                        // without great effort, and we cannot blithely rename
+                        // column aliases.
+                        if rewritten_string.contains(&format!(" AS {}", from_item)) {
+                            return Err(format!("{} used as alias", from_item));
+                        }
+
+                        // If multiple items share our from_item name, we probably need to bail.
+
+                        // If we would introduce a potential conflict (i.e.
+                        // we've found an alias, `."<schema>"."<object name>" `,
+                        // or `"<table>"."<column>"`), resolve this with an
+                        // alias. This might be unnecessary because _that_
+                        // object might be aliased, but this is more efficient
+                        // than compiling regular expressions.
+                        if rewritten_string.contains(&format!(".{} ", to_item))
+                            || rewritten_string.contains(&format!(" AS {}", to_item))
+                        {
+                            let mut i = 1;
+                            let mut alias = format!("\"{}_{}\"", to.item, i);
+
+                            while rewritten_string.contains(&alias) {
+                                i += 1;
+                                alias = format!("{}_{}", to_item, i);
+                            }
+
+                            to_full = format!("{} AS {}", to_full, alias);
+                            to_item = alias;
+                        }
+
                         // Replace old identifier with new identifier
-                        rewritten_string = rewritten_string.replace(from, to);
+                        rewritten_string = rewritten_string.replace(&from_full, &to_full);
+                        rewritten_string = rewritten_string.replace(&from_item, &to_item);
 
                         // Iterate over stored strings and splice them back in
                         for original_string in found_strings {
                             rewritten_string = rewritten_string.replacen("''", &original_string, 1);
                         }
-                        rewritten_string
+                        Ok(rewritten_string)
                     }
 
                     let mut total_actions = Vec::new();
@@ -904,22 +948,35 @@ impl Catalog {
                     // Find all places where non-column object identifiers are
                     // valid. Note that this will definitely need to change if
                     // we support things like index hints.
-                    let from = &escape_name(&entry.name);
-                    let to = &escape_name(&to_full_name);
 
-                    let item = update_item_create_sql(&entry.item, from, to);
+                    let item = match update_item_create_sql(&entry.item, &entry.name, &to_full_name)
+                    {
+                        Ok(i) => i,
+                        Err(e) => {
+                            return Err(Error::new(ErrorKind::AmbiguousRename(format!(
+                                "{} {}",
+                                entry.name, e
+                            ))))
+                        }
+                    };
                     let serialized_item = self.serialize_item(&item);
-
-                    tx.update_item(id.clone(), &to_full_name.item, &serialized_item)?;
-                    total_actions.push(Action::UpdateItem {
-                        id,
-                        name: to_full_name,
-                        item,
-                    });
 
                     for id in entry.used_by() {
                         let dependent_item = self.by_id.get(&id).unwrap();
-                        let updated_item = update_item_create_sql(&dependent_item.item, from, to);
+                        let updated_item = match update_item_create_sql(
+                            &dependent_item.item,
+                            &entry.name,
+                            &to_full_name,
+                        ) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                return Err(Error::new(ErrorKind::AmbiguousRename(format!(
+                                    "{}, which uses {}, {}",
+                                    dependent_item.name, entry.name, e
+                                ))))
+                            }
+                        };
+
                         let serialized_item = self.serialize_item(&updated_item);
 
                         tx.update_item(id.clone(), &dependent_item.name.item, &serialized_item)?;
@@ -929,6 +986,12 @@ impl Catalog {
                             item: updated_item,
                         });
                     }
+                    tx.update_item(id.clone(), &to_full_name.item, &serialized_item)?;
+                    total_actions.push(Action::UpdateItem {
+                        id,
+                        name: to_full_name,
+                        item,
+                    });
                     total_actions
                 }
             };
