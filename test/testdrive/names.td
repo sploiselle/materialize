@@ -58,11 +58,13 @@ materialize.public.mz_view  materialize.public.mz_view_primary_idx  mz_obj_no   
 
 > ALTER INDEX mz_view_primary_idx RENAME TO renamed_index;
 
+# Source was successfully renamed
 > SHOW SOURCES;
 SOURCES
 -------
 renamed_mz_data
 
+# View was successfully renamed
 > SHOW VIEWS
 VIEWS
 -----
@@ -71,11 +73,13 @@ dependent_view
 oppositional_view
 renamed_mz_view
 
+# Item's own `CREATE VIEW` statement updated
 > SHOW CREATE VIEW renamed_mz_view
 View                                Create View
 ---------------------------------------------------------------------------------------------------------------------------------------------------
 materialize.public.renamed_mz_view  "CREATE VIEW \"materialize\".\"public\".\"renamed_mz_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_data\""
 
+# Item's indexes are properly reattributed
 > SHOW INDEXES FROM renamed_mz_view
 Source_or_view                      Key_name                          Column_name Expression Null  Seq_in_index
 ---------------------------------------------------------------------------------------------------------------
@@ -83,49 +87,93 @@ Source_or_view                      Key_name                          Column_nam
  materialize.public.renamed_mz_view materialize.public.renamed_index  b           <null>     false            2
  materialize.public.renamed_mz_view materialize.public.renamed_index  mz_obj_no   <null>     false            3
 
+# Simple dependencies are renamed
 > SHOW CREATE VIEW dependent_view
 View                                Create View
 ------------------------------------------------------------------------------------------------------------------------------------------------
 materialize.public.dependent_view   "CREATE VIEW \"materialize\".\"public\".\"dependent_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\""
 
+# Simple dependencies with both fully qualified and unqualified item references are renamed
+> SHOW CREATE VIEW byzantine_view
+View                              Create View
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"renamed_mz_data\".\"a\", \"renamed_mz_view\".\"b\" FROM \"materialize\".\"public\".\"renamed_mz_data\" JOIN \"materialize\".\"public\".\"renamed_mz_view\" ON \"renamed_mz_data\".\"a\" = \"renamed_mz_view\".\"a\""
+
+# Strings containing old table name are not modified
+> SHOW CREATE VIEW oppositional_view;
+View                                 Create View
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"oppositional_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\" WHERE \"b\" = '   an adversarial string   \"materialize\".\"public\".\"mz_data\"   '"
+
+# You cannot rename items to names that are already taken
 ! ALTER VIEW byzantine_view RENAME TO renamed_mz_view
 renamed_mz_view is already taken by item in schema
 
-# Creates alias to avoid ambiguity
+# When a renaming an object would create an ambiguity, we can create an alias to resolve it.
 > ALTER VIEW renamed_mz_view RENAME TO b
 
+> SHOW CREATE VIEW byzantine_view
+View                              Create View
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"renamed_mz_data\".\"a\", \"b_1\".\"b\" FROM \"materialize\".\"public\".\"renamed_mz_data\" JOIN \"materialize\".\"public\".\"b\" AS \"b_1\" ON \"renamed_mz_data\".\"a\" = \"b_1\".\"a\""
+
+# However, we don't remove aliases
 > ALTER VIEW b RENAME TO mz_view
+View                              Create View
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"renamed_mz_data\".\"a\", \"b_1\".\"mz_view\" FROM \"materialize\".\"public\".\"renamed_mz_data\" JOIN \"materialize\".\"public\".\"mz_view\" AS \"b_1\" ON \"renamed_mz_data\".\"a\" = \"b_1\".\"a\""
 
-> CREATE SCHEMA other
+# This means that we need to check for the existence of aliases to not eagerly re-alias things that aren't problems...
 
-> CREATE VIEW other.t1 AS SELECT a FROM mz_view;
-> CREATE VIEW t2 AS SELECT a, b FROM mz_view;
-> CREATE VIEW cross_schema_view AS
-  SELECT t1.a, t2.b
-  FROM other.t1
-  JOIN t2
-  ON t1.a = t2.a;
 
-> ALTER VIEW t2 RENAME TO t1;
 
-> ALTER VIEW t1 RENAME TO t2;
+> ALTER VIEW b RENAME TO mz_view
+# 
+# > CREATE SCHEMA other
+# 
+# > CREATE VIEW other.t1 AS SELECT a FROM mz_view;
+# > CREATE VIEW t2 AS SELECT a, b FROM mz_view;
+# > CREATE VIEW cross_schema_view AS
+#   SELECT t1.a, t2.b
+#   FROM other.t1
+#   JOIN t2
+#   ON t1.a = t2.a;
+# 
+# > ALTER VIEW t2 RENAME TO t1;
+# 
+# > ALTER VIEW t1 RENAME TO t2;
 
-# We cannot 
-> CREATE VIEW t1_column_alias AS SELECT t1.a AS AS t1 FROM (
-  SELECT t1.a, t2.b
-  FROM other.t1
-  JOIN t2
-  ON t1.a = t2.a
-);
+# We cannot rename t2 because a view that depends on it uses it name as an alias.
+# > CREATE VIEW t2_column_alias AS SELECT t1.a AS t2 FROM (
+#   SELECT t1.a, t2.b
+#   FROM other.t1
+#   JOIN t2
+#   ON t1.a = t2.a
+# );
 
+# > ALTER VIEW t2 RENAME TO anything
+# unresolvable renaming conflict
+# 
+# 
+# 
 # We also cannot rename t2 to t1 in this scenario because we don't know
 # if we'd be changing the name of the output.
-> CREATE VIEW t1_table_alias AS SELECT t1.a FROM (
-  SELECT t1.a, t2.b
-  FROM other.t1
-  JOIN t2
-  ON t1.a = t2.a
-) AS t1;
-
-! ALTER VIEW t2 RENAME TO t1;
-unresolvable renaming conflict
+# > CREATE VIEW t1_table_alias AS SELECT t1.a FROM (
+#   SELECT t1.a, t2.b
+#   FROM other.t1
+#   JOIN t2
+#   ON t1.a = t2.a
+# ) AS t1;
+# 
+# ! ALTER VIEW t2 RENAME TO t1;
+# unresolvable renaming conflict
+# 
+# > CREATE VIEW t1 AS SELECT a, b FROM mz_view;
+# 
+# > CREATE VIEW maybe_ambig AS SELECT a FROM t2 JOIN other.t1 ON t2.a = other.t1.a;
+# 
+# > CREATE VIEW "materialize"."public"."maybe_ambig2" AS
+#   SELECT "a" FROM "materialize"."public"."t1" AS "t1_1" JOIN "materialize"."other"."t1" ON "t1_1"."a" = "other"."t1"."a"
+# 
+# # This is ambiguous
+# > CREATE VIEW maybe_ambig AS SELECT a FROM t1 JOIN other.t1 ON t1.a = other.t1.a;

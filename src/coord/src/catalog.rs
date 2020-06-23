@@ -882,30 +882,78 @@ impl Catalog {
                             static ref SQL_STRING_RE: Regex =
                                 regex::Regex::new(r"(?s)('.*?')(?-s)").unwrap();
                         }
+                        lazy_static! {
+                            // Find all fully qualified names, which are always
+                            // used once to introduce items into scope.
+                            static ref OBJECT_FQ_NAME_RE: Regex =
+                                regex::Regex::new(r#""[[:alpha:]][_[:alnum:]]*"\."[[:alpha:]][_[:alnum:]]*"\."[[:alpha:]][_[:alnum:]]*""#).unwrap();
+                        }
 
-                        let (from_full, from_item) = escape_full_name(from);
+                        let (from_full, mut from_item) = escape_full_name(from);
                         let (mut to_full, mut to_item) = escape_full_name(to);
 
-                        // Find and store all matches of the existing strings in
-                        // the CREATE SQL statement.
+                        // Store all strings.
                         let mut found_strings = Vec::new();
                         for mat in SQL_STRING_RE.find_iter(&original) {
                             found_strings.push(original[mat.start()..mat.end()].to_string());
                         }
 
-                        // Replace all strings with empty string
+                        // Replace all strings with empty string.
                         let mut rewritten_string =
                             SQL_STRING_RE.replace_all(&original, "''").to_string();
 
-                        // If our from_item is used an alias, bail. We cannot
-                        // handle the complexity of column vs. table aliases
-                        // without great effort, and we cannot blithely rename
-                        // column aliases.
+                        // We cannot trivially disambiguate `from_item` and an
+                        // alias of the same name.
                         if rewritten_string.contains(&format!(" AS {}", from_item)) {
                             return Err(format!("{} used as alias", from_item));
                         }
 
-                        // If multiple items share our from_item name, we probably need to bail.
+                        println!("\nin entry {}", original);
+                        // Find all items that have the same name as our `from_item`.
+                        let mut mult_items_w_name = false;
+                        let mut schema_qualified_names = Vec::new();
+                        for mat in OBJECT_FQ_NAME_RE.find_iter(&rewritten_string) {
+                            let parts: Vec<_> = rewritten_string[mat.start()..mat.end()]
+                                .split('.')
+                                .collect();
+                            println!(
+                                "&rewritten_string[mat.start()..mat.end()] {}",
+                                &rewritten_string[mat.start()..mat.end()]
+                            );
+                            println!("from_full.as_str() {}", from_full.as_str());
+                            if &rewritten_string[mat.start()..mat.end()] != from_full.as_str()
+                                && parts[2] == to_item
+                            {
+                                mult_items_w_name = true;
+                                schema_qualified_names.push(format!("{}.{}", parts[1], parts[2]));
+                            }
+                        }
+
+                        // If multiple items have the same name, see if we can
+                        // resolve the ambiguity by qualifying each instance
+                        // with its schema.
+                        if mult_items_w_name {
+                            let this_schema_qualified_name =
+                                format!(r#""{}"."{}""#, from.schema, from.item);
+                            let total_references =
+                                rewritten_string.matches(&to_item).collect::<Vec<_>>().len();
+                            let mut schema_qualified_references = 0;
+                            schema_qualified_names.push(this_schema_qualified_name.clone());
+                            for n in schema_qualified_names {
+                                schema_qualified_references +=
+                                    rewritten_string.matches(&n).collect::<Vec<_>>().len();
+                            }
+
+                            if total_references == schema_qualified_references {
+                                from_item = this_schema_qualified_name;
+                                to_item = format!(r#""{}"."{}""#, to.schema, to.item);
+                            } else {
+                                return Err(format!(
+                                    "multiple items with existing name {} used ambiguously",
+                                    from_item
+                                ));
+                            }
+                        }
 
                         // If we would introduce a potential conflict (i.e.
                         // we've found an alias, `."<schema>"."<object name>" `,
@@ -916,23 +964,43 @@ impl Catalog {
                         if rewritten_string.contains(&format!(".{} ", to_item))
                             || rewritten_string.contains(&format!(" AS {}", to_item))
                         {
-                            let mut i = 1;
-                            let mut alias = format!("\"{}_{}\"", to.item, i);
+                            // Check if our item has been aliased anywhere.
+                            if rewritten_string.contains(&format!("{} AS", from_item)) {
+                                // Determine if all references are through aliases.
+                                let aliased_item_refs = rewritten_string
+                                    .matches(&format!("{} AS", from_item))
+                                    .collect::<Vec<_>>()
+                                    .len();
+                                let all_item_refs = rewritten_string
+                                    .matches(&from_item)
+                                    .collect::<Vec<_>>()
+                                    .len();
 
-                            while rewritten_string.contains(&alias) {
-                                i += 1;
-                                alias = format!("{}_{}", to_item, i);
+                                // If not, then this is too ambiguous to
+                                // trivially solve. To do this, we would need to
+                                // track instances where our item was already
+                                // aliased and places we would need to introduce
+                                // an alias. This is certainly feasible, but
+                                // maybe too much work.
+                                if aliased_item_refs != all_item_refs {
+                                    return Err(format!("{} inconsistently aliased", from_item));
+                                }
+                            } else {
+                                let mut i = 1;
+                                let mut alias = format!("\"{}_{}\"", to.item, i);
+                                while rewritten_string.contains(&alias) {
+                                    i += 1;
+                                    alias = format!("\"{}_{}\"", to.item, i);
+                                }
+                                to_full = format!("{} AS {}", to_full, alias);
+                                to_item = alias;
                             }
-
-                            to_full = format!("{} AS {}", to_full, alias);
-                            to_item = alias;
                         }
 
-                        // Replace old identifier with new identifier
                         rewritten_string = rewritten_string.replace(&from_full, &to_full);
                         rewritten_string = rewritten_string.replace(&from_item, &to_item);
 
-                        // Iterate over stored strings and splice them back in
+                        // Iterate over stored strings and splice them back in.
                         for original_string in found_strings {
                             rewritten_string = rewritten_string.replacen("''", &original_string, 1);
                         }
