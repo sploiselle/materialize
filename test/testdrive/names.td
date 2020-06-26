@@ -1,0 +1,382 @@
+# Copyright Materialize, Inc. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+$ set writer-schema={
+    "name": "row",
+    "type": "record",
+    "fields": [
+      {"name": "a", "type": "long"},
+      {"name": "b", "type": "string"}
+    ]
+  }
+
+$ avro-ocf-write path=data.ocf schema=${writer-schema} codec=null
+{"a": 1, "b": "dog"}
+
+# Create library of objects and verify names
+> CREATE MATERIALIZED SOURCE mz_data
+  FROM AVRO OCF '${testdrive.temp-dir}/data.ocf'
+
+> CREATE SINK sink1 FROM mz_data
+  INTO KAFKA BROKER '${testdrive.kafka-addr}' TOPIC 'snk1'
+  FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY '${testdrive.schema-registry-url}'
+
+> CREATE MATERIALIZED VIEW mz_view AS
+    SELECT * FROM mz_data
+
+> SHOW INDEXES FROM mz_view
+Source_or_view                Key_name                              Column_name  Expression  Null   Seq_in_index
+----------------------------------------------------------------------------------------------------------------
+materialize.public.mz_view  materialize.public.mz_view_primary_idx  a            <null>      false             1
+materialize.public.mz_view  materialize.public.mz_view_primary_idx  b            <null>      false             2
+materialize.public.mz_view  materialize.public.mz_view_primary_idx  mz_obj_no    <null>      false             3
+
+> CREATE VIEW dependent_view AS
+    SELECT * FROM mz_view;
+
+> CREATE VIEW byzantine_view AS
+    SELECT mz_data.a, mz_view.b FROM mz_data JOIN mz_view ON mz_data.a = mz_view.a;
+
+> CREATE VIEW oppositional_view AS
+    SELECT * FROM mz_view WHERE b = '
+    an adversarial string
+    "materialize"."public"."mz_data"
+    ';
+
+> ALTER SOURCE mz_data RENAME TO renamed_mz_data;
+
+> ALTER VIEW mz_view RENAME TO renamed_mz_view;
+
+> ALTER INDEX mz_view_primary_idx RENAME TO renamed_index;
+
+> ALTER SINK sink1 RENAME TO renamed_sink
+
+# Source was successfully renamed
+> SHOW SOURCES;
+SOURCES
+-------
+renamed_mz_data
+
+# Sink was successfully renamed
+> SHOW SINKS
+SINKS
+-----
+renamed_sink
+
+# View was successfully renamed
+> SHOW VIEWS
+VIEWS
+-----
+byzantine_view
+dependent_view
+oppositional_view
+renamed_mz_view
+
+# Item's own `CREATE VIEW` statement updated
+> SHOW CREATE VIEW renamed_mz_view
+View                                Create View
+---------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.renamed_mz_view  "CREATE VIEW \"materialize\".\"public\".\"renamed_mz_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_data\""
+
+# Item's indexes are properly re-attributed
+> SHOW INDEXES FROM renamed_mz_view
+Source_or_view                      Key_name                          Column_name Expression Null  Seq_in_index
+---------------------------------------------------------------------------------------------------------------
+ materialize.public.renamed_mz_view materialize.public.renamed_index  a           <null>     false            1
+ materialize.public.renamed_mz_view materialize.public.renamed_index  b           <null>     false            2
+ materialize.public.renamed_mz_view materialize.public.renamed_index  mz_obj_no   <null>     false            3
+
+> SHOW CREATE INDEX renamed_index
+Index               Create Index
+---------------------------------------------------------------------------------------------------------------------
+materialize.public.renamed_index "CREATE INDEX \"renamed_index\" ON \"materialize\".\"public\".\"renamed_mz_view\" (\"a\", \"b\", \"mz_obj_no\")"
+
+# Simple dependencies are renamed
+> SHOW CREATE VIEW dependent_view
+View                                Create View
+------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.dependent_view   "CREATE VIEW \"materialize\".\"public\".\"dependent_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\""
+
+> SHOW CREATE SINK renamed_sink
+Sink                            Create Sink
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.renamed_sink "CREATE SINK \"materialize\".\"public\".\"renamed_sink\" FROM \"materialize\".\"public\".\"renamed_mz_data\" INTO KAFKA BROKER 'localhost:9092' TOPIC 'snk1' FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY 'http://localhost:8081/' WITH SNAPSHOT"
+
+# Simple dependencies with both fully qualified and unqualified item references are renamed
+> SHOW CREATE VIEW byzantine_view
+View                              Create View
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"renamed_mz_data\".\"a\", \"renamed_mz_view\".\"b\" FROM \"materialize\".\"public\".\"renamed_mz_data\" JOIN \"materialize\".\"public\".\"renamed_mz_view\" ON \"renamed_mz_data\".\"a\" = \"renamed_mz_view\".\"a\""
+
+# Strings containing old item name are not modified
+> SHOW CREATE VIEW oppositional_view
+View                                 Create View
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"oppositional_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\" WHERE \"b\" = '   an adversarial string   \"materialize\".\"public\".\"mz_data\"   '"
+
+# 🔬🔬🔬 Name collisions
+
+> ALTER VIEW renamed_mz_view RENAME TO t1
+> CREATE VIEW a AS SELECT a FROM t1
+> CREATE VIEW table_alias_check AS
+  SELECT t1.a
+  FROM(
+    SELECT a
+    FROM t1
+  ) AS t1;
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW t1 RENAME TO b;
+renaming conflict
+! ALTER VIEW t1 RENAME TO materialize;
+renaming conflict
+! ALTER VIEW t1 RENAME TO public;
+renaming conflict
+! ALTER VIEW t1 RENAME TO t2;
+renaming conflict
+
+# ❌ Identifiers used in own definition
+! ALTER VIEW a RENAME TO anything
+renaming conflict
+
+# ❌ Name used by another item in schema's catalog
+! ALTER VIEW t1 RENAME TO a
+a is already taken by item in schema
+! ALTER VIEW t1 RENAME TO dependent_view;
+renaming conflict
+
+# 🔬🔬🔬 DB::DB
+# Evaluate ability to handle two database-qualified references.
+
+> CREATE DATABASE db1
+> CREATE DATABASE db2
+> CREATE SCHEMA db1.scm1
+> CREATE SCHEMA db2.scm2
+> CREATE VIEW db1.scm1.v1 AS
+    SELECT a FROM t1;
+
+> CREATE VIEW db2.scm2.v2 AS
+    SELECT a AS z FROM t1;
+
+> CREATE VIEW db_db_qual AS
+    SELECT db2.scm2.v2.z
+    FROM db2.scm2.v2
+    JOIN db1.scm1.v1
+    ON db2.scm2.v2.z = db1.scm1.v1.a
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW db2.scm2.v2 RENAME TO db2;
+renaming conflict
+! ALTER VIEW db2.scm2.v2 RENAME TO scm2;
+renaming conflict
+! ALTER VIEW db2.scm2.v2 RENAME TO z;
+renaming conflict
+! ALTER VIEW db2.scm2.v2 RENAME TO scm2;
+renaming conflict
+! ALTER VIEW db2.scm2.v2 RENAME TO a;
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW db2.scm2.v2 RENAME TO v3;
+> ALTER VIEW db1.scm1.v1 RENAME TO v4;
+
+> SHOW CREATE VIEW db_db_qual
+View                          Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.db_db_qual "CREATE VIEW \"materialize\".\"public\".\"db_db_qual\" AS SELECT \"db2\".\"scm2\".\"v3\".\"z\" FROM \"db2\".\"scm2\".\"v3\" JOIN \"db1\".\"scm1\".\"v4\" ON \"db2\".\"scm2\".\"v3\".\"z\" = \"db1\".\"scm1\".\"v4\".\"a\""
+
+> CREATE VIEW "materialize"."public"."db_db_qual_test" AS SELECT "db2"."scm2"."v3"."z" FROM "db2"."scm2"."v3" JOIN "db1"."scm1"."v4" ON "db2"."scm2"."v3"."z" = "db1"."scm1"."v4"."a"
+
+# 🔬🔬🔬 DB:Schema
+# Evaluate ability to handle one database-qualified reference and one
+# schema-qualified reference.
+
+> CREATE SCHEMA scm3
+
+> CREATE VIEW scm3.v2 AS
+    SELECT a AS z FROM t1;
+
+> CREATE VIEW db_scm_qual AS
+    SELECT scm3.v2.z, db1.scm1.v4.a
+    FROM scm3.v2
+    JOIN db1.scm1.v4
+    ON scm3.v2.z = db1.scm1.v4.a;
+
+> ALTER VIEW scm3.v2 RENAME TO v3;
+> ALTER VIEW db1.scm1.v4 RENAME TO v5;
+
+> SHOW CREATE VIEW db_scm_qual
+View                           Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.db_scm_qual "CREATE VIEW \"materialize\".\"public\".\"db_scm_qual\" AS SELECT \"scm3\".\"v3\".\"z\", \"db1\".\"scm1\".\"v5\".\"a\" FROM \"materialize\".\"scm3\".\"v3\" JOIN \"db1\".\"scm1\".\"v5\" ON \"scm3\".\"v3\".\"z\" = \"db1\".\"scm1\".\"v5\".\"a\""
+
+> CREATE VIEW "materialize"."public"."db_scm_qual_test" AS SELECT "scm3"."v3"."z", "db1"."scm1"."v5"."a" FROM "materialize"."scm3"."v3" JOIN "db1"."scm1"."v5" ON "scm3"."v3"."z" = "db1"."scm1"."v5"."a"
+
+# 🔬🔬🔬 DB:View
+# Evaluate ability to handle one database-qualified reference and one
+# implicitly-qualified reference.
+
+> CREATE VIEW v1 AS
+    SELECT a AS z FROM t1;
+
+> CREATE VIEW db_v_qual AS
+    SELECT v1.z, db1.scm1.v5.a
+    FROM v1
+    JOIN db1.scm1.v5
+    ON v1.z = db1.scm1.v5.a;
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW v1 RENAME TO z;
+renaming conflict
+! ALTER VIEW v1 RENAME TO db1;
+renaming conflict
+! ALTER VIEW v1 RENAME TO scm1;
+renaming conflict
+! ALTER VIEW v1 RENAME TO v5;
+renaming conflict
+! ALTER VIEW v1 RENAME TO a;
+renaming conflict
+! ALTER VIEW db1.scm1.v5 RENAME TO v1;
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW v1 RENAME TO v2;
+> ALTER VIEW db1.scm1.v5 RENAME TO v6;
+
+> SHOW CREATE VIEW db_v_qual
+
+# 🔬🔬🔬 Schema:Schema
+# Evaluate ability to handle two schema-qualified references
+
+> CREATE SCHEMA scm4;
+> CREATE SCHEMA scm5;
+
+> CREATE VIEW scm4.v1 AS
+    SELECT a AS z FROM t1;
+
+> CREATE VIEW scm5.v2 AS
+    SELECT a FROM t1;
+
+> CREATE VIEW scm_scm_qual AS
+    SELECT scm4.v1.z, scm5.v2.a
+    FROM scm4.v1
+    JOIN scm5.v2
+    ON scm4.v1.z = scm5.v2.a;
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW scm4.v1 RENAME TO z;
+renaming conflict
+! ALTER VIEW scm4.v1 RENAME TO scm5;
+renaming conflict
+! ALTER VIEW scm4.v1 RENAME TO v2;
+renaming conflict
+! ALTER VIEW scm4.v1 RENAME TO a;
+renaming conflict
+! ALTER VIEW scm5.v2 RENAME TO a;
+renaming conflict
+! ALTER VIEW scm5.v2 RENAME TO v1;
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW scm4.v1 RENAME TO v3;
+> ALTER VIEW scm5.v2 RENAME TO v4;
+
+> SHOW CREATE VIEW scm_scm_qual
+View                           Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.scm_scm_qual "CREATE VIEW \"materialize\".\"public\".\"scm_scm_qual\" AS SELECT \"scm4\".\"v3\".\"z\", \"scm5\".\"v4\".\"a\" FROM \"materialize\".\"scm4\".\"v3\" JOIN \"materialize\".\"scm5\".\"v4\" ON \"scm4\".\"v3\".\"z\" = \"scm5\".\"v4\".\"a\""
+
+> CREATE VIEW "materialize"."public"."scm_scm_qual_test" AS SELECT "scm4"."v3"."z", "scm5"."v4"."a" FROM "materialize"."scm4"."v3" JOIN "materialize"."scm5"."v4" ON "scm4"."v3"."z" = "scm5"."v4"."a"
+
+# 🔬🔬🔬 Schema:View
+# Evaluate ability to handle one schema-qualified reference and one
+# implicitly-qualified reference.
+
+> CREATE VIEW v1 AS
+    SELECT a AS z FROM t1;
+
+> CREATE VIEW scm_v_qual AS
+    SELECT v1.z, scm5.v4.a
+    FROM v1
+    JOIN scm5.v4
+    ON v1.z = scm5.v4.a;
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW v1 RENAME TO z;
+renaming conflict
+! ALTER VIEW v1 RENAME TO scm5;
+renaming conflict
+! ALTER VIEW v1 RENAME TO v4;
+renaming conflict
+! ALTER VIEW v1 RENAME TO a;
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW v1 RENAME TO v3;
+> ALTER VIEW scm5.v4 RENAME TO v6;
+
+> SHOW CREATE VIEW scm_v_qual
+View                          Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.scm_v_qual "CREATE VIEW \"materialize\".\"public\".\"scm_v_qual\" AS SELECT \"v3\".\"z\", \"scm5\".\"v6\".\"a\" FROM \"materialize\".\"public\".\"v3\" JOIN \"materialize\".\"scm5\".\"v6\" ON \"v3\".\"z\" = \"scm5\".\"v6\".\"a\""
+
+> CREATE VIEW "materialize"."public"."scm_v_qual_test" AS SELECT "v3"."z", "scm5"."v6"."a" FROM "materialize"."public"."v3" JOIN "materialize"."scm5"."v6" ON "v3"."z" = "scm5"."v6"."a"
+
+# 🔬🔬🔬 View:View
+# Evaluate ability to handle two implicitly-qualified references.
+
+> CREATE VIEW v4 AS
+  SELECT a FROM t1
+
+> CREATE VIEW v_v_qual AS
+  SELECT v3.z, v4.a
+  FROM v3
+  JOIN v4
+  ON v3.z = v4.a
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW v4 RENAME TO a;
+renaming conflict
+! ALTER VIEW v4 RENAME TO z;
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW v4 RENAME TO v6;
+> ALTER VIEW v3 RENAME TO v5;
+
+> SHOW CREATE VIEW v_v_qual
+View                          Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.v_v_qual "CREATE VIEW \"materialize\".\"public\".\"v_v_qual\" AS SELECT \"v5\".\"z\", \"v6\".\"a\" FROM \"materialize\".\"public\".\"v5\" JOIN \"materialize\".\"public\".\"v6\" ON \"v5\".\"z\" = \"v6\".\"a\""
+
+> CREATE VIEW "materialize"."public"."v_v_qual_test" AS SELECT "v5"."z", "v6"."a" FROM "materialize"."public"."v5" JOIN "materialize"."public"."v6" ON "v5"."z" = "v6"."a"
+
+# 🔬🔬🔬 Final boss
+# This is an example of a query whose ambiguity cannot be resolved through
+# simple ident analysis; i.e. you need either real or strictly inferred scope
+# information to disambigutate references to `db3.scm3.z`.
+
+> CREATE DATABASE db3;
+> CREATE SCHEMA db3.scm3;
+> CREATE VIEW db3.scm3.z AS SELECT a FROM t1;
+
+> CREATE SCHEMA db3;
+> CREATE VIEW db3.scm3 AS SELECT a AS z FROM t1;
+
+> CREATE VIEW final_boss AS
+  SELECT db3.scm3.z, db3.scm3.z.a
+  FROM db3.scm3.z
+  JOIN db3.scm3
+  ON db3.scm3.z = db3.scm3.z.a;
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW db3.scm3.z RENAME TO anything
+renaming conflict
+# ...if you can do this without trapping `materialize.db3.scm3`, you've defeated
+# the final boss!
