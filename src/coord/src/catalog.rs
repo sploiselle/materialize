@@ -27,9 +27,6 @@ use repr::{RelationDesc, Row};
 use sql::names::{DatabaseSpecifier, FullName, PartialName};
 use sql::plan::{Params, Plan, PlanContext};
 use sql_parser::ast::display::AstDisplay;
-use sql_parser::ast::visit::{self, Visit};
-use sql_parser::ast::visit_mut::{self, VisitMut};
-use sql_parser::ast::{Expr, Ident, ObjectName, Query, Statement};
 use transform::Optimizer;
 
 use crate::catalog::error::{Error, ErrorKind};
@@ -225,298 +222,36 @@ impl CatalogItem {
         from: &FullName,
         to: &FullName,
     ) -> Result<CatalogItem, String> {
-        fn do_rewrite(
-            original: String,
-            from_name: &FullName,
-            to_name: &FullName,
-        ) -> Result<String, String> {
-            // Determines the depth of qualification necessary to_name
-            // unambiguously address `from.item`. Returns `None` is the name is
-            // used ambiguously. Including a `Some` value for `to` returns
-            // `None` if any `Ident` in the query == `to.unwrap().item`.
-            fn determine_qualification_depth(
-                from: &FullName,
-                to: Option<&FullName>,
-                query: &mut Query,
-            ) -> Result<usize, String> {
-                let from = Ident::new(from.item.clone());
-                let to = match to {
-                    Some(i) => Some(Ident::new(i.item.clone())),
-                    None => None,
-                };
-                let mut v = CreateSqlIdentAgg::new(&from, to);
-                v.visit_query(query);
+        let do_rewrite = |create_sql: String| -> Result<String, String> {
+            let mut create_sql_stmt = sql::parse::parse(create_sql).unwrap().into_element();
+            crate::transform_ast::rewrite_create_stmt(&mut create_sql_stmt, from, to)?;
 
-                if v.err.is_some() {
-                    return Err(v.err.unwrap());
-                }
-
-                // We cannot disambiguate items where `i` is used to qualify
-                // the renamed item.
-                if v.qualifiers.values().any(|t| t.contains(&from))
-                    || v.qualifiers.contains_key(&from)
-                {
-                    return Err(format!("{} used to qualify item with same name", from));
-                }
-                // Check if there was more than one 3rd-level (e.g.
-                // database) qualification used for any reference to `i`.
-                let req_depth = if v.qualifiers.values().any(|v| v.len() > 1) {
-                    3
-                // Check if there was more than one 2nd-level (e.g. schema)
-                // qualification used for any reference to `i`.
-                } else if v.qualifiers.len() > 1 {
-                    2
-                } else {
-                    return Ok(1);
-                };
-
-                if v.min_qual_depth < req_depth {
-                    Err(format!("Cannot unambiguously address {}", from))
-                } else {
-                    Ok(req_depth)
-                }
-            }
-
-            fn rewrite_query_with_qual_depth(
-                from_name: &FullName,
-                to_name: &FullName,
-                qual_depth: usize,
-                query: &mut Query,
-            ) {
-                let (from, to) = match qual_depth {
-                    1 => (
-                        vec![Ident::new(from_name.item.clone())],
-                        vec![Ident::new(to_name.item.clone())],
-                    ),
-                    2 => (
-                        vec![
-                            Ident::new(from_name.schema.clone()),
-                            Ident::new(from_name.item.clone()),
-                        ],
-                        vec![
-                            Ident::new(to_name.schema.clone()),
-                            Ident::new(to_name.item.clone()),
-                        ],
-                    ),
-                    3 => (
-                        vec![
-                            Ident::new(from_name.database.to_string()),
-                            Ident::new(from_name.schema.clone()),
-                            Ident::new(from_name.item.clone()),
-                        ],
-                        vec![
-                            Ident::new(to_name.database.to_string()),
-                            Ident::new(to_name.schema.clone()),
-                            Ident::new(to_name.item.clone()),
-                        ],
-                    ),
-                    _ => unreachable!(),
-                };
-                let mut v = CreateSqlRewriter { from, to };
-                v.visit_query_mut(query);
-            }
-
-            let maybe_update_object_name = |object_name: &mut ObjectName| {
-                if object_name.to_string() == from_name.to_string() {
-                    object_name.0[2] = Ident::new(to_name.item.clone());
-                }
-            };
-
-            let mut create_sql_stmt = sql::parse::parse(original).unwrap().into_element();
-            match &mut create_sql_stmt {
-                Statement::CreateView {
-                    name,
-                    ref mut query,
-                    ..
-                } => {
-                    maybe_update_object_name(name);
-
-                    let qual_depth =
-                        determine_qualification_depth(from_name, Some(to_name), query)?;
-                    rewrite_query_with_qual_depth(from_name, to_name, qual_depth, query);
-                    // Ensure we haven't introduced an ambiguity with our rename.
-                    match determine_qualification_depth(to_name, None, query) {
-                        Ok(_) => Ok(create_sql_stmt.to_ast_string_stable()),
-                        Err(_) => Err(format!(
-                            "Renaming {} to_name {} introduces ambiguities",
-                            from_name.item, to_name.item
-                        )),
-                    }
-                }
-                Statement::CreateSource { name, .. } => {
-                    maybe_update_object_name(name);
-                    Ok(create_sql_stmt.to_ast_string_stable())
-                }
-                Statement::CreateSink { name, from, .. } => {
-                    maybe_update_object_name(name);
-                    maybe_update_object_name(from);
-                    Ok(create_sql_stmt.to_ast_string_stable())
-                }
-                Statement::CreateIndex { name, on_name, .. } => {
-                    let idents = &on_name.0;
-                    let db_schema_match = idents[0].to_string() == from_name.database.to_string()
-                        && idents[1].to_string() == from_name.schema;
-
-                    if db_schema_match && name.as_ref().unwrap().to_string() == from_name.item {
-                        *name = Some(Ident::new(to_name.item.clone()));
-                    } else if idents[2].to_string() == from_name.item {
-                        on_name.0[2] = Ident::new(to_name.item.clone());
-                    }
-                    Ok(create_sql_stmt.to_ast_string_stable())
-                }
-                _ => unreachable!(),
-            }
-        }
+            Ok(create_sql_stmt.to_ast_string_stable())
+        };
 
         match self {
             CatalogItem::Index(i) => {
                 let mut i = i.clone();
-                i.create_sql = do_rewrite(i.create_sql, from, to)?;
+                i.create_sql = do_rewrite(i.create_sql)?;
                 Ok(CatalogItem::Index(i))
             }
             CatalogItem::Sink(i) => {
                 let mut i = i.clone();
-                i.create_sql = do_rewrite(i.create_sql, from, to)?;
+                i.create_sql = do_rewrite(i.create_sql)?;
                 Ok(CatalogItem::Sink(i))
             }
             CatalogItem::Source(i) => {
                 let mut i = i.clone();
-                i.create_sql = do_rewrite(i.create_sql, from, to)?;
+                i.create_sql = do_rewrite(i.create_sql)?;
                 Ok(CatalogItem::Source(i))
             }
             CatalogItem::View(i) => {
                 let mut i = i.clone();
-                let res = do_rewrite(i.create_sql, from, to)?;
+                let res = do_rewrite(i.create_sql)?;
                 i.create_sql = res;
                 Ok(CatalogItem::View(i))
             }
         }
-    }
-}
-
-struct CreateSqlIdentAgg<'a> {
-    qualifiers: HashMap<Ident, HashSet<Ident>>,
-    min_qual_depth: usize,
-    err: Option<String>,
-    from: &'a Ident,
-    to: Option<Ident>,
-}
-
-impl<'a> CreateSqlIdentAgg<'a> {
-    fn new(from: &'a Ident, to: Option<Ident>) -> CreateSqlIdentAgg {
-        CreateSqlIdentAgg {
-            qualifiers: HashMap::new(),
-            min_qual_depth: usize::MAX,
-            err: None,
-            from,
-            to,
-        }
-    }
-
-    fn aggregate_names(&mut self, v: &[Ident]) {
-        if let Some(to) = &self.to {
-            if v.iter().any(|i| i == to) {
-                self.err = Some("Found an item with a conflicting name".to_string());
-                return;
-            }
-        }
-        if let Some(p) = v.iter().rposition(|i| i == self.from) {
-            // Ensures that we do not match items that are unambiguously in the
-            // database/schema qualification poisiton.
-            if v.len() - p > 2 {
-                self.err = Some("Found a higher-order item with this name".to_string());
-                return;
-            }
-            let i = v[..p + 1].to_vec();
-            let i_len = i.len();
-            match i_len {
-                1 => {
-                    if v.len() == 1 {
-                        self.err = Some("Found unqualified use".to_string());
-                    }
-                }
-                2 => {
-                    self.qualifiers.entry(i[0].clone()).or_default();
-                }
-                3 => {
-                    self.qualifiers
-                        .entry(i[1].clone())
-                        .or_default()
-                        .insert(i[0].clone());
-                }
-                4 => {
-                    self.err = Some(
-                        "Cannot rename items with same name as database-qualified columns"
-                            .to_string(),
-                    )
-                }
-                _ => unreachable!(),
-            }
-            self.min_qual_depth = std::cmp::min(i_len, self.min_qual_depth);
-        }
-    }
-}
-
-impl<'a, 'ast> Visit<'ast> for CreateSqlIdentAgg<'a> {
-    fn visit_query(&mut self, query: &'ast Query) {
-        visit::visit_query(self, query);
-    }
-    fn visit_expr(&mut self, e: &'ast Expr) {
-        match e {
-            Expr::Identifier(i) | Expr::QualifiedWildcard(i) => {
-                self.aggregate_names(i);
-            }
-            _ => visit::visit_expr(self, e),
-        }
-    }
-    fn visit_ident(&mut self, ident: &'ast Ident) {
-        if ident == self.from {
-            self.err = Some("Encountered matching unqualified ident".to_string());
-        }
-    }
-    fn visit_object_name(&mut self, object_name: &'ast ObjectName) {
-        self.aggregate_names(&object_name.0);
-    }
-}
-
-struct CreateSqlRewriter {
-    from: Vec<Ident>,
-    to: Vec<Ident>,
-}
-
-impl CreateSqlRewriter {
-    fn maybe_rewrite_idents(&mut self, h: &mut Vec<Ident>) {
-        // We don't want to rewrite if the item we're rewriting is shorter than
-        // the values we want to replace them with.
-        if h.len() < self.from.len() {
-            return;
-        }
-        let n = &self.from;
-        for i in 0..h.len() - n.len() + 1 {
-            if h[i..i + n.len()] == n[..] {
-                h.splice(i..i + n.len(), self.to.iter().cloned());
-                return;
-            }
-        }
-    }
-}
-
-impl<'ast> VisitMut<'ast> for CreateSqlRewriter {
-    fn visit_query_mut(&mut self, query: &'ast mut Query) {
-        visit_mut::visit_query_mut(self, query);
-    }
-    fn visit_expr_mut(&mut self, e: &'ast mut Expr) {
-        match e {
-            // These embedded values are `Vec<Ident>`, and are used equivalently
-            // to `ObjectName`, i.e. they name an item.
-            Expr::Identifier(ref mut i) | Expr::QualifiedWildcard(ref mut i) => {
-                self.maybe_rewrite_idents(i);
-            }
-            _ => visit_mut::visit_expr_mut(self, e),
-        }
-    }
-    fn visit_object_name_mut(&mut self, object_name: &'ast mut ObjectName) {
-        self.maybe_rewrite_idents(&mut object_name.0);
     }
 }
 
@@ -643,7 +378,7 @@ impl Catalog {
                 }
                 Err(e) => {
                     return Err(Error::new(ErrorKind::Corruption {
-                        detail: format!("failed to deserialize item {} ({}): {}", id, name, e),
+                        detail: format!("failed to  item {} ({}): {}", id, name, e),
                     }))
                 }
             };
@@ -1157,7 +892,7 @@ impl Catalog {
                             Ok(i) => i,
                             Err(e) => {
                                 return Err(Error::new(ErrorKind::AmbiguousRename(format!(
-                                    "{}, which uses {}, {}",
+                                    "in {}, which uses {}, {}",
                                     dependent_item.name, entry.name, e
                                 ))))
                             }

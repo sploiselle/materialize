@@ -351,7 +351,7 @@ fn handle_alter_object_rename(
 
     Ok(Plan::AlterItemRename {
         id,
-        to_name: to_item_name.to_string(),
+        to_name: normalize::ident(to_item_name),
         object_type,
     })
 }

@@ -1851,12 +1851,9 @@ impl Parser {
         };
 
         let if_exists = self.parse_if_exists()?;
-
         let name = self.parse_object_name()?;
-
         // `RENAME` is the only `ALTER` clause we currently support.
         self.expect_keywords(&["RENAME", "TO"])?;
-
         let to_item_name = self.parse_identifier()?;
 
         Ok(Statement::AlterObjectRename {

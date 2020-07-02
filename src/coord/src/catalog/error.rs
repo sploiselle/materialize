@@ -69,7 +69,7 @@ impl std::error::Error for Error {
             | ErrorKind::InvalidTemporaryDependency(_)
             | ErrorKind::InvalidTemporarySchema
             | ErrorKind::UnsatisfiableLoggingDependency { .. }
-            | ErrorKind::AmbiguousRename { .. } => None,
+            | ErrorKind::AmbiguousRename(_) => None,
             ErrorKind::Storage(e) => Some(e),
         }
     }

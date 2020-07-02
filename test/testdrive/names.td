@@ -124,6 +124,7 @@ materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"o
 
 > ALTER VIEW renamed_mz_view RENAME TO t1
 > CREATE VIEW a AS SELECT a FROM t1
+> CREATE VIEW v0 AS SELECT b FROM t1
 > CREATE VIEW table_alias_check AS
   SELECT t1.a
   FROM(
@@ -142,14 +143,17 @@ renaming conflict
 renaming conflict
 
 # ❌ Identifiers used in own definition
+# `materialize.public.a` contains an unqualified reference to `materialize.public.t1.a`.
 ! ALTER VIEW a RENAME TO anything
+renaming conflict
+! ALTER VIEW v0 RENAME TO b
 renaming conflict
 
 # ❌ Name used by another item in schema's catalog
 ! ALTER VIEW t1 RENAME TO a
 a is already taken by item in schema
 ! ALTER VIEW t1 RENAME TO dependent_view;
-renaming conflict
+dependent_view is already taken by item in schema
 
 # 🔬🔬🔬 DB::DB
 # Evaluate ability to handle two database-qualified references.
@@ -240,8 +244,6 @@ renaming conflict
 renaming conflict
 ! ALTER VIEW v1 RENAME TO v5;
 renaming conflict
-! ALTER VIEW v1 RENAME TO a;
-renaming conflict
 ! ALTER VIEW db1.scm1.v5 RENAME TO v1;
 renaming conflict
 
@@ -250,6 +252,11 @@ renaming conflict
 > ALTER VIEW db1.scm1.v5 RENAME TO v6;
 
 > SHOW CREATE VIEW db_v_qual
+View                         Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.db_v_qual "CREATE VIEW \"materialize\".\"public\".\"db_v_qual\" AS SELECT \"v2\".\"z\", \"db1\".\"scm1\".\"v6\".\"a\" FROM \"materialize\".\"public\".\"v2\" JOIN \"db1\".\"scm1\".\"v6\" ON \"v2\".\"z\" = \"db1\".\"scm1\".\"v6\".\"a\""
+
+> CREATE VIEW "materialize"."public"."db_v_qual_test" AS SELECT "v2"."z", "db1"."scm1"."v6"."a" FROM "materialize"."public"."v2" JOIN "db1"."scm1"."v6" ON "v2"."z" = "db1"."scm1"."v6"."a"
 
 # 🔬🔬🔬 Schema:Schema
 # Evaluate ability to handle two schema-qualified references
@@ -314,8 +321,6 @@ renaming conflict
 renaming conflict
 ! ALTER VIEW v1 RENAME TO v4;
 renaming conflict
-! ALTER VIEW v1 RENAME TO a;
-renaming conflict
 
 # ✅ New idents
 > ALTER VIEW v1 RENAME TO v3;
@@ -341,8 +346,6 @@ materialize.public.scm_v_qual "CREATE VIEW \"materialize\".\"public\".\"scm_v_qu
   ON v3.z = v4.a
 
 # ❌ Identifiers used in dependent items
-! ALTER VIEW v4 RENAME TO a;
-renaming conflict
 ! ALTER VIEW v4 RENAME TO z;
 renaming conflict
 
@@ -357,10 +360,87 @@ materialize.public.v_v_qual "CREATE VIEW \"materialize\".\"public\".\"v_v_qual\"
 
 > CREATE VIEW "materialize"."public"."v_v_qual_test" AS SELECT "v5"."z", "v6"."a" FROM "materialize"."public"."v5" JOIN "materialize"."public"."v6" ON "v5"."z" = "v6"."a"
 
+# 🔬🔬🔬 Qualified wildcard
+
+> CREATE VIEW qualified_wildcard AS
+  SELECT v5.*
+  FROM v5
+
+> ALTER VIEW v5 RENAME TO v7
+
+> SHOW CREATE VIEW qualified_wildcard
+View                          Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.qualified_wildcard "CREATE VIEW \"materialize\".\"public\".\"qualified_wildcard\" AS SELECT \"materialize\".\"public\".\"v7\".* FROM \"materialize\".\"public\".\"v7\""
+
+> CREATE VIEW "materialize"."public"."qualified_wildcard_test" AS SELECT "materialize"."public"."v7".* FROM "materialize"."public"."v7"
+
+# 🔬🔬🔬 WHERE...IN
+
+> CREATE VIEW where_in_subquery AS
+  SELECT b FROM t1 WHERE a IN (SELECT a FROM scm5.v6);
+
+> CREATE VIEW where_in_literal AS
+  SELECT b FROM t1 WHERE b IN ('v8')
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW where_in_subquery RENAME TO v8
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW where_in_literal RENAME TO v8
+> ALTER VIEW v8 RENAME TO v9
+
+> SHOW CREATE VIEW v9
+View                   Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.v9 "CREATE VIEW \"materialize\".\"public\".\"where_in_literal_test\" AS SELECT \"b\" FROM \"materialize\".\"public\".\"t1\" WHERE \"b\" IN ('v8')"
+
+> CREATE VIEW "materialize"."public"."where_in_literal_test" AS SELECT "b" FROM "materialize"."public"."t1" WHERE "b" IN ('v8')
+
+# 🔬🔬🔬 Function names
+
+> CREATE VIEW func AS
+  SELECT count(1)
+
+# ❌ Identifiers used in dependent items
+! ALTER VIEW func RENAME TO count
+renaming conflict
+
+# 🔬🔬🔬 Spaces
+
+> CREATE VIEW space AS
+  SELECT 1 as "has space";
+
+> CREATE VIEW "already has space" AS
+  SELECT 1 as my_space;
+
+> CREATE VIEW space_dependent AS
+  SELECT * FROM space
+  JOIN "already has space"
+  ON "already has space".my_space = space."has space";
+
+# ❌ Identifiers used in own definition
+! ALTER VIEW space RENAME TO "has space"
+renaming conflict
+! ALTER VIEW "already has space" RENAME TO my_space
+renaming conflict
+
+# ✅ New idents
+> ALTER VIEW space RENAME TO "now has space"
+> ALTER VIEW "already has space" RENAME TO "still has space"
+
+> SHOW CREATE VIEW space_dependent
+View                               Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.space_dependent "CREATE VIEW \"materialize\".\"public\".\"space_dependent\" AS SELECT * FROM \"materialize\".\"public\".\"now has space\" JOIN \"materialize\".\"public\".\"still has space\" ON \"still has space\".\"my_space\" = \"now has space\".\"has space\""
+
+> CREATE VIEW "materialize"."public"."space_dependent_test" AS SELECT * FROM "materialize"."public"."now has space" JOIN "materialize"."public"."still has space" ON "still has space"."my_space" = "now has space"."has space"
+
 # 🔬🔬🔬 Final boss
 # This is an example of a query whose ambiguity cannot be resolved through
 # simple ident analysis; i.e. you need either real or strictly inferred scope
-# information to disambigutate references to `db3.scm3.z`.
+# information to disambiguate references to `db3.scm3.z`.
 
 > CREATE DATABASE db3;
 > CREATE SCHEMA db3.scm3;
