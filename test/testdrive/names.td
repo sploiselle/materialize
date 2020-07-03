@@ -384,7 +384,7 @@ materialize.public.qualified_wildcard "CREATE VIEW \"materialize\".\"public\".\"
   SELECT b FROM t1 WHERE b IN ('v8')
 
 # ❌ Identifiers used in dependent items
-! ALTER VIEW where_in_subquery RENAME TO v8
+! ALTER VIEW where_in_subquery RENAME TO scm5
 renaming conflict
 
 # ✅ New idents
@@ -436,6 +436,20 @@ View                               Create View
 materialize.public.space_dependent "CREATE VIEW \"materialize\".\"public\".\"space_dependent\" AS SELECT * FROM \"materialize\".\"public\".\"now has space\" JOIN \"materialize\".\"public\".\"still has space\" ON \"still has space\".\"my_space\" = \"now has space\".\"has space\""
 
 > CREATE VIEW "materialize"."public"."space_dependent_test" AS SELECT * FROM "materialize"."public"."now has space" JOIN "materialize"."public"."still has space" ON "still has space"."my_space" = "now has space"."has space"
+
+# 🔬🔬🔬 Keyword
+
+> CREATE VIEW natural AS
+  SELECT * FROM t1 NATURAL JOIN t1;
+
+> ALTER VIEW natural RENAME TO unnatural
+
+> SHOW CREATE VIEW unnatural
+View                         Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.unnatural "CREATE VIEW \"materialize\".\"public\".\"unnatural\" AS SELECT * FROM \"materialize\".\"public\".\"t1\" NATURAL JOIN \"materialize\".\"public\".\"t1\""
+
+> CREATE VIEW "materialize"."public"."unnatural_test" AS SELECT * FROM "materialize"."public"."t1" NATURAL JOIN "materialize"."public"."t1"
 
 # 🔬🔬🔬 Final boss
 # This is an example of a query whose ambiguity cannot be resolved through

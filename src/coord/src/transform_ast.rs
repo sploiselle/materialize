@@ -20,17 +20,15 @@ pub fn rewrite_create_stmt(
     to_name: &FullName,
 ) -> Result<(), String> {
     let maybe_update_object_name = |object_name: &mut ObjectName| {
-        if object_name.to_string() == from_name.to_string() {
+        // `ObjectName` sensibly doesn't `impl PartialEq`, so we have to cheat
+        // it.
+        if object_name.to_string() == ObjectName::from(from_name).to_string() {
             object_name.0[2] = Ident::new(to_name.item.clone());
         }
     };
 
     match source {
-        Statement::CreateView {
-            name,
-            ref mut query,
-            ..
-        } => {
+        Statement::CreateView { name, query, .. } => {
             maybe_update_object_name(name);
             rewrite_query(from_name, to_name, query)?;
             // Ensure that our rewrite didn't didn't introduce an ambiguity on
