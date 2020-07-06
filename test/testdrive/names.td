@@ -49,25 +49,25 @@ materialize.public.mz_view  materialize.public.mz_view_primary_idx  mz_obj_no   
     "materialize"."public"."mz_data"
     ';
 
-> ALTER SOURCE mz_data RENAME TO renamed_mz_data;
+> ALTER SOURCE mz_data RENAME TO mz_data_renamed;
 
-> ALTER VIEW mz_view RENAME TO renamed_mz_view;
+> ALTER VIEW mz_view RENAME TO mz_view_renamed;
 
-> ALTER INDEX mz_view_primary_idx RENAME TO renamed_index;
+> ALTER INDEX mz_view_primary_idx RENAME TO index_renamed;
 
-> ALTER SINK sink1 RENAME TO renamed_sink
+> ALTER SINK sink1 RENAME TO sink_renamed
 
 # Source was successfully renamed
 > SHOW SOURCES;
 SOURCES
 -------
-renamed_mz_data
+mz_data_renamed
 
 # Sink was successfully renamed
 > SHOW SINKS
 SINKS
 -----
-renamed_sink
+sink_renamed
 
 # View was successfully renamed
 > SHOW VIEWS
@@ -76,53 +76,53 @@ VIEWS
 byzantine_view
 dependent_view
 oppositional_view
-renamed_mz_view
+mz_view_renamed
 
 # Item's own `CREATE VIEW` statement updated
-> SHOW CREATE VIEW renamed_mz_view
+> SHOW CREATE VIEW mz_view_renamed
 View                                Create View
 ---------------------------------------------------------------------------------------------------------------------------------------------------
-materialize.public.renamed_mz_view  "CREATE VIEW \"materialize\".\"public\".\"renamed_mz_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_data\""
+materialize.public.mz_view_renamed  "CREATE VIEW \"materialize\".\"public\".\"mz_view_renamed\" AS SELECT * FROM \"materialize\".\"public\".\"mz_data_renamed\""
 
 # Item's indexes are properly re-attributed
-> SHOW INDEXES FROM renamed_mz_view
+> SHOW INDEXES FROM mz_view_renamed
 Source_or_view                      Key_name                          Column_name Expression Null  Seq_in_index
 ---------------------------------------------------------------------------------------------------------------
- materialize.public.renamed_mz_view materialize.public.renamed_index  a           <null>     false            1
- materialize.public.renamed_mz_view materialize.public.renamed_index  b           <null>     false            2
- materialize.public.renamed_mz_view materialize.public.renamed_index  mz_obj_no   <null>     false            3
+ materialize.public.mz_view_renamed materialize.public.index_renamed  a           <null>     false            1
+ materialize.public.mz_view_renamed materialize.public.index_renamed  b           <null>     false            2
+ materialize.public.mz_view_renamed materialize.public.index_renamed  mz_obj_no   <null>     false            3
 
-> SHOW CREATE INDEX renamed_index
+> SHOW CREATE INDEX index_renamed
 Index               Create Index
 ---------------------------------------------------------------------------------------------------------------------
-materialize.public.renamed_index "CREATE INDEX \"renamed_index\" ON \"materialize\".\"public\".\"renamed_mz_view\" (\"a\", \"b\", \"mz_obj_no\")"
+materialize.public.index_renamed "CREATE INDEX \"index_renamed\" ON \"materialize\".\"public\".\"mz_view_renamed\" (\"a\", \"b\", \"mz_obj_no\")"
 
 # Simple dependencies are renamed
 > SHOW CREATE VIEW dependent_view
 View                                Create View
 ------------------------------------------------------------------------------------------------------------------------------------------------
-materialize.public.dependent_view   "CREATE VIEW \"materialize\".\"public\".\"dependent_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\""
+materialize.public.dependent_view   "CREATE VIEW \"materialize\".\"public\".\"dependent_view\" AS SELECT * FROM \"materialize\".\"public\".\"mz_view_renamed\""
 
-> SHOW CREATE SINK renamed_sink
+> SHOW CREATE SINK sink_renamed
 Sink                            Create Sink
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-materialize.public.renamed_sink "CREATE SINK \"materialize\".\"public\".\"renamed_sink\" FROM \"materialize\".\"public\".\"renamed_mz_data\" INTO KAFKA BROKER 'localhost:9092' TOPIC 'snk1' FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY 'http://localhost:8081/' WITH SNAPSHOT"
+materialize.public.sink_renamed "CREATE SINK \"materialize\".\"public\".\"sink_renamed\" FROM \"materialize\".\"public\".\"mz_data_renamed\" INTO KAFKA BROKER 'localhost:9092' TOPIC 'snk1' FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY 'http://localhost:8081/' WITH SNAPSHOT"
 
 # Simple dependencies with both fully qualified and unqualified item references are renamed
 > SHOW CREATE VIEW byzantine_view
 View                              Create View
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"renamed_mz_data\".\"a\", \"renamed_mz_view\".\"b\" FROM \"materialize\".\"public\".\"renamed_mz_data\" JOIN \"materialize\".\"public\".\"renamed_mz_view\" ON \"renamed_mz_data\".\"a\" = \"renamed_mz_view\".\"a\""
+materialize.public.byzantine_view "CREATE VIEW \"materialize\".\"public\".\"byzantine_view\" AS SELECT \"mz_data_renamed\".\"a\", \"mz_view_renamed\".\"b\" FROM \"materialize\".\"public\".\"mz_data_renamed\" JOIN \"materialize\".\"public\".\"mz_view_renamed\" ON \"mz_data_renamed\".\"a\" = \"mz_view_renamed\".\"a\""
 
 # Strings containing old item name are not modified
 > SHOW CREATE VIEW oppositional_view
 View                                 Create View
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"oppositional_view\" AS SELECT * FROM \"materialize\".\"public\".\"renamed_mz_view\" WHERE \"b\" = '   an adversarial string   \"materialize\".\"public\".\"mz_data\"   '"
+materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"oppositional_view\" AS SELECT * FROM \"materialize\".\"public\".\"mz_view_renamed\" WHERE \"b\" = '   an adversarial string   \"materialize\".\"public\".\"mz_data\"   '"
 
 # 🔬🔬🔬 Name collisions
 
-> ALTER VIEW renamed_mz_view RENAME TO t1
+> ALTER VIEW mz_view_renamed RENAME TO t1
 > CREATE VIEW a AS SELECT a FROM t1
 > CREATE VIEW v0 AS SELECT b FROM t1
 > CREATE VIEW table_alias_check AS
@@ -451,7 +451,24 @@ materialize.public.unnatural "CREATE VIEW \"materialize\".\"public\".\"unnatural
 
 > CREATE VIEW "materialize"."public"."unnatural_test" AS SELECT * FROM "materialize"."public"."t1" NATURAL JOIN "materialize"."public"."t1"
 
-# 🔬🔬🔬 Final boss
+# 🔬🔬🔬 Nested Subqueries
+
+> CREATE VIEW subquery AS
+  SELECT 1
+
+> CREATE VIEW subqueries AS
+  SELECT * FROM (((subquery NATURAL JOIN subquery)))
+
+> ALTER VIEW subquery RENAME TO subquery_renamed
+
+> SHOW CREATE VIEW subqueries
+View                          Create View
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.subqueries "CREATE VIEW \"materialize\".\"public\".\"subqueries\" AS SELECT * FROM (((\"materialize\".\"public\".\"subquery_renamed\" NATURAL JOIN \"materialize\".\"public\".\"subquery_renamed\")))"
+
+> CREATE VIEW "materialize"."public"."subqueries_test" AS SELECT * FROM ((("materialize"."public"."subquery_renamed" NATURAL JOIN "materialize"."public"."subquery_renamed")))
+
+# 🔬🔬🔬 Final bosses
 # This is an example of a query whose ambiguity cannot be resolved through
 # simple ident analysis; i.e. you need either real or strictly inferred scope
 # information to disambiguate references to `db3.scm3.z`.
@@ -463,7 +480,7 @@ materialize.public.unnatural "CREATE VIEW \"materialize\".\"public\".\"unnatural
 > CREATE SCHEMA db3;
 > CREATE VIEW db3.scm3 AS SELECT a AS z FROM t1;
 
-> CREATE VIEW final_boss AS
+> CREATE VIEW final_boss_1 AS
   SELECT db3.scm3.z, db3.scm3.z.a
   FROM db3.scm3.z
   JOIN db3.scm3
@@ -474,3 +491,15 @@ materialize.public.unnatural "CREATE VIEW \"materialize\".\"public\".\"unnatural
 renaming conflict
 # ...if you can do this without trapping `materialize.db3.scm3`, you've defeated
 # the final boss!
+
+> CREATE VIEW scm3.z AS SELECT a FROM t1;
+
+> CREATE VIEW scm3 AS SELECT a AS z FROM t1;
+
+> CREATE VIEW final_boss_2 AS
+  SELECT scm3.z, scm3.z.a
+  FROM scm3.z
+  JOIN scm3
+  ON scm3.z = scm3.z.a;
+
+> alter view scm3 rename to wowowow;

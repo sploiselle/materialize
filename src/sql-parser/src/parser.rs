@@ -2105,6 +2105,7 @@ impl Parser {
             Some(Token::Word(ref w))
                 if after_as || !reserved_kwds.contains(&w.keyword.as_str()) =>
             {
+                println!("Found alias {:?}", w);
                 Ok(Some(w.to_ident()))
             }
             not_an_ident => {

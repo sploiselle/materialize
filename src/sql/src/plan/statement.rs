@@ -999,6 +999,7 @@ fn handle_create_view(
     params: &Params,
 ) -> Result<Plan, failure::Error> {
     let create_sql = normalize::create_statement(scx, stmt.clone())?;
+    println!("handle_create_view create_sql {:?}", create_sql);
     let (name, columns, query, temporary, materialized, if_exists, with_options) = match &mut stmt {
         Statement::CreateView {
             name,

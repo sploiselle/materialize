@@ -223,6 +223,7 @@ impl CatalogItem {
         to: &FullName,
     ) -> Result<CatalogItem, String> {
         let do_rewrite = |create_sql: String| -> Result<String, String> {
+            println!("\n\nRewriting {}\nfor {:?} -> {:?}", create_sql, from, to);
             let mut create_sql_stmt = sql::parse::parse(create_sql).unwrap().into_element();
             crate::transform_ast::rewrite_create_stmt(&mut create_sql_stmt, from, to)?;
 
@@ -492,6 +493,7 @@ impl Catalog {
                 }
             }
         }
+        println!("failed to resolve");
         Err(Error::new(ErrorKind::UnknownItem(name.to_string())))
     }
 
@@ -509,6 +511,7 @@ impl Catalog {
     ///
     /// See also [`Catalog::try_get`].
     pub fn get(&self, name: &FullName, conn_id: u32) -> Result<&CatalogEntry, Error> {
+        println!("trying to get");
         self.try_get(name, conn_id)
             .ok_or_else(|| Error::new(ErrorKind::UnknownItem(name.to_string())))
     }
@@ -809,6 +812,7 @@ impl Catalog {
                     }]
                 }
                 Op::CreateItem { id, name, item } => {
+                    println!("Creating item {:?}, {:?}", name, item);
                     if item.is_temporary() {
                         if name.database != DatabaseSpecifier::Ambient
                             || name.schema != MZ_TEMP_SCHEMA
@@ -1248,6 +1252,7 @@ impl sql::catalog::Catalog for ConnCatalog<'_> {
     }
 
     fn resolve_item(&self, name: &PartialName) -> Result<FullName, failure::Error> {
+        println!("resolving item {:?}", name);
         Ok(self
             .catalog
             .resolve(self.database_spec(), self.search_path, name, self.conn_id)?)
