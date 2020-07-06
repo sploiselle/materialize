@@ -244,8 +244,6 @@ pub fn handle_statement(
     stmt: Statement,
     params: &Params,
 ) -> Result<Plan, failure::Error> {
-    println!("handle statement");
-    println!("stmt {:?}", stmt);
     let scx = &StatementContext { pcx, catalog };
     match stmt {
         Statement::Tail {
@@ -1000,9 +998,7 @@ fn handle_create_view(
     mut stmt: Statement,
     params: &Params,
 ) -> Result<Plan, failure::Error> {
-    println!("handle create view");
     let create_sql = normalize::create_statement(scx, stmt.clone())?;
-    println!("handle_create_view create_sql {:?}", create_sql);
     let (name, columns, query, temporary, materialized, if_exists, with_options) = match &mut stmt {
         Statement::CreateView {
             name,

@@ -511,7 +511,6 @@ impl Catalog {
     ///
     /// See also [`Catalog::try_get`].
     pub fn get(&self, name: &FullName, conn_id: u32) -> Result<&CatalogEntry, Error> {
-        println!("trying to get");
         self.try_get(name, conn_id)
             .ok_or_else(|| Error::new(ErrorKind::UnknownItem(name.to_string())))
     }
@@ -812,7 +811,6 @@ impl Catalog {
                     }]
                 }
                 Op::CreateItem { id, name, item } => {
-                    println!("Creating item {:?}, {:?}", name, item);
                     if item.is_temporary() {
                         if name.database != DatabaseSpecifier::Ambient
                             || name.schema != MZ_TEMP_SCHEMA

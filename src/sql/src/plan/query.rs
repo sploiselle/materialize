@@ -648,7 +648,6 @@ fn plan_table_with_joins<'a>(
     join_operator: &JoinOperator,
     table_with_joins: &'a TableWithJoins,
 ) -> Result<(RelationExpr, Scope), failure::Error> {
-    println!("plan_table_with_joins");
     let (mut left, mut left_scope) = plan_table_factor(
         qcx,
         left,
@@ -767,7 +766,6 @@ fn plan_table_alias(
     inherent_table_name: Option<PartialName>,
     inherent_column_names: Vec<Option<ColumnName>>,
 ) -> Result<Scope, failure::Error> {
-    println!("plan_table_alias {:?}", alias);
     let table_name = match alias {
         None => inherent_table_name,
         Some(TableAlias { name, .. }) => Some(PartialName {

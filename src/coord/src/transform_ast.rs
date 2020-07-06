@@ -70,8 +70,7 @@ pub fn rewrite_create_stmt(
 /// Rewrites `query`'s references of `from` to `to` or errors if too ambiguous.
 fn rewrite_query(from: &FullName, to: &FullName, query: &mut Query) -> Result<(), String> {
     let from_ident = Ident::new(from.item.clone());
-    let to_ident = Ident::new(to.item.clone());
-    let qual_depth = QueryIdentAgg::determine_qual_depth(&from_ident, Some(to_ident), query)?;
+    let qual_depth = QueryIdentAgg::determine_qual_depth(&from_ident, query)?;
     println!("\nDetermined qual_depth {:?}", qual_depth);
     CreateSqlRewriter::rewrite_query_with_qual_depth(from, to, qual_depth, query);
     Ok(())
@@ -81,7 +80,7 @@ fn rewrite_query(from: &FullName, to: &FullName, query: &mut Query) -> Result<()
 fn assess_query_ambiguity(name: &FullName, query: &Query) -> Result<(), String> {
     let name = Ident::new(name.item.clone());
     println!("\nDetermining ambiguity\n");
-    match QueryIdentAgg::determine_qual_depth(&name, None, query) {
+    match QueryIdentAgg::determine_qual_depth(&name, query) {
         Ok(_) => Ok(()),
         Err(e) => Err(e),
     }
@@ -98,8 +97,6 @@ struct QueryIdentAgg<'a> {
     all_item_names: HashSet<Ident>,
     /// Tracks the least qualified instance of `name` seen.
     min_qual_depth: usize,
-    /// Provides an option to fail the visit if encounters a specified `Ident`.
-    fail_on: Option<Ident>,
     err: Option<String>,
 }
 
@@ -116,18 +113,13 @@ impl<'a> QueryIdentAgg<'a> {
     /// `Result`s of `Err` indicate that we cannot unambiguously reference
     /// `name`, or if `fail_on` was provided, that it encountered the specified
     /// `Ident`.
-    fn determine_qual_depth(
-        name: &Ident,
-        fail_on: Option<Ident>,
-        query: &Query,
-    ) -> Result<usize, String> {
+    fn determine_qual_depth(name: &Ident, query: &Query) -> Result<usize, String> {
         let mut v = QueryIdentAgg {
             qualifiers: HashMap::new(),
             all_item_names: HashSet::new(),
             min_qual_depth: usize::MAX,
             err: None,
             name,
-            fail_on,
         };
 
         v.visit_query(query);
@@ -139,16 +131,18 @@ impl<'a> QueryIdentAgg<'a> {
         // We cannot disambiguate items where `name` is used to qualify itself.
         // e.g. if we encounter `a.b.a` we cannot determine which level of
         // qualification `a` applies to.
-        if v.qualifiers.values().any(|t| t.contains(&name)) || v.qualifiers.contains_key(&name) {
-            return Err(format!("{} used to qualify item with same name", name));
-        }
+        // if v.qualifiers.values().any(|t| t.contains(&name)) ||  {
+        //     return Err(format!("{} used to qualify item with same name", name));
+        // }
         // Check if there was more than one 3rd-level (e.g.
         // database) qualification used for any reference to `name`.
-        let req_depth = if v.qualifiers.values().any(|v| v.len() > 1) {
+        let req_depth = if v.qualifiers.values().any(|v| v.len() > 1)
+            || v.qualifiers.values().any(|t| t.contains(&name))
+        {
             3
         // Check if there was more than one 2nd-level (e.g. schema)
         // qualification used for any reference to `name`.
-        } else if v.qualifiers.len() > 1 {
+        } else if v.qualifiers.len() > 1 || v.qualifiers.contains_key(&name) {
             2
         } else {
             return Ok(1);
@@ -347,7 +341,7 @@ impl CreateSqlRewriter {
             };
         }
         match h.len() {
-            1 => return,
+            1 => {}
             2 => {
                 rewrite_to!(1);
             }

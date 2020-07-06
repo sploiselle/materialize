@@ -120,9 +120,51 @@ View                                 Create View
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"oppositional_view\" AS SELECT * FROM \"materialize\".\"public\".\"mz_view_renamed\" WHERE \"b\" = '   an adversarial string   \"materialize\".\"public\".\"mz_data\"   '"
 
+# Cleanup; we'll use this view in many tests
+> ALTER VIEW mz_view_renamed RENAME TO t1
+
+# 🔬🔬🔬 Unresolvable without scope analysis
+# This is an example of a query whose ambiguity cannot be resolved through
+# simple ident analysis; i.e. you need either real or strictly inferred scope
+# information to disambiguate references to `db3.scm3.z`.
+
+> CREATE DATABASE IF NOT EXISTS db1;
+> CREATE SCHEMA IF NOT EXISTS db1.scm1;
+> CREATE VIEW db1.scm1.z AS SELECT a FROM t1;
+
+> CREATE SCHEMA IF NOT EXISTS materialize.db1;
+> CREATE VIEW materialize.db1.scm1 AS SELECT a AS z FROM t1;
+
+> CREATE VIEW final_boss_1 AS
+  SELECT db1.scm1.z, db1.scm1.z.a
+  FROM db1.scm1.z
+  JOIN db1.scm1
+  ON db1.scm1.z = db1.scm1.z.a;
+
+# ❌
+! ALTER VIEW db1.scm1.z RENAME TO anything
+renaming conflict
+! ALTER VIEW db1.scm1 RENAME TO anything
+renaming conflict
+
+> CREATE SCHEMA IF NOT EXISTS materialize.scm1;
+> CREATE VIEW materialize.scm1.z AS SELECT a FROM t1;
+> CREATE VIEW materialize.public.scm1 AS SELECT a AS z FROM t1;
+
+> CREATE VIEW final_boss_2 AS
+  SELECT scm1.z, scm1.z.a
+  FROM scm1.z
+  JOIN scm1
+  ON scm1.z = scm1.z.a;
+
+# ❌
+! ALTER VIEW scm1.z RENAME TO anything
+renaming conflict
+! ALTER VIEW scm1 RENAME TO anything
+renaming conflict
+
 # 🔬🔬🔬 Name collisions
 
-> ALTER VIEW mz_view_renamed RENAME TO t1
 > CREATE VIEW a AS SELECT a FROM t1
 > CREATE VIEW v0 AS SELECT b FROM t1
 > CREATE VIEW table_alias_check AS
@@ -132,21 +174,16 @@ materialize.public.oppositional_view "CREATE VIEW \"materialize\".\"public\".\"o
     FROM t1
   ) AS t1;
 
-# ❌ Identifiers used in dependent items
+# ❌ Blocked by table alias
 ! ALTER VIEW t1 RENAME TO b;
-renaming conflict
-! ALTER VIEW t1 RENAME TO materialize;
-renaming conflict
-! ALTER VIEW t1 RENAME TO public;
 renaming conflict
 ! ALTER VIEW t1 RENAME TO t2;
 renaming conflict
 
-# ❌ Identifiers used in own definition
-# `materialize.public.a` contains an unqualified reference to `materialize.public.t1.a`.
-! ALTER VIEW a RENAME TO anything
+# ❌ Ambiguous db/schema positioning
+! ALTER VIEW t1 RENAME TO materialize;
 renaming conflict
-! ALTER VIEW v0 RENAME TO b
+! ALTER VIEW t1 RENAME TO public;
 renaming conflict
 
 # ❌ Name used by another item in schema's catalog
@@ -155,13 +192,34 @@ a is already taken by item in schema
 ! ALTER VIEW t1 RENAME TO dependent_view;
 dependent_view is already taken by item in schema
 
+# ✅ Can rename from same name as unqualified column
+> ALTER VIEW a RENAME TO b
+> ALTER VIEW B RENAME TO a_1
+
+> SHOW CREATE VIEW a_1
+View                   Create View
+------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.a_1 "CREATE VIEW \"materialize\".\"public\".\"a_1\" AS SELECT \"a\" FROM \"materialize\".\"public\".\"t1\""
+
+> CREATE VIEW "materialize"."public"."a_1_test" AS SELECT "a" FROM "materialize"."public"."t1"
+
+> ALTER VIEW v0 RENAME TO b
+> ALTER VIEW b RENAME TO v0_1
+
+> SHOW CREATE VIEW v0_1
+View                    Create View
+------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.v0_1 "CREATE VIEW \"materialize\".\"public\".\"v0_1\" AS SELECT \"b\" FROM \"materialize\".\"public\".\"t1\""
+
+> CREATE VIEW "materialize"."public"."v0_1_test" AS SELECT "b" FROM "materialize"."public"."t1"
+
 # 🔬🔬🔬 DB::DB
 # Evaluate ability to handle two database-qualified references.
 
-> CREATE DATABASE db1
-> CREATE DATABASE db2
-> CREATE SCHEMA db1.scm1
-> CREATE SCHEMA db2.scm2
+> CREATE DATABASE IF NOT EXISTS db1
+> CREATE DATABASE IF NOT EXISTS db2
+> CREATE SCHEMA IF NOT EXISTS db1.scm1
+> CREATE SCHEMA IF NOT EXISTS db2.scm2
 > CREATE VIEW db1.scm1.v1 AS
     SELECT a FROM t1;
 
@@ -186,6 +244,17 @@ renaming conflict
 ! ALTER VIEW db2.scm2.v2 RENAME TO a;
 renaming conflict
 
+# ✅ View + DB can use same ident because of sufficient qualification
+> ALTER VIEW db2.scm2.v2 RENAME TO db2
+> ALTER VIEW db2.scm2.db2 RENAME TO v2_1
+> ALTER VIEW db1.scm1.v1 RENAME TO db1
+> ALTER VIEW db1.scm1.db1 RENAME TO v1_1
+
+> SHOW CREATE VIEW v2_1
+View                    Create View
+------------------------------------------------------------------------------------------------------------------------------------------------
+materialize.public.v0_1 "CREATE VIEW \"materialize\".\"public\".\"db_db_qual\" AS SELECT \"db2\".\"scm2\".\"v2_1\".\"z\" FROM \"db2\".\"scm2\".\"v2_1\" JOIN \"db1\".\"scm1\".\"v1_1\" ON \"db2\".\"scm2\".\"v2_1\".\"z\" = \"db1\".\"scm1\".\"v1_1\".\"a\""
+
 # ✅ New idents
 > ALTER VIEW db2.scm2.v2 RENAME TO v3;
 > ALTER VIEW db1.scm1.v1 RENAME TO v4;
@@ -201,7 +270,7 @@ materialize.public.db_db_qual "CREATE VIEW \"materialize\".\"public\".\"db_db_qu
 # Evaluate ability to handle one database-qualified reference and one
 # schema-qualified reference.
 
-> CREATE SCHEMA scm3
+> CREATE SCHEMA IF NOT EXISTS scm3
 
 > CREATE VIEW scm3.v2 AS
     SELECT a AS z FROM t1;
@@ -261,8 +330,8 @@ materialize.public.db_v_qual "CREATE VIEW \"materialize\".\"public\".\"db_v_qual
 # 🔬🔬🔬 Schema:Schema
 # Evaluate ability to handle two schema-qualified references
 
-> CREATE SCHEMA scm4;
-> CREATE SCHEMA scm5;
+> CREATE SCHEMA IF NOT EXISTS scm4;
+> CREATE SCHEMA IF NOT EXISTS scm5;
 
 > CREATE VIEW scm4.v1 AS
     SELECT a AS z FROM t1;
@@ -467,39 +536,3 @@ View                          Create View
 materialize.public.subqueries "CREATE VIEW \"materialize\".\"public\".\"subqueries\" AS SELECT * FROM (((\"materialize\".\"public\".\"subquery_renamed\" NATURAL JOIN \"materialize\".\"public\".\"subquery_renamed\")))"
 
 > CREATE VIEW "materialize"."public"."subqueries_test" AS SELECT * FROM ((("materialize"."public"."subquery_renamed" NATURAL JOIN "materialize"."public"."subquery_renamed")))
-
-# 🔬🔬🔬 Final bosses
-# This is an example of a query whose ambiguity cannot be resolved through
-# simple ident analysis; i.e. you need either real or strictly inferred scope
-# information to disambiguate references to `db3.scm3.z`.
-
-> CREATE DATABASE db3;
-> CREATE SCHEMA db3.scm3;
-> CREATE VIEW db3.scm3.z AS SELECT a FROM t1;
-
-> CREATE SCHEMA db3;
-> CREATE VIEW db3.scm3 AS SELECT a AS z FROM t1;
-
-> CREATE VIEW final_boss_1 AS
-  SELECT db3.scm3.z, db3.scm3.z.a
-  FROM db3.scm3.z
-  JOIN db3.scm3
-  ON db3.scm3.z = db3.scm3.z.a;
-
-# ❌ Identifiers used in dependent items
-! ALTER VIEW db3.scm3.z RENAME TO anything
-renaming conflict
-# ...if you can do this without trapping `materialize.db3.scm3`, you've defeated
-# the final boss!
-
-> CREATE VIEW scm3.z AS SELECT a FROM t1;
-
-> CREATE VIEW scm3 AS SELECT a AS z FROM t1;
-
-> CREATE VIEW final_boss_2 AS
-  SELECT scm3.z, scm3.z.a
-  FROM scm3.z
-  JOIN scm3
-  ON scm3.z = scm3.z.a;
-
-> alter view scm3 rename to wowowow;

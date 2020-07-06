@@ -159,7 +159,6 @@ pub fn create_statement(
         }
 
         fn visit_object_name_mut(&mut self, object_name: &'ast mut ObjectName) {
-            println!("visit_object_name_mut");
             match self.scx.resolve_item(object_name.clone()) {
                 Ok(full_name) => *object_name = unresolve(full_name),
                 Err(e) => self.err = Some(e),
