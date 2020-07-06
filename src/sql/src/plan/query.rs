@@ -262,7 +262,6 @@ fn plan_query(
         Some(Expr::Value(Value::Number(x))) => x.parse()?,
         _ => bail!("OFFSET must be an integer constant"),
     };
-    println!("plan_query");
     let (expr, scope) = plan_set_expr(qcx, &q.body)?;
     let output_typ = qcx.relation_type(&expr);
     let mut order_by = vec![];
@@ -324,7 +323,6 @@ fn plan_subquery(qcx: &QueryContext, q: &Query) -> Result<(RelationExpr, Scope),
 }
 
 fn plan_set_expr(qcx: &QueryContext, q: &SetExpr) -> Result<(RelationExpr, Scope), failure::Error> {
-    println!("plan_set_expr");
     match q {
         SetExpr::Select(select) => plan_view_select(qcx, select),
         SetExpr::SetOperation {
@@ -483,7 +481,6 @@ fn plan_view_select(
     qcx: &QueryContext,
     s: &Select,
 ) -> Result<(RelationExpr, Scope), failure::Error> {
-    println!("plan_view_select");
     // Step 1. Handle FROM clause, including joins.
     let (mut relation_expr, from_scope) =
         s.from.iter().fold(Ok(plan_join_identity(qcx)), |l, twj| {
@@ -675,7 +672,6 @@ fn plan_table_factor<'a>(
     join_operator: &JoinOperator,
     table_factor: &'a TableFactor,
 ) -> Result<(RelationExpr, Scope), failure::Error> {
-    println!("plan_table_factor");
     match table_factor {
         TableFactor::Table {
             name,
@@ -704,7 +700,6 @@ fn plan_table_factor<'a>(
                     typ: item.desc()?.typ().clone(),
                 };
                 let column_names = item.desc()?.iter_names().map(|n| n.cloned()).collect();
-                println!("TableFactor::Table going into plan_table_alias");
                 let scope = plan_table_alias(qcx, alias.as_ref(), Some(name.into()), column_names)?;
                 plan_join_operator(qcx, &join_operator, left, left_scope, expr, scope)
             }
@@ -720,7 +715,6 @@ fn plan_table_factor<'a>(
             let (expr, scope) = plan_subquery(&qcx, &subquery)?;
             let table_name = None;
             let column_names = scope.column_names().map(|n| n.cloned()).collect();
-            println!("TableFactor::Derived going into plan_table_alias");
             let scope = plan_table_alias(qcx, alias.as_ref(), table_name, column_names)?;
             plan_join_operator(qcx, &join_operator, left, left_scope, expr, scope)
         }

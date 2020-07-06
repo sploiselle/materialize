@@ -1252,7 +1252,6 @@ impl sql::catalog::Catalog for ConnCatalog<'_> {
     }
 
     fn resolve_item(&self, name: &PartialName) -> Result<FullName, failure::Error> {
-        println!("resolving item {:?}", name);
         Ok(self
             .catalog
             .resolve(self.database_spec(), self.search_path, name, self.conn_id)?)
