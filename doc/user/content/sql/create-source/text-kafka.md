@@ -25,13 +25,11 @@ Kafka topic.
 CREATE SOURCE current_predictions
 FROM KAFKA BROKER 'localhost:9092' TOPIC 'kv_feed'
 FORMAT TEXT
-USING SCHEMA FILE '/scratch/kv_feed.json'
 ENVELOPE UPSERT;
 ```
 
 This creates a source that...
 
-- Has its schema in a file on disk, and decodes payload data using that schema.
 - Decodes data received from the `kv_feed` topic published by Kafka running on
   `localhost:9092`.
 - Uses message keys to determine what should be inserted, deleted, and updated.
