@@ -1808,6 +1808,9 @@ pub enum BinaryFunc {
     ListLengthMax { max_dim: usize },
     ArrayContains,
     ArrayIndex,
+    ListListConcat,
+    ListElementConcat,
+    ElementListConcat,
 }
 
 impl BinaryFunc {
@@ -1921,6 +1924,9 @@ impl BinaryFunc {
             BinaryFunc::ListLengthMax { max_dim } => eager!(list_length_max, *max_dim),
             BinaryFunc::ArrayContains => Ok(eager!(array_contains)),
             BinaryFunc::ArrayIndex => Ok(eager!(array_index)),
+            BinaryFunc::ListListConcat => Ok(eager!(list_list_concat, temp_storage)),
+            BinaryFunc::ListElementConcat => Ok(eager!(list_element_concat, temp_storage)),
+            BinaryFunc::ElementListConcat => Ok(eager!(element_list_concat, temp_storage)),
         }
     }
 
@@ -2062,12 +2068,21 @@ impl BinaryFunc {
                 .nullable(true),
 
             ListLengthMax { .. } => ScalarType::Int64.nullable(true),
+            ListListConcat | ListElementConcat => input1_type.scalar_type.nullable(true),
+            ElementListConcat => input2_type.scalar_type.nullable(true),
         }
     }
 
     /// Whether the function output is NULL if any of its inputs are NULL.
     pub fn propagates_nulls(&self) -> bool {
-        !matches!(self, BinaryFunc::And | BinaryFunc::Or)
+        !matches!(
+            self,
+            BinaryFunc::And
+                | BinaryFunc::Or
+                | BinaryFunc::ListListConcat
+                | BinaryFunc::ListElementConcat
+                | BinaryFunc::ElementListConcat
+        )
     }
 
     /// Whether the function might return NULL even if none of its inputs are
@@ -2191,7 +2206,10 @@ impl BinaryFunc {
             | ListIndex
             | MatchRegex { .. }
             | ArrayContains
-            | ArrayIndex => true,
+            | ArrayIndex
+            | ListListConcat
+            | ListElementConcat
+            | ElementListConcat => true,
             MatchLikePattern
             | ToCharTimestamp
             | ToCharTimestampTz
@@ -2298,6 +2316,9 @@ impl fmt::Display for BinaryFunc {
             BinaryFunc::ListLengthMax { .. } => f.write_str("list_length_max"),
             BinaryFunc::ArrayContains => f.write_str("array_contains"),
             BinaryFunc::ArrayIndex => f.write_str("array_index"),
+            BinaryFunc::ListListConcat => f.write_str("||"),
+            BinaryFunc::ListElementConcat => f.write_str("||"),
+            BinaryFunc::ElementListConcat => f.write_str("||"),
         }
     }
 }
@@ -3376,6 +3397,45 @@ fn list_length_max<'a>(a: Datum<'a>, b: Datum<'a>, max_dim: usize) -> Result<Dat
             None => Datum::Null,
         })
     }
+}
+
+fn list_list_concat<'a>(a: Datum<'a>, b: Datum<'a>, temp_storage: &'a RowArena) -> Datum<'a> {
+    if a.is_null() {
+        return b;
+    } else if b.is_null() {
+        return a;
+    }
+
+    let a = a.unwrap_list().iter();
+    let b = b.unwrap_list().iter();
+
+    temp_storage.make_datum(|packer| packer.push_list(a.chain(b)))
+}
+
+fn list_element_concat<'a>(a: Datum<'a>, b: Datum<'a>, temp_storage: &'a RowArena) -> Datum<'a> {
+    temp_storage.make_datum(|packer| {
+        packer.push_list_with(|packer| {
+            if !a.is_null() {
+                for elem in a.unwrap_list().iter() {
+                    packer.push(elem);
+                }
+            }
+            packer.push(b);
+        })
+    })
+}
+
+fn element_list_concat<'a>(a: Datum<'a>, b: Datum<'a>, temp_storage: &'a RowArena) -> Datum<'a> {
+    temp_storage.make_datum(|packer| {
+        packer.push_list_with(|packer| {
+            packer.push(a);
+            if !b.is_null() {
+                for elem in b.unwrap_list().iter() {
+                    packer.push(elem);
+                }
+            }
+        })
+    })
 }
 
 fn array_contains<'a>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a> {
