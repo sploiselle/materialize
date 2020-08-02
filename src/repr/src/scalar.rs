@@ -758,8 +758,8 @@ impl<'a> ScalarType {
     pub fn desaturate(&self) -> ScalarType {
         match self {
             ScalarType::Decimal(..) => ScalarType::Decimal(0, 0),
-            ScalarType::List(..) => ScalarType::List(Box::new(ScalarType::String)),
             ScalarType::Array(..) => ScalarType::Array(Box::new(ScalarType::String)),
+            ScalarType::List(..) => ScalarType::List(Box::new(ScalarType::String)),
             ScalarType::Record { .. } => ScalarType::Record { fields: vec![] },
             _ => self.clone(),
         }
@@ -771,6 +771,15 @@ impl<'a> ScalarType {
         ColumnType {
             nullable,
             scalar_type: self,
+        }
+    }
+
+    /// Returns whether or not `self` is a [`ScalarType::List`], irrespective of
+    /// its element type.
+    pub fn is_list(&self) -> bool {
+        match self {
+            ScalarType::List(_) => true,
+            _ => false,
         }
     }
 }
