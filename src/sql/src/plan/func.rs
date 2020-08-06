@@ -1232,6 +1232,27 @@ lazy_static! {
                     })
                 })
             },
+            "list_append" => Scalar {
+                vec![ListAny, ListElementAny] => binary_op(|ecx, lhs, rhs| {
+                    let ltyp = ecx.scalar_type(&lhs);
+                    let rtyp = ecx.scalar_type(&rhs);
+                    if *ltyp.unwrap_list_element_type() != rtyp {
+                        concat_err!(ltyp, rtyp)
+                    }
+                    Ok(lhs.call_binary(rhs, BinaryFunc::ListElementConcat))
+                })
+            },
+            "list_cat" => Scalar {
+                vec![ListAny, ListAny] => binary_op(|ecx, lhs, rhs| {
+                    let ltyp = ecx.scalar_type(&lhs);
+                    let rtyp = ecx.scalar_type(&rhs);
+                    if ltyp != rtyp {
+                        concat_err!(ltyp, rtyp)
+                    }
+                    Ok(lhs.call_binary(rhs, BinaryFunc::ListListConcat))
+
+                })
+            },
             "list_ndims" => Scalar {
                 vec![ListAny] => unary_op(|ecx, e| {
                     ecx.require_experimental_mode("list_ndims")?;
@@ -1247,6 +1268,16 @@ lazy_static! {
                     ecx.require_experimental_mode("list_length_max")?;
                     let max_dim = ecx.scalar_type(&lhs).unwrap_list_n_dims();
                     Ok(lhs.call_binary(rhs, BinaryFunc::ListLengthMax{ max_dim }))
+                })
+            },
+            "list_prepend" => Scalar {
+                vec![ListElementAny, ListAny] => binary_op(|ecx, lhs, rhs| {
+                    let ltyp = ecx.scalar_type(&lhs);
+                    let rtyp = ecx.scalar_type(&rhs);
+                    if ltyp != *rtyp.unwrap_list_element_type() {
+                        concat_err!(ltyp, rtyp)
+                    }
+                    Ok(lhs.call_binary(rhs, BinaryFunc::ElementListConcat))
                 })
             },
             "mz_logical_timestamp" => Scalar {
