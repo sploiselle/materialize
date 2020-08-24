@@ -225,6 +225,144 @@ impl ParamList {
             .enumerate()
             .all(|(i, t)| self[i].accepts_type_directly(t))
     }
+
+    /// Implements constraints for PostgreSQL polymorphic types.
+    fn resolve_polymorphic_types(
+        &self,
+        types: &[Option<ScalarType>],
+    ) -> Result<ParamList, anyhow::Error> {
+        println!(
+            "resolving polymorphic types \n\t self {:?} \n\t types {:?}",
+            self, types
+        );
+        if self.iter().any(|p| match p {
+            ParamType::ListAny | ParamType::ListElementAny => true,
+            _ => false,
+        }) {
+            println!("Inside the polymorphic resolution");
+            let mut constrained_type: Option<ScalarType> = None;
+            // Determine any known type among `ListAny` or `ListElementAny` parameters.
+            for (p, t) in self.iter().zip(types.iter()) {
+                match (p, t) {
+                    (ParamType::ListAny, Some(ScalarType::List(typ))) => {
+                        constrained_type = Some((**typ).clone());
+                        break;
+                    }
+                    (ParamType::ListElementAny, Some(typ)) | (ParamType::NonListAny, Some(typ)) => {
+                        constrained_type = Some(typ.clone());
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            let constrained_type = constrained_type.unwrap_or(ScalarType::String);
+            println!("constrained type {:?}", constrained_type);
+            let mut param_types = Vec::new();
+            // Constrain polymorphic types.
+            for (p, t) in self.iter().zip(types.iter()) {
+                match (p, t) {
+                    (ParamType::ListAny, Some(ScalarType::List(typ))) => {
+                        if constrained_type != **typ {
+                            bail!(
+                                "incompatible types; have List({}), can only accept List({})",
+                                typ,
+                                constrained_type
+                            );
+                        }
+                        param_types.push(ParamType::Plain(ScalarType::List(typ.clone())));
+                    }
+                    (ParamType::ListAny, None) => {
+                        param_types.push(ParamType::Plain(ScalarType::List(Box::new(
+                            constrained_type.clone(),
+                        ))));
+                    }
+                    (ParamType::ListElementAny, Some(typ)) => {
+                        if &constrained_type != typ {
+                            bail!(
+                                "incompatible types; have {}, can only accept {}",
+                                typ,
+                                constrained_type
+                            );
+                        }
+                        param_types.push(ParamType::Plain(typ.clone()));
+                    }
+                    (ParamType::ListElementAny, None) => {
+                        param_types.push(ParamType::Plain(constrained_type.clone()));
+                    }
+                    (ParamType::NonListAny, Some(typ)) => {
+                        if matches!(constrained_type, ScalarType::List(..)) {
+                            bail!("incompatible types; cannot accept {}", constrained_type)
+                        } else if &constrained_type != typ {
+                            bail!(
+                                "incompatible types; have {}, can only accept {}",
+                                typ,
+                                constrained_type
+                            );
+                        }
+                        param_types.push(ParamType::Plain(typ.clone()));
+                    }
+                    (ParamType::NonListAny, None) => {
+                        if matches!(constrained_type, ScalarType::List(..)) {
+                            bail!("incompatible types; cannot accept {}", constrained_type)
+                        }
+                        param_types.push(ParamType::Plain(constrained_type.clone()));
+                    }
+                    _ => param_types.push(p.clone()),
+                }
+            }
+            println!("Resolved polymorphic types {:?}", param_types);
+            Ok(match self {
+                ParamList::Exact(_) => ParamList::Exact(param_types),
+                ParamList::Repeat(_) => ParamList::Repeat(param_types),
+            })
+        } else {
+            Ok(self.clone())
+        }
+    }
+}
+
+impl<'a> ParamList {
+    fn iter(&'a self) -> ParamListIter<'a> {
+        self.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ParamList {
+    type Item = &'a ParamType;
+    type IntoIter = ParamListIter<'a>;
+
+    // note that into_iter() is consuming self
+    fn into_iter(self) -> Self::IntoIter {
+        ParamListIter {
+            param_list: self,
+            index: 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ParamListIter<'a> {
+    param_list: &'a ParamList,
+    index: usize,
+}
+
+impl<'a> Iterator for ParamListIter<'a> {
+    type Item = &'a ParamType;
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = match self.param_list {
+            ParamList::Exact(p) => {
+                if self.index < p.len() {
+                    Some(&p[self.index])
+                } else {
+                    None
+                }
+            }
+            ParamList::Repeat(p) => Some(&p[self.index % p.len()]),
+        };
+        self.index += 1;
+        result
+    }
 }
 
 impl std::ops::Index<usize> for ParamList {
@@ -282,7 +420,9 @@ impl ParamType {
         match self {
             Plain(s) => *s == t.desaturate(),
             Any | StringAny | JsonbAny | ListElementAny => true,
-            ListAny => t.is_list(),
+            // Accepting string is necessary for PG compatibility, even though
+            // we don't support a string-like list constructor.
+            ListAny => t.is_list() || *t == ScalarType::String,
             NonListAny => !t.is_list(),
         }
     }
@@ -395,6 +535,7 @@ impl From<ScalarType> for ParamType {
 pub struct Candidate<'a, R> {
     /// The implementation under consideration.
     fimpl: &'a FuncImpl<R>,
+    proposed_params: ParamList,
     exact_matches: usize,
     preferred_types: usize,
 }
@@ -403,6 +544,7 @@ impl<'a, R> fmt::Debug for Candidate<'a, R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Candidate")
             .field("fimpl", &self.fimpl)
+            .field("proposed_params", &self.proposed_params)
             .field("exact_matches", &self.exact_matches)
             .field("preferred_types", &self.preferred_types)
             .finish()
@@ -435,29 +577,29 @@ impl<'a> ArgImplementationMatcher<'a> {
         impls: &[FuncImpl<R>],
         cexprs: Vec<CoercibleScalarExpr>,
     ) -> Result<R, anyhow::Error> {
-        // Immediately remove all `impls` we know are invalid.
-        let l = cexprs.len();
-        let impls = impls
-            .iter()
-            .filter(|i| i.params.validate_arg_len(l))
-            .collect();
         let m = Self { ident, ecx };
 
         let types: Vec<_> = cexprs
             .iter()
             .map(|e| ecx.column_type(e).map(|t| t.scalar_type))
             .collect();
+        // Remove all `impls` we know are invalid.
+        let l = cexprs.len();
+        let impls = impls
+            .iter()
+            .filter(|i| i.params.validate_arg_len(l))
+            .collect();
 
         // try-catch in Rust.
         match || -> Result<R, anyhow::Error> {
-            let f = m.find_match(&types, impls)?;
+            let c = m.find_match(&cexprs, &types, impls)?;
 
             let mut exprs = Vec::new();
             for (i, cexpr) in cexprs.into_iter().enumerate() {
-                exprs.push(m.coerce_arg_to_type(cexpr, &f.params[i])?);
+                exprs.push(m.coerce_arg_to_type(cexpr, &c.proposed_params[i])?);
             }
 
-            (f.op.0)(ecx, exprs)
+            (c.fimpl.op.0)(ecx, exprs)
         }() {
             Ok(s) => Ok(s),
             Err(e) => bail!(err_string_gen(ident, &types, e.to_string())),
@@ -474,9 +616,10 @@ impl<'a> ArgImplementationMatcher<'a> {
     /// [pgparser]: https://www.postgresql.org/docs/current/typeconv-func.html
     fn find_match<'b, R>(
         &self,
+        cexprs: &[CoercibleScalarExpr],
         types: &[Option<ScalarType>],
         impls: Vec<&'b FuncImpl<R>>,
-    ) -> Result<&'b FuncImpl<R>, anyhow::Error> {
+    ) -> Result<Candidate<'b, R>, anyhow::Error> {
         let all_types_known = types.iter().all(|t| t.is_some());
 
         // Check for exact match.
@@ -490,7 +633,12 @@ impl<'a> ArgImplementationMatcher<'a> {
                 .collect();
 
             if matching_impls.len() == 1 {
-                return Ok(&matching_impls[0]);
+                return Ok(Candidate {
+                    fimpl: &matching_impls[0],
+                    proposed_params: matching_impls[0].params.clone(),
+                    exact_matches: types.len(),
+                    preferred_types: 0,
+                });
             }
         }
 
@@ -501,7 +649,7 @@ impl<'a> ArgImplementationMatcher<'a> {
         macro_rules! maybe_get_last_candidate {
             () => {
                 if candidates.len() == 1 {
-                    return Ok(&candidates[0].fimpl);
+                    return Ok(candidates.remove(0));
                 }
             };
         }
@@ -511,15 +659,25 @@ impl<'a> ArgImplementationMatcher<'a> {
             let mut exact_matches = 0;
             let mut preferred_types = 0;
 
+            let proposed_params = match fimpl.params.resolve_polymorphic_types(&types) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            println!("proposed params {:?}", proposed_params);
+
             for (i, arg_type) in types.iter().enumerate() {
-                let param_type = &fimpl.params[i];
+                let param_type = &proposed_params[i];
 
                 match arg_type {
                     Some(arg_type) if param_type == arg_type => {
                         exact_matches += 1;
                     }
                     Some(arg_type) => {
-                        if !param_type.accepts_type_implicitly(arg_type) {
+                        if self
+                            .coerce_arg_to_type(cexprs[i].clone(), &proposed_params[i])
+                            .is_err()
+                        {
                             valid_candidate = false;
                             break;
                         }
@@ -528,6 +686,13 @@ impl<'a> ArgImplementationMatcher<'a> {
                         }
                     }
                     None => {
+                        if self
+                            .coerce_arg_to_type(cexprs[i].clone(), &proposed_params[i])
+                            .is_err()
+                        {
+                            valid_candidate = false;
+                            break;
+                        }
                         if param_type.prefers_self() {
                             preferred_types += 1;
                         }
@@ -543,10 +708,15 @@ impl<'a> ArgImplementationMatcher<'a> {
                 max_exact_matches = std::cmp::max(max_exact_matches, exact_matches);
                 candidates.push(Candidate {
                     fimpl,
+                    proposed_params,
                     exact_matches,
                     preferred_types,
                 });
             }
+        }
+
+        for c in &candidates {
+            println!("{:?}", c);
         }
 
         if candidates.is_empty() {
@@ -600,14 +770,18 @@ impl<'a> ArgImplementationMatcher<'a> {
                         // any candidate accepts that category. (This bias
                         // towards string is appropriate since an
                         // unknown-type literal looks like a string.)
-                        if c.fimpl.params[i].accepts_type_directly(&ScalarType::String) {
+                        if c.proposed_params[i].accepts_type_directly(&ScalarType::String) {
                             found_string_candidate = true;
                             selected_category = Some(TypeCategory::String);
                             break;
                         }
                         // 4.e. cont: Otherwise, if all the remaining candidates accept
                         // the same type category, select that category.
-                        let this_category = TypeCategory::from_param(&c.fimpl.params[i]);
+                        let this_category = TypeCategory::from_param(&c.proposed_params[i]);
+                        println!(
+                            "this cat {:?}, selected cat {:?}\n\n",
+                            this_category, selected_category
+                        );
                         match (&selected_category, &this_category) {
                             (Some(selected_category), this_category) => {
                                 categories_match =
@@ -621,11 +795,10 @@ impl<'a> ArgImplementationMatcher<'a> {
 
                     // 4.e. cont: Otherwise fail because the correct choice cannot be
                     // deduced without more clues.
+                    // (ed: this doesn't mean fail entirely, simply moving onto 4.f)
                     if !found_string_candidate && !categories_match {
-                        bail!(
-                            "unable to determine which implementation to use; try providing \
-                            explicit casts to match parameter types"
-                        )
+                        println!("breaking");
+                        break;
                     }
 
                     // 4.e. cont: Now discard candidates that do not accept the selected
@@ -638,17 +811,18 @@ impl<'a> ArgImplementationMatcher<'a> {
                     let mut found_preferred_type_candidate = false;
                     candidates.retain(|c| {
                         if let Some(typ) = &preferred_type {
-                            found_preferred_type_candidate = c.fimpl.params[i]
+                            found_preferred_type_candidate = c.proposed_params[i]
                                 .accepts_type_directly(typ)
                                 || found_preferred_type_candidate;
                         }
-                        c.fimpl.params[i].accepts_cat(&selected_category)
+                        c.proposed_params[i].accepts_cat(&selected_category)
                     });
 
                     if found_preferred_type_candidate {
                         let preferred_type = preferred_type.unwrap();
-                        candidates
-                            .retain(|c| c.fimpl.params[i].accepts_type_directly(&preferred_type));
+                        candidates.retain(|c| {
+                            c.proposed_params[i].accepts_type_directly(&preferred_type)
+                        });
                     }
                 }
                 Some(typ) => {
@@ -674,7 +848,7 @@ impl<'a> ArgImplementationMatcher<'a> {
             let common_type = common_type.unwrap();
             for (i, raw_arg_type) in types.iter().enumerate() {
                 if raw_arg_type.is_none() {
-                    candidates.retain(|c| c.fimpl.params[i].accepts_type_directly(&common_type));
+                    candidates.retain(|c| c.proposed_params[i].accepts_type_directly(&common_type));
                 }
             }
 
@@ -1203,18 +1377,18 @@ lazy_static! {
                 params!(String, String) => TextConcat,
                 params!(Jsonb, Jsonb) => JsonbConcat,
                 params!(ListAny, ListAny) => binary_op(|ecx, lhs, rhs| {
-                    let ltyp = ecx.scalar_type(&lhs);
-                    let rtyp = ecx.scalar_type(&rhs);
+                    Ok(lhs.call_binary(rhs, ListListConcat))
+                    // let ltyp = ecx.scalar_type(&lhs);
+                    // let rtyp = ecx.scalar_type(&rhs);
 
-                    if ltyp == rtyp {
-                        Ok(lhs.call_binary(rhs, ListListConcat))
-                    } else if ltyp == *rtyp.unwrap_list_element_type() {
-                        Ok(lhs.call_binary(rhs, ElementListConcat))
-                    } else if *ltyp.unwrap_list_element_type() == rtyp {
-                        Ok(lhs.call_binary(rhs, ListElementConcat))
-                    } else {
-                        concat_err!(ltyp, rtyp)
-                    }
+                    // if ltyp == rtyp {
+                    // } else if ltyp == *rtyp.unwrap_list_element_type() {
+                    //     Ok(lhs.call_binary(rhs, ElementListConcat))
+                    // } else if *ltyp.unwrap_list_element_type() == rtyp {
+                    //     Ok(lhs.call_binary(rhs, ListElementConcat))
+                    // } else {
+                    //     concat_err!(ltyp, rtyp)
+                    // }
                 }),
                 params!(ListAny, ListElementAny) => binary_op(|ecx, lhs, rhs| {
                     let ltyp = ecx.scalar_type(&lhs);
@@ -1407,38 +1581,6 @@ pub fn plan_binary_op<'a>(
     };
 
     let mut cexprs = vec![query::plan_expr(ecx, left)?, query::plan_expr(ecx, right)?];
-
-    // Special case for `LIST[t] || NULL` or `NULL || LIST[t]`. This must be
-    // special cased because our eager coercion of `NULL`s to
-    // `ScalarType::String` makes `NULL` indistinguishable from `NULL::text`,
-    // each of which has distinct behavior in PG.
-    //
-    // ```
-    // SELECT ARRAY['a'] || NULL
-    // ----
-    // {'a'}
-    //
-    // SELECT ARRAY['a'] || NULL::text
-    // ----
-    // {'a', NULL}
-    // ```
-    if *op == BinaryOperator::Concat {
-        // Check whether the exprs contain a literal NULL and a list.
-        let pairs = vec![(0, 1), (1, 0)];
-        for p in pairs {
-            if cexprs[p.0] == CoercibleScalarExpr::LiteralNull {
-                if let Some(ScalarType::List(typ)) =
-                    ecx.column_type(&cexprs[p.1]).map(|t| t.scalar_type)
-                {
-                    return typeconv::plan_coerce(
-                        ecx,
-                        cexprs.remove(p.1),
-                        CoerceTo::Plain(ScalarType::List(typ)),
-                    );
-                }
-            }
-        }
-    }
 
     ArgImplementationMatcher::select_implementation(
         &op.to_string(),
