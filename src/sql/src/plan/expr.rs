@@ -252,7 +252,7 @@ impl ScalarTypeable for CoercibleScalarExpr {
 
                 match element_typ {
                     Some(e) => Some(ScalarType::List(Box::new(e.scalar_type)).nullable(e.nullable)),
-                    None => None,
+                    None => Some(ScalarType::List(Box::new(ScalarType::String)).nullable(true)),
                 }
             }
             _ => None,
