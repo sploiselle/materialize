@@ -1554,7 +1554,7 @@ pub fn plan_expr<'a>(ecx: &'a ExprContext, e: &Expr) -> Result<CoercibleScalarEx
             for e in exprs {
                 out.push(plan_expr(ecx, e)?);
             }
-            CoercibleScalarExpr::LiteralList(out)
+            plan_list(ecx, out)?
         }
         Expr::Row { exprs } => {
             let mut out = vec![];
@@ -2039,6 +2039,52 @@ fn plan_literal<'a>(l: &'a Value) -> Result<CoercibleScalarExpr, anyhow::Error> 
     };
     let expr = ScalarExpr::literal(datum, scalar_type);
     Ok(expr.into())
+}
+
+fn plan_list<'a>(
+    ecx: &'a ExprContext,
+    exprs: Vec<CoercibleScalarExpr>,
+) -> Result<CoercibleScalarExpr, anyhow::Error> {
+    // Empty lists and lists of all NULL values are still coercible
+    if exprs.is_empty() || exprs.iter().all(|e| *e == CoercibleScalarExpr::LiteralNull) {
+        return Ok(CoercibleScalarExpr::LiteralList(exprs));
+    }
+    let mut out = vec![];
+    let mut typ = ScalarType::String;
+    for e in &exprs {
+        let e = typeconv::plan_coerce(ecx, e.clone(), CoerceTo::Plain(ScalarType::String))?;
+        if typ == ScalarType::String {
+            typ = ecx.scalar_type(&e);
+        }
+        out.push(e);
+    }
+    if typ != ScalarType::String {
+        out.clear();
+        for e in exprs {
+            let e = typeconv::plan_coerce(ecx, e, CoerceTo::Plain(typ.clone()))?;
+            out.push(e);
+        }
+    }
+
+    for (i, e) in out.iter().enumerate() {
+        let t = ecx.scalar_type(&e);
+        if t != typ {
+            bail!(
+                "Cannot create list with mixed types. \
+                Element 1 has type {} but element {} has type {}",
+                typ,
+                i + 1,
+                t,
+            )
+        }
+    }
+
+    Ok(CoercibleScalarExpr::Coerced(ScalarExpr::CallVariadic {
+        func: VariadicFunc::ListCreate {
+            elem_type: typ.clone(),
+        },
+        exprs: out,
+    }))
 }
 
 fn find_trivial_column_equivalences(expr: &ScalarExpr) -> Vec<(usize, usize)> {

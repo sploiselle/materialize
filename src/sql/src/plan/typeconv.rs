@@ -513,7 +513,6 @@ pub fn plan_coerce<'a>(
             plan_cast("string literal", ecx, lit, CastTo::Explicit(typ))?
         }
         (LiteralString(s), JsonbAny) => ScalarExpr::literal(Datum::String(&s), ScalarType::Jsonb),
-
         (LiteralList(exprs), coerce_to) => {
             let coerce_elem_to = match &coerce_to {
                 Plain(ScalarType::List(typ)) => Plain((**typ).clone()),
@@ -553,7 +552,6 @@ pub fn plan_coerce<'a>(
                 exprs: out,
             }
         }
-
         (LiteralRecord(exprs), coerce_to) => {
             let arity = exprs.len();
             let coercions = match coerce_to {

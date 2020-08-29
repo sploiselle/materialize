@@ -7,10 +7,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! This file houses a representation of a SQL plan that is parallel to that found in
-//! src/expr/relation/mod.rs, but represents an earlier phase of planning. It's structurally very
-//! similar to that file, with some differences which are noted below. It gets turned into that
-//! representation via a call to decorrelate().
+//! This file houses a representation of a SQL plan that is parallel to that
+//! found in src/expr/relation/mod.rs, but represents an earlier phase of
+//! planning. It's structurally very similar to that file, with some differences
+//! which are noted below. It gets turned into that representation via a call to
+//! decorrelate().
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -64,17 +65,17 @@ pub enum RelationExpr {
         input: Box<RelationExpr>,
         predicates: Vec<ScalarExpr>,
     },
-    /// Unlike expr::RelationExpr, we haven't yet compiled LeftOuter/RightOuter/FullOuter
-    /// joins away into more primitive exprs
+    /// Unlike expr::RelationExpr, we haven't yet compiled
+    /// LeftOuter/RightOuter/FullOuter joins away into more primitive exprs
     Join {
         left: Box<RelationExpr>,
         right: Box<RelationExpr>,
         on: ScalarExpr,
         kind: JoinKind,
     },
-    /// Unlike expr::RelationExpr, when `key` is empty AND `input` is empty this returns
-    /// a single row with the aggregates evaluated over empty groups, rather than returning zero
-    /// rows
+    /// Unlike expr::RelationExpr, when `key` is empty AND `input` is empty this
+    /// returns a single row with the aggregates evaluated over empty groups,
+    /// rather than returning zero rows
     Reduce {
         input: Box<RelationExpr>,
         group_key: Vec<usize>,
@@ -111,9 +112,10 @@ pub enum RelationExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Just like expr::ScalarExpr, except where otherwise noted below.
 pub enum ScalarExpr {
-    /// Unlike expr::ScalarExpr, we can nest RelationExprs via eg Exists. This means that a
-    /// variable could refer to a column of the current input, or to a column of an outer relation.
-    /// We use ColumnRef to denote the difference.
+    /// Unlike expr::ScalarExpr, we can nest RelationExprs via eg Exists. This
+    /// means that a variable could refer to a column of the current input, or
+    /// to a column of an outer relation. We use ColumnRef to denote the
+    /// difference.
     Column(ColumnRef),
     Parameter(usize),
     Literal(Row, ColumnType),
@@ -141,12 +143,13 @@ pub enum ScalarExpr {
     /// Given `expr` with arity 1. If expr returns:
     /// * 0 rows, return NULL
     /// * 1 row, return the value of that row
-    /// * >1 rows, the sql spec says we should throw an error but we can't
-    ///   (see https://github.com/MaterializeInc/materialize/issues/489)
-    ///   so instead we return all the rows.
-    ///   If there are multiple `Select` expressions in a single SQL query, the result is that we take the product of all of them.
-    ///   This is counter to the spec, but is consistent with eg postgres' treatment of multiple set-returning-functions
-    ///   (see https://tapoueh.org/blog/2017/10/set-returning-functions-and-postgresql-10/).
+    /// * >1 rows, the sql spec says we should throw an error but we can't (see
+    ///   https://github.com/MaterializeInc/materialize/issues/489) so instead
+    ///   we return all the rows. If there are multiple `Select` expressions in
+    ///   a single SQL query, the result is that we take the product of all of
+    ///   them. This is counter to the spec, but is consistent with eg postgres'
+    ///   treatment of multiple set-returning-functions (see
+    ///   https://tapoueh.org/blog/2017/10/set-returning-functions-and-postgresql-10/).
     Select(Box<RelationExpr>),
 }
 
@@ -174,7 +177,7 @@ pub enum ScalarExpr {
 ///
 /// the `WHERE` clause will coerce the contained unconstrained type parameter
 /// `$1` to have type bool.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum CoercibleScalarExpr {
     Coerced(ScalarExpr),
     Parameter(usize),
