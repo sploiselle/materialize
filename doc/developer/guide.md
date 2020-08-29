@@ -174,6 +174,22 @@ mode with [tables](https://materialize.io/docs/sql/create-table). But we're
 stuck with symbiosis mode until tables support `UPDATE` and `DELETE`—at the time
 of writing they only support [`INSERT`](https://materialize.io/docs/sql/insert).
 
+**Ubutnu users:** If you're getting:
+
+```
+materialized: Postgres connection failed: invalid configuration: password missing
+```
+
+You need to either provide a password to `symbiosis` or YOLO use `trust`, i.e. modify `/etc/postgresql/xxx/main/pg_hba.conf` to look e.g.:
+
+```
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+# "local" is for Unix domain socket connections only
+local   all             all                                     trust
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            trust
+```
+
 ## Testing
 
 Materialize's testing philosophy is sufficiently complex that it warrants its
