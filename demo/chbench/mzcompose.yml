@@ -446,6 +446,7 @@ mzconduct:
         CC_PORT: 9021
         PEEKER_PORT: "16875:16875"
         MYSQL_EXPORTER_PORT: "9399:9399"
+        NUM_WAREHOUSES: ${NUM_WAREHOUSES:-1}
       steps:
       - step: workflow
         workflow: bring-up-mysql-kafka
@@ -460,6 +461,7 @@ mzconduct:
           gen
           --warehouses=1
           --config-file-path=/etc/chbenchmark/mz-default-mysql.cfg
+      - step: print-env
       - step: wait-for-tcp
         host: ${MZ_HOST:-materialized}
         port: 6875
@@ -522,7 +524,7 @@ mzconduct:
         service: chbench
         command: >-
           gen
-          --warehouses=1
+          --warehouses=${NUM_WAREHOUSES:-1}
           --config-file-path=/etc/chbenchmark/mz-default-mysql.cfg
 
     bring-up-postgres-kafka:
@@ -568,7 +570,7 @@ mzconduct:
         service: chbench
         command: >-
           gen
-          --warehouses=1
+          --warehouses=${NUM_WAREHOUSES:-1}
           --config-file-path=/etc/chbenchmark/mz-default-postgres.cfg
 
     heavy-load:
