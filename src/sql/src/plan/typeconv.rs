@@ -27,7 +27,13 @@ use super::query::ExprContext;
 /// can be invoked with [`CastOp::gen_expr`].
 pub enum CastOp {
     U(UnaryFunc),
-    F(fn(&ExprContext, ScalarExpr, CastTo) -> Result<ScalarExpr, anyhow::Error>),
+    F(
+        Box<
+            dyn Fn(&ExprContext, ScalarExpr, CastTo) -> Result<ScalarExpr, anyhow::Error>
+                + Send
+                + Sync,
+        >,
+    ),
 }
 
 impl fmt::Debug for CastOp {
@@ -44,6 +50,43 @@ impl From<UnaryFunc> for CastOp {
     fn from(u: UnaryFunc) -> CastOp {
         CastOp::U(u)
     }
+}
+
+impl<F> From<F> for CastOp
+where
+    F: Fn(&ExprContext, ScalarExpr, CastTo) -> Result<ScalarExpr, anyhow::Error>
+        + Send
+        + Sync,
+{
+    fn from(f: F) -> CastOp {
+        CastOp::F(Box::new(f))
+    }
+}
+
+fn gen_list_cast<F>(cast_op: CastOp, cast_to: CastTo) -> CastOp
+where
+    F: Fn(&ExprContext, ScalarExpr, CastTo) -> Result<ScalarExpr, anyhow::Error>
+        + Send
+        + Sync,
+{
+    CastOp::F(Box::new(move |ecx, e, to_type| match e {
+        ScalarExpr::CallVariadic {
+            func: VariadicFunc::ListCreate { .. },
+            exprs,
+        } => {
+            let out = Vec::new();
+            for e in exprs {
+                out.push(cast_op.gen_expr(ecx, e, cast_to).unwrap());
+            }
+            Ok(ScalarExpr::CallVariadic {
+                func: VariadicFunc::ListCreate {
+                    elem_type: cast_to.scalar_type(),
+                },
+                exprs: out,
+            })
+        }
+        _ => panic!("generate_list_cast called on non-list"),
+    }))
 }
 
 impl CastOp {
@@ -138,6 +181,8 @@ fn from_jsonb_f64_cast(
     from_f64_to_cast.gen_expr(ecx, e.call_unary(UnaryFunc::CastJsonbToFloat64), cast_to)
 }
 
+
+
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
 /// Describes the context of the cast, the target type.
 pub enum CastTo {
@@ -201,12 +246,12 @@ lazy_static! {
             (Int32, Implicit(Int64)) => CastInt32ToInt64,
             (Int32, Implicit(Float32)) => CastInt32ToFloat32,
             (Int32, Implicit(Float64)) => CastInt32ToFloat64,
-            (Int32, Implicit(Decimal(0, 0))) => CastOp::F(|_ecx, e, to_type| {
+            (Int32, Implicit(Decimal(0, 0))) => |_ecx, e: ScalarExpr, to_type: CastTo| {
                 let (_, s) = to_type.scalar_type().unwrap_decimal_parts();
                 Ok(rescale_decimal(e.call_unary(CastInt32ToDecimal), 0, s))
-            }),
+            },
             (Int32, Explicit(String)) => CastInt32ToString,
-            (Int32, JsonbAny) => CastOp::F(to_jsonb_any_f64_cast),
+            (Int32, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_f64_cast)),
 
             // INT64
             (Int64, Explicit(Bool)) => CastInt64ToBool,
@@ -218,7 +263,7 @@ lazy_static! {
             (Int64, Implicit(Float32)) => CastInt64ToFloat32,
             (Int64, Implicit(Float64)) => CastInt64ToFloat64,
             (Int64, Explicit(String)) => CastInt64ToString,
-            (Int64, JsonbAny) => CastOp::F(to_jsonb_any_f64_cast),
+            (Int64, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_f64_cast)),
 
             // FLOAT32
             (Float32, Explicit(Int64)) => CastFloat32ToInt64,
@@ -231,7 +276,7 @@ lazy_static! {
                 Ok(e.call_binary(s, BinaryFunc::CastFloat32ToDecimal))
             }),
             (Float32, Explicit(String)) => CastFloat32ToString,
-            (Float32, JsonbAny) => CastOp::F(to_jsonb_any_f64_cast),
+            (Float32, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_f64_cast)),
 
             // FLOAT64
             (Float64, Explicit(Int32)) => CastFloat64ToInt32,
@@ -279,39 +324,39 @@ lazy_static! {
                 let (_, s) = ecx.scalar_type(&e).unwrap_decimal_parts();
                 Ok(e.call_unary(CastDecimalToString(s)))
             }),
-            (Decimal(0, 0), JsonbAny) => CastOp::F(to_jsonb_any_f64_cast),
+            (Decimal(0, 0), JsonbAny) => CastOp::F(Box::new(to_jsonb_any_f64_cast)),
 
             // DATE
             (Date, Implicit(Timestamp)) => CastDateToTimestamp,
             (Date, Implicit(TimestampTz)) => CastDateToTimestampTz,
             (Date, Explicit(String)) => CastDateToString,
-            (Date, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (Date, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // TIME
             (Time, Implicit(Interval)) => CastTimeToInterval,
             (Time, Explicit(String)) => CastTimeToString,
-            (Time, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (Time, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // TIMESTAMP
             (Timestamp, Explicit(Date)) => CastTimestampToDate,
             (Timestamp, Implicit(TimestampTz)) => CastTimestampToTimestampTz,
             (Timestamp, Explicit(String)) => CastTimestampToString,
-            (Timestamp, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (Timestamp, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // TIMESTAMPTZ
             (TimestampTz, Explicit(Date)) => CastTimestampTzToDate,
             (TimestampTz, Explicit(Timestamp)) => CastTimestampTzToTimestamp,
             (TimestampTz, Explicit(String)) => CastTimestampTzToString,
-            (TimestampTz, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (TimestampTz, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // INTERVAL
             (Interval, Explicit(Time)) => CastIntervalToTime,
             (Interval, Explicit(String)) => CastIntervalToString,
-            (Interval, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (Interval, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // BYTES
             (Bytes, Explicit(String)) => CastBytesToString,
-            (Bytes, JsonbAny) => CastOp::F(to_jsonb_any_string_cast),
+            (Bytes, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_string_cast)),
 
             // STRING
             (String, Explicit(Bool)) => CastStringToBool,
@@ -333,7 +378,7 @@ lazy_static! {
             (String, JsonbAny) => CastJsonbOrNullToJsonb,
 
             // RECORD
-            (Record { fields: vec![] }, JsonbAny) => CastOp::F(to_jsonb_any_record_cast),
+            (Record { fields: vec![] }, JsonbAny) => CastOp::F(Box::new(to_jsonb_any_record_cast)),
             (Record { fields: vec![] }, Explicit(String)) => CastOp::F(|ecx, e, _to_type| {
                 let ty = ecx.scalar_type(&e);
                 Ok(e.call_unary(CastRecordToString { ty }))
@@ -341,11 +386,11 @@ lazy_static! {
 
             // JSONB
             (Jsonb, Explicit(Bool)) => CastJsonbToBool,
-            (Jsonb, Explicit(Int32)) => CastOp::F(from_jsonb_f64_cast),
-            (Jsonb, Explicit(Int64)) => CastOp::F(from_jsonb_f64_cast),
-            (Jsonb, Explicit(Float32)) => CastOp::F(from_jsonb_f64_cast),
+            (Jsonb, Explicit(Int32)) => CastOp::F(Box::new(from_jsonb_f64_cast)),
+            (Jsonb, Explicit(Int64)) => CastOp::F(Box::new(from_jsonb_f64_cast)),
+            (Jsonb, Explicit(Float32)) => CastOp::F(Box::new(from_jsonb_f64_cast)),
             (Jsonb, Explicit(Float64)) => CastJsonbToFloat64,
-            (Jsonb, Explicit(Decimal(0, 0))) => CastOp::F(from_jsonb_f64_cast),
+            (Jsonb, Explicit(Decimal(0, 0))) => CastOp::F(Box::new(from_jsonb_f64_cast)),
             (Jsonb, Explicit(String)) => CastJsonbToString,
             (Jsonb, JsonbAny) => CastJsonbOrNullToJsonb
         }
@@ -360,7 +405,7 @@ pub fn get_cast<'a>(from: &ScalarType, cast_to: &CastTo) -> Option<&'a CastOp> {
     use CastTo::*;
 
     if *from == cast_to.scalar_type() {
-        return Some(&CastOp::F(noop_cast));
+        return Some(&CastOp::F(Box::new(noop_cast)));
     }
 
     let cast_to = match cast_to {
@@ -369,11 +414,18 @@ pub fn get_cast<'a>(from: &ScalarType, cast_to: &CastTo) -> Option<&'a CastOp> {
         JsonbAny => JsonbAny,
     };
 
-    let cast = VALID_CASTS.get(&(from.desaturate(), cast_to.clone()));
+    let cast = match (from.desaturate(), cast_to.clone()) {
+        (ScalarType::List(from_list_typ), Implicit(ScalarType::List(to_list_typ))) => {
+            match VALID_CASTS.get(&(from.desaturate(), Implicit(to_list_typ.desaturate()))) {
+                Some(cast) =>
+            }
+        }
+        (from, to) => VALID_CASTS.get(&(from.desaturate(), cast_to.clone())),
+    };
 
     match (cast, cast_to) {
         // If no explicit implementation, look for an implicit one.
-        (None, CastTo::Explicit(t)) => VALID_CASTS.get(&(from.desaturate(), CastTo::Implicit(t))),
+        (None, CastTo::Explicit(t)) => get_cast(from, &Implicit(t)),
         (c, _) => c,
     }
 }
@@ -412,7 +464,9 @@ fn guess_compatible_cast_type(types: &[ScalarType]) -> Option<&ScalarType> {
         ScalarType::Date => 5,
         ScalarType::Timestamp => 6,
         ScalarType::TimestampTz => 7,
-        _ => 8,
+        // [`TypeCategory::UserDefined`]
+        ScalarType::List(_) => 8,
+        _ => 9,
     })
 }
 
@@ -455,8 +509,8 @@ pub fn guess_best_common_type(
     }
 
     // Determine best cast type among known types.
-    if let Some(btt) = guess_compatible_cast_type(&known_types) {
-        if let ScalarType::Decimal(_, _) = btt {
+    match guess_compatible_cast_type(&known_types) {
+        Some(ScalarType::Decimal(_, _)) => {
             // Determine best decimal scale (i.e. largest).
             let mut max_s = 0;
             for t in known_types {
@@ -464,13 +518,22 @@ pub fn guess_best_common_type(
                     max_s = std::cmp::max(s, max_s);
                 }
             }
-            return Some(ScalarType::Decimal(38, max_s));
-        } else {
-            return Some(btt.clone());
+            Some(ScalarType::Decimal(38, max_s))
         }
+        Some(ScalarType::List(..)) => {
+            let element_types: Vec<_> = known_types
+                .iter()
+                .filter_map(|t| match t.unwrap_list_element_type() {
+                    ScalarType::String => None,
+                    typ => Some(Some(typ.clone())),
+                })
+                .collect();
+            let t = guess_best_common_type(&element_types, None).unwrap_or(ScalarType::String);
+            Some(ScalarType::List(Box::new(t)))
+        }
+        // Some(type) | None
+        res => res.cloned(),
     }
-
-    None
 }
 
 /// Controls coercion behavior for `plan_coerce`.
@@ -602,6 +665,8 @@ pub fn plan_cast<'a>(
     cast_to: CastTo,
 ) -> Result<ScalarExpr, anyhow::Error> {
     let from_scalar_type = ecx.scalar_type(&expr);
+
+    println!("plan_cast exprs {:?}", expr);
 
     let cast_op = match get_cast(&from_scalar_type, &cast_to) {
         Some(cast_op) => cast_op,

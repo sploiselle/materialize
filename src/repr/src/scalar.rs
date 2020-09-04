@@ -662,7 +662,6 @@ impl<'a> ScalarType {
     pub fn desaturate(&self) -> ScalarType {
         match self {
             ScalarType::Decimal(..) => ScalarType::Decimal(0, 0),
-            ScalarType::List(..) => ScalarType::List(Box::new(ScalarType::String)),
             ScalarType::Record { .. } => ScalarType::Record { fields: vec![] },
             _ => self.clone(),
         }
@@ -674,6 +673,13 @@ impl<'a> ScalarType {
         ColumnType {
             nullable,
             scalar_type: self,
+        }
+    }
+
+    pub fn list_depth(&self) -> usize {
+        match self {
+            ScalarType::List(typ) => 1 + typ.list_depth(),
+            _ => 0,
         }
     }
 }

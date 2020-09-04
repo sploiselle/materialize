@@ -1550,6 +1550,7 @@ pub fn plan_expr<'a>(ecx: &'a ExprContext, e: &Expr) -> Result<CoercibleScalarEx
             }
         }
         Expr::List(exprs) => {
+            println!("planning list expr\n\texprs {:?}\n\n", exprs);
             let mut out = vec![];
             for e in exprs {
                 out.push(plan_expr(ecx, e)?);
@@ -1568,8 +1569,26 @@ pub fn plan_expr<'a>(ecx: &'a ExprContext, e: &Expr) -> Result<CoercibleScalarEx
         Expr::UnaryOp { op, expr } => func::plan_unary_op(ecx, op, expr)?.into(),
         Expr::BinaryOp { op, left, right } => func::plan_binary_op(ecx, op, left, right)?.into(),
         Expr::Cast { expr, data_type } => {
+            println!("planning cast expr");
             let to_scalar_type = scalar_type_from_sql(data_type)?;
-            let expr = plan_expr(ecx, expr)?;
+            let expr = match plan_expr(ecx, expr) {
+                Ok(o) => o,
+                Err(e) => {
+                    return if e.to_string().contains("empty")
+                        && matches!(**expr, Expr::List(..))
+                        && matches!(to_scalar_type, ScalarType::List(_))
+                    {
+                        Ok(CoercibleScalarExpr::Coerced(ScalarExpr::CallVariadic {
+                            func: VariadicFunc::ListCreate {
+                                elem_type: to_scalar_type.clone(),
+                            },
+                            exprs: vec![],
+                        }))
+                    } else {
+                        Err(e)
+                    };
+                }
+            };
             let expr = typeconv::plan_coerce(ecx, expr, CoerceTo::Plain(to_scalar_type.clone()))?;
             typeconv::plan_cast("CAST", ecx, expr, CastTo::Explicit(to_scalar_type))?.into()
         }
@@ -2043,41 +2062,53 @@ fn plan_literal<'a>(l: &'a Value) -> Result<CoercibleScalarExpr, anyhow::Error> 
 
 fn plan_list<'a>(
     ecx: &'a ExprContext,
-    exprs: Vec<CoercibleScalarExpr>,
+    cexprs: Vec<CoercibleScalarExpr>,
 ) -> Result<CoercibleScalarExpr, anyhow::Error> {
-    // Empty lists and lists of all NULL values are still coercible
-    if exprs.is_empty() || exprs.iter().all(|e| *e == CoercibleScalarExpr::LiteralNull) {
-        return Ok(CoercibleScalarExpr::LiteralList(exprs));
+    println!("plan_list\n\tcexprs {:?}\n\n", cexprs);
+    if cexprs.is_empty() {
+        bail!("cannot infer type for empty list")
     }
+
+    let types: Vec<_> = cexprs
+        .iter()
+        .map(|e| ecx.column_type(e).map(|t| t.scalar_type))
+        .collect();
+
+    let common_type = typeconv::guess_best_common_type(&types, None).unwrap();
+
+    println!("common type {:?}", common_type);
+
     let mut out = vec![];
-    let mut typ = ScalarType::String;
-    for e in &exprs {
-        let e = typeconv::plan_coerce(ecx, e.clone(), CoerceTo::Plain(ScalarType::String))?;
-        if typ == ScalarType::String {
-            typ = ecx.scalar_type(&e);
-        }
-        out.push(e);
+    for c in &cexprs {
+        out.push(typeconv::plan_coerce(
+            ecx,
+            c.clone(),
+            CoerceTo::Plain(common_type.clone()),
+        )?);
     }
-    if typ != ScalarType::String {
-        out.clear();
-        for e in exprs {
-            let e = typeconv::plan_coerce(ecx, e, CoerceTo::Plain(typ.clone()))?;
-            out.push(e);
+
+    let typ = ecx.scalar_type(&out[0]);
+
+    for (i, e) in out.iter_mut().enumerate() {
+        let t = ecx.scalar_type(&e);
+        if t != typ {
+            println!("trying to cast {:?} to {:?}", t, typ);
+            match typeconv::plan_cast("plan_list", ecx, e.clone(), CastTo::Implicit(typ.clone())) {
+                Ok(cast_expr) => *e = cast_expr,
+                Err(_) => bail!(
+                    "Cannot create list with mixed types. \
+                    Element 1 has type {} but element {} has type {}",
+                    typ,
+                    i + 1,
+                    t,
+                ),
+            }
         }
     }
 
-    for (i, e) in out.iter().enumerate() {
-        let t = ecx.scalar_type(&e);
-        if t != typ {
-            bail!(
-                "Cannot create list with mixed types. \
-                Element 1 has type {} but element {} has type {}",
-                typ,
-                i + 1,
-                t,
-            )
-        }
-    }
+    println!("-------------------\n");
+    println!("out {:?}\n", out);
+    println!("-------------------\n");
 
     Ok(CoercibleScalarExpr::Coerced(ScalarExpr::CallVariadic {
         func: VariadicFunc::ListCreate {
