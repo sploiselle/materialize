@@ -10,18 +10,22 @@
 //! Maintains a catalog of valid casts between [`repr::ScalarType`]s, as well as
 //! other cast-related functions.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 
 use anyhow::bail;
 use lazy_static::lazy_static;
 
 use expr::VariadicFunc;
-use repr::{ColumnName, Datum, ScalarType};
+use repr::{ColumnName, Datum, RelationType, ScalarType};
 
 use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc};
-use super::query::ExprContext;
+use super::query::{ExprContext, QueryContext};
+use super::scope::Scope;
 
 /// Describes methods of planning a conversion between [`ScalarType`]s, which
 /// can be invoked with [`CastOp::gen_expr`].
@@ -366,6 +370,48 @@ lazy_static! {
             (Uuid, Explicit(String)) => CastUuidToString
         }
     };
+}
+
+pub fn get_list_cast<'a>(
+    caller_name: &str,
+    ecx: &ExprContext<'a>,
+    from: &ScalarType,
+    cast_to: &CastTo,
+) -> Result<ScalarExpr, anyhow::Error> {
+    assert!(match from {
+        ScalarType::List(_) => true,
+        _ => false,
+    });
+
+    // caller_name: &str,
+    // ecx: &ExprContext<'a>,
+    // expr: ScalarExpr,
+    // cast_to: CastTo,
+
+    let from_element_typ = from.unwrap_list_element_type();
+
+    let target_typ = match cast_to {
+        CastTo::Implicit(ScalarType::List(elem_typ)) => CastTo::Implicit(**elem_typ),
+        CastTo::Explicit(ScalarType::List(elem_typ)) => CastTo::Explicit(**elem_typ),
+    };
+
+    // Reconstruct an expression context where the parameter types are
+    // bound to the types of the expressions in `args`.
+    let mut scx = ecx.qcx.scx.clone();
+    let mut param_types = BTreeMap::new();
+    param_types.insert(1, from_element_typ.clone());
+    scx.param_types = Rc::new(RefCell::new(param_types));
+    let qcx = QueryContext::root(&scx, ecx.qcx.lifetime);
+    let ecx = ExprContext {
+        qcx: &qcx,
+        name: "static function definition",
+        scope: &Scope::empty(None),
+        relation_type: &RelationType::empty(),
+        allow_aggregates: false,
+        allow_subqueries: true,
+    };
+
+    bail!("come on")
 }
 
 /// Get a cast, if one exists, from a [`ScalarType`] to another, with control
