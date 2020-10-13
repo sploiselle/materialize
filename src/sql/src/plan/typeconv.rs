@@ -21,9 +21,9 @@ use anyhow::bail;
 use lazy_static::lazy_static;
 
 use expr::VariadicFunc;
-use repr::{ColumnName, Datum, RelationType, ScalarType};
+use repr::{ColumnName, ColumnType, Datum, RelationType, ScalarType};
 
-use super::expr::{BinaryFunc, CoercibleScalarExpr, ScalarExpr, UnaryFunc};
+use super::expr::{BinaryFunc, CoercibleScalarExpr, ColumnRef, ScalarExpr, UnaryFunc};
 use super::query::{ExprContext, QueryContext};
 use super::scope::Scope;
 
@@ -378,21 +378,12 @@ pub fn get_list_cast<'a>(
     from: &ScalarType,
     cast_to: &CastTo,
 ) -> Result<ScalarExpr, anyhow::Error> {
-    assert!(match from {
-        ScalarType::List(_) => true,
-        _ => false,
-    });
-
-    // caller_name: &str,
-    // ecx: &ExprContext<'a>,
-    // expr: ScalarExpr,
-    // cast_to: CastTo,
-
     let from_element_typ = from.unwrap_list_element_type();
 
-    let target_typ = match cast_to {
+    let element_cast_to = match cast_to {
         CastTo::Implicit(ScalarType::List(elem_typ)) => CastTo::Implicit(**elem_typ),
         CastTo::Explicit(ScalarType::List(elem_typ)) => CastTo::Explicit(**elem_typ),
+        _ => panic!("get_list_cast requires cast_to to be a list"),
     };
 
     // Reconstruct an expression context where the parameter types are
@@ -402,16 +393,33 @@ pub fn get_list_cast<'a>(
     param_types.insert(1, from_element_typ.clone());
     scx.param_types = Rc::new(RefCell::new(param_types));
     let qcx = QueryContext::root(&scx, ecx.qcx.lifetime);
+    let relation_type = RelationType {
+        column_types: vec![ColumnType {
+            nullable: true,
+            scalar_type: from_element_typ.clone(),
+        }],
+        keys: vec![vec![0]],
+    };
     let ecx = ExprContext {
         qcx: &qcx,
         name: "static function definition",
         scope: &Scope::empty(None),
-        relation_type: &RelationType::empty(),
+        relation_type: &relation_type,
         allow_aggregates: false,
         allow_subqueries: true,
     };
 
-    bail!("come on")
+    let e = ScalarExpr::Column(ColumnRef {
+        level: 0,
+        column: 0,
+    });
+
+    let cast_expr = plan_cast("get_list_cast", &ecx, e, &element_cast_to)?;
+
+    Ok(UnaryFunc::CastList1ToList2 {
+        ty: cast_to.scalar_type(),
+        cast_expr: Box::new(cast_expr),
+    })
 }
 
 /// Get a cast, if one exists, from a [`ScalarType`] to another, with control
@@ -713,20 +721,26 @@ pub fn plan_cast<'a>(
 ) -> Result<ScalarExpr, anyhow::Error> {
     let from_scalar_type = ecx.scalar_type(&expr);
 
-    let cast_op = match get_cast(&from_scalar_type, &cast_to) {
-        Some(cast_op) => cast_op,
-        None => bail!(
-            "{} does not support {}casting from {} to {}",
-            caller_name,
-            if let CastTo::Implicit(_) = cast_to {
-                "implicitly "
-            } else {
-                ""
-            },
-            from_scalar_type,
-            cast_to
-        ),
-    };
-
-    cast_op.gen_expr(ecx, expr, cast_to)
+    match (from_scalar_type, cast_to.scalar_type()) {
+        (ScalarType::List(_), ScalarType::List(_)) => {
+            get_list_cast(caller_name, ecx, from_scalar_type, cast_to)
+        }
+        _ => {
+            let cast_op = match get_cast(&from_scalar_type, &cast_to) {
+                Some(cast_op) => cast_op,
+                None => bail!(
+                    "{} does not support {}casting from {} to {}",
+                    caller_name,
+                    if let CastTo::Implicit(_) = cast_to {
+                        "implicitly "
+                    } else {
+                        ""
+                    },
+                    from_scalar_type,
+                    cast_to
+                ),
+            };
+            cast_op.gen_expr(ecx, expr, cast_to)
+        }
+    }
 }

@@ -2353,8 +2353,18 @@ pub enum UnaryFunc {
     CastJsonbToFloat64,
     CastJsonbToBool,
     CastUuidToString,
-    CastRecordToString { ty: ScalarType },
-    CastArrayToString { ty: ScalarType },
+    CastRecordToString {
+        ty: ScalarType,
+    },
+    CastArrayToString {
+        ty: ScalarType,
+    },
+    // Enclosed `ScalarExpr` represents the work to execute on each element of
+    // list to perform cast.
+    CastList1ToList2 {
+        ty: ScalarType,
+        cast_expr: Box<ScalarExpr>,
+    },
     CeilFloat32,
     CeilFloat64,
     CeilDecimal(u8),
@@ -2479,6 +2489,9 @@ impl UnaryFunc {
             UnaryFunc::CastUuidToString => Ok(cast_uuid_to_string(a, temp_storage)),
             UnaryFunc::CastRecordToString { ty } | UnaryFunc::CastArrayToString { ty } => {
                 Ok(cast_collection_to_string(a, ty, temp_storage))
+            }
+            UnaryFunc::CastList1ToList2 { cast_expr, .. } => {
+                cast_list_e1_to_list_e2(a, &*cast_expr, temp_storage)
             }
             UnaryFunc::CeilFloat32 => Ok(ceil_float32(a)),
             UnaryFunc::CeilFloat64 => Ok(ceil_float64(a)),
@@ -2620,6 +2633,8 @@ impl UnaryFunc {
             CastJsonbToBool => ScalarType::Bool.nullable(true),
 
             CastUuidToString => ScalarType::String.nullable(true),
+
+            CastList1ToList2 { ty, .. } => (ty.clone()).nullable(false),
 
             CeilFloat32 | FloorFloat32 | RoundFloat32 => ScalarType::Float32.nullable(in_nullable),
             CeilFloat64 | FloorFloat64 | RoundFloat64 => ScalarType::Float64.nullable(in_nullable),
@@ -2777,6 +2792,7 @@ impl fmt::Display for UnaryFunc {
             UnaryFunc::CastUuidToString => f.write_str("uuidtostr"),
             UnaryFunc::CastRecordToString { .. } => f.write_str("recordtostr"),
             UnaryFunc::CastArrayToString { .. } => f.write_str("arraytostr"),
+            UnaryFunc::CastList1ToList2 { .. } => f.write_str("list1tolist2"),
             UnaryFunc::CeilFloat32 => f.write_str("ceilf32"),
             UnaryFunc::CeilFloat64 => f.write_str("ceilf64"),
             UnaryFunc::CeilDecimal(_) => f.write_str("ceildec"),
@@ -3065,6 +3081,18 @@ fn cast_collection_to_string<'a>(
     let mut buf = String::new();
     stringify_datum(&mut buf, a, ty);
     Datum::String(temp_storage.push_string(buf))
+}
+
+fn cast_list_e1_to_list_e2<'a>(
+    a: Datum,
+    element_cast_expr: &'a ScalarExpr,
+    temp_storage: &'a RowArena,
+) -> Result<Datum<'a>, EvalError> {
+    let mut cast_datums = Vec::new();
+    for d in a.unwrap_list().iter() {
+        cast_datums.push(element_cast_expr.eval(&vec![d], temp_storage)?);
+    }
+    Ok(temp_storage.make_datum(|packer| packer.push_list(cast_datums)))
 }
 
 fn stringify_datum<'a, B>(buf: &mut B, d: Datum<'a>, ty: &ScalarType) -> strconv::Nestable
