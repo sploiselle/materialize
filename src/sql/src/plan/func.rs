@@ -336,11 +336,21 @@ impl ParamList {
         for (i, typ) in typs.iter().enumerate() {
             let param = &self[i];
             match (param, typ) {
-                (ParamType::ListAny, Some(ScalarType::List(typ))) => {
+                (ParamType::ListAny, Some(ScalarType::List(typ)))
+                | (ParamType::ArrayAny, Some(ScalarType::Array(typ))) => {
                     set_or_check_constrained_type(&**typ)?
                 }
-                (ParamType::ListAny, Some(t)) => {
-                    bail!("incompatible types; have {}, but can only accept lists", t)
+                (ParamType::ListAny, Some(t)) | (ParamType::ArrayAny, Some(t)) => {
+                    let typ_string = match param {
+                        ParamType::ListAny => "lists",
+                        ParamType::ArrayAny => "arrays",
+                        _ => unreachable!(),
+                    };
+                    bail!(
+                        "incompatible types; have {}, but can only accept {}",
+                        t,
+                        typ_string
+                    )
                 }
                 (ParamType::ListElementAny, Some(typ)) => set_or_check_constrained_type(typ)?,
                 _ => {}
@@ -361,11 +371,19 @@ impl ParamList {
         for (i, typ) in typs.iter().enumerate() {
             let param = &self[i];
             match (param, typ) {
-                (ParamType::ListAny, Some(typ)) | (ParamType::ListElementAny, Some(typ)) => {
+                // If parameter is polymorphic and type is known, we already
+                // validated that it's consistent with the constrained type.
+                (p, Some(typ)) if p.is_polymorphic() => {
                     param_types.push(ParamType::Plain(typ.clone()));
                 }
+                // Make unknown types into the constrained version of their parameter type.
                 (ParamType::ListAny, None) => {
                     param_types.push(ParamType::Plain(ScalarType::List(Box::new(
+                        constrained_type.clone(),
+                    ))));
+                }
+                (ParamType::ArrayAny, None) => {
+                    param_types.push(ParamType::Plain(ScalarType::Array(Box::new(
                         constrained_type.clone(),
                     ))));
                 }
@@ -593,7 +611,7 @@ impl PartialEq<ScalarType> for ParamType {
         match self {
             Plain(s) => *s == other.desaturate(),
             ListAny => other.is_list(),
-            Any | ArrayAny | StringAny | JsonbAny | ListElementAny | NonListAny => false,
+            Any | ArrayAny | JsonbAny | ListElementAny | NonListAny | StringAny => false,
         }
     }
 }
@@ -611,14 +629,14 @@ impl From<ScalarType> for ParamType {
 }
 
 /// Tracks candidate implementations.
-pub struct Candidate<'b, R> {
+pub struct Candidate<'a, R> {
     /// The implementation under consideration.
-    fimpl: &'b FuncImpl<R>,
+    fimpl: &'a FuncImpl<R>,
     exact_matches: usize,
     preferred_types: usize,
 }
 
-impl<'b, R> fmt::Debug for Candidate<'b, R> {
+impl<'a, R> fmt::Debug for Candidate<'a, R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Candidate")
             .field("fimpl", &self.fimpl)

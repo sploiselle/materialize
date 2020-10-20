@@ -240,28 +240,32 @@ impl AbstractExpr for CoercibleScalarExpr {
         params: &BTreeMap<usize, ScalarType>,
     ) -> Self::Type {
         use CoercibleScalarExpr::*;
-        match self {
-            Coerced(expr) => Some(expr.typ(outers, inner, params)),
-            LiteralList(exprs) => {
-                let mut element_typ: Self::Type = None;
-                for e in exprs {
-                    match (element_typ.as_ref(), e.typ(outers, inner, params)) {
-                        (Some(seen_typ), Some(new_typ)) => assert!(
-                            *seen_typ == new_typ,
-                            "internal error: list has heterogeneous types: {:?}, {:?}",
-                            seen_typ,
-                            new_typ
-                        ),
-                        (None, Some(new_typ)) => element_typ = Some(new_typ),
-                        _ => {}
-                    }
-                }
-
-                match element_typ {
-                    Some(e) => Some(ScalarType::List(Box::new(e.scalar_type)).nullable(e.nullable)),
-                    None => Some(ScalarType::List(Box::new(ScalarType::String)).nullable(true)),
+        let determine_element_typ = |exprs: &Vec<CoercibleScalarExpr>| -> Self::Type {
+            let mut element_typ: Self::Type = None;
+            for e in exprs {
+                match (element_typ.as_ref(), e.typ(outers, inner, params)) {
+                    (Some(seen_typ), Some(new_typ)) => assert!(
+                        *seen_typ == new_typ,
+                        "internal error: list has heterogeneous types: {:?}, {:?}",
+                        seen_typ,
+                        new_typ
+                    ),
+                    (None, Some(new_typ)) => element_typ = Some(new_typ),
+                    _ => {}
                 }
             }
+            element_typ
+        };
+        match self {
+            Coerced(expr) => Some(expr.typ(outers, inner, params)),
+            LiteralArray(exprs) => match determine_element_typ(exprs) {
+                Some(e) => Some(ScalarType::Array(Box::new(e.scalar_type)).nullable(e.nullable)),
+                None => Some(ScalarType::Array(Box::new(ScalarType::String)).nullable(true)),
+            },
+            LiteralList(exprs) => match determine_element_typ(exprs) {
+                Some(e) => Some(ScalarType::List(Box::new(e.scalar_type)).nullable(e.nullable)),
+                None => Some(ScalarType::List(Box::new(ScalarType::String)).nullable(true)),
+            },
             _ => None,
         }
     }
