@@ -705,8 +705,10 @@ SELECT list_append(NULL::INT LIST LIST, NULL::INT LIST)
 {NULL}
 
 # 🔬🔬🔬 errors
-query error
+query T
 SELECT list_append(LIST[1], NULL)
+----
+{1,NULL}
 
 query error
 SELECT list_append(LIST[1], 'a');
@@ -749,8 +751,10 @@ SELECT list_cat(NULL::INT LIST, NULL::INT LIST)
 NULL
 
 # 🔬🔬🔬 errors
-query error
+query T
 SELECT list_cat(LIST[1], NULL)
+----
+{1}
 
 query error
 SELECT list_cat('a', LIST[1])
@@ -1130,7 +1134,7 @@ SELECT length(LIST['1','2']::text)
 ----
 5
 
-query error Cannot call function length\(unknown\): length does not support implicitly casting from string list to string
+query error Cannot call function length\(string list\): arguments cannot be implicitly cast to any implementation's parameters; try providing explicit casts
 SELECT length(LIST['1','2'])
 
 
@@ -1183,8 +1187,10 @@ SELECT list_prepend(NULL::INT LIST, NULL::INT LIST LIST)
 {NULL}
 
 # 🔬🔬🔬 errors
-query error
+query T
 SELECT list_prepend(NULL, LIST[1])
+----
+{NULL,1}
 
 query error
 SELECT list_prepend('a', LIST[1])
