@@ -9,8 +9,10 @@
 
 #![deny(missing_docs)]
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
+use std::rc::Rc;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -1034,9 +1036,9 @@ impl RelationExpr {
     }
 
     /// Store `self` in a `Let` and pass the corresponding `Get` to `body`
-    pub fn let_in<Body>(self, id_gen: &mut IdGen, body: Body) -> super::RelationExpr
+    pub fn let_in<Body>(self, id_gen: &IdGen, body: Body) -> super::RelationExpr
     where
-        Body: FnOnce(&mut IdGen, RelationExpr) -> super::RelationExpr,
+        Body: FnOnce(&IdGen, RelationExpr) -> super::RelationExpr,
     {
         if let RelationExpr::Get { .. } = self {
             // already done
@@ -1060,7 +1062,7 @@ impl RelationExpr {
     /// (If `default` is a row of nulls, this is the 'outer' part of LEFT OUTER JOIN)
     pub fn anti_lookup(
         self,
-        id_gen: &mut IdGen,
+        id_gen: &IdGen,
         keys_and_values: RelationExpr,
         default: Vec<(Datum, ColumnType)>,
     ) -> RelationExpr {
@@ -1099,7 +1101,7 @@ impl RelationExpr {
     /// (If `default` is a row of nulls, this is LEFT OUTER JOIN)
     pub fn lookup(
         self,
-        id_gen: &mut IdGen,
+        id_gen: &IdGen,
         keys_and_values: RelationExpr,
         default: Vec<(Datum<'static>, ColumnType)>,
     ) -> RelationExpr {
@@ -1134,17 +1136,25 @@ impl fmt::Display for ColumnOrder {
 }
 
 /// Manages the allocation of locally unique IDs when building a [`RelationExpr`].
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct IdGen {
-    id: u64,
+    id: Rc<RefCell<u64>>,
 }
 
 impl IdGen {
     /// Allocates a new identifier and advances the generator.
-    pub fn allocate_id(&mut self) -> u64 {
-        let id = self.id;
-        self.id += 1;
-        id
+    pub fn allocate_id(&self) -> u64 {
+        let mut counter = self.id.borrow_mut();
+        let id = *counter;
+        *counter += 1;
+        return id;
+    }
+
+    /// Generates a new `IdGen` whose count starts at 0.
+    pub fn new() -> IdGen {
+        IdGen {
+            id: Rc::new(RefCell::new(0)),
+        }
     }
 }
 

@@ -29,7 +29,7 @@ use dataflow_types::{
     KafkaSinkConnectorBuilder, KafkaSourceConnector, KinesisSourceConnector, ProtobufEncoding,
     RegexEncoding, SinkConnectorBuilder, SourceConnector,
 };
-use expr::{GlobalId, RowSetFinishing};
+use expr::{GlobalId, IdGen, RowSetFinishing};
 use interchange::avro::{self, DebeziumDeduplicationStrategy, Encoder};
 use ore::collections::CollectionExt;
 use ore::iter::IteratorExt;
@@ -122,6 +122,7 @@ pub fn describe_statement(
         catalog,
         pcx: &PlanContext::default(),
         param_types: Rc::new(RefCell::new(param_types)),
+        id_gen: IdGen::new(),
     };
     Ok(match stmt {
         Statement::CreateDatabase(_)
@@ -285,6 +286,7 @@ pub fn handle_statement(
         pcx,
         catalog,
         param_types: Rc::new(RefCell::new(param_types)),
+        id_gen: IdGen::new(),
     };
     match stmt {
         Statement::CreateDatabase(stmt) => handle_create_database(scx, stmt),
@@ -919,7 +921,7 @@ fn handle_create_view(
     relation_expr.bind_parameters(&params)?;
     //TODO: materialize#724 - persist finishing information with the view?
     relation_expr.finish(finishing);
-    let relation_expr = relation_expr.decorrelate();
+    let relation_expr = relation_expr.decorrelate(&scx.id_gen);
     desc = maybe_rename_columns(format!("view {}", name), desc, columns)?;
     let temporary = *temporary;
     let materialize = *materialized; // Normalize for `raw_sql` below.
@@ -1734,7 +1736,7 @@ fn handle_insert(
 ) -> Result<Plan, anyhow::Error> {
     let (id, mut expr) = query::plan_insert_query(scx, table_name, columns, source)?;
     expr.bind_parameters(&params)?;
-    let expr = expr.decorrelate();
+    let expr = expr.decorrelate(&scx.id_gen);
 
     Ok(Plan::Insert { id, values: expr })
 }
@@ -1790,6 +1792,7 @@ fn handle_explain(
                 pcx: entry.plan_cx(),
                 catalog: scx.catalog,
                 param_types: scx.param_types.clone(),
+                id_gen: IdGen::new(),
             };
             (scx, query)
         }
@@ -1809,7 +1812,7 @@ fn handle_explain(
         Some(finishing)
     };
     sql_expr.bind_parameters(&params)?;
-    let expr = sql_expr.clone().decorrelate();
+    let expr = sql_expr.clone().decorrelate(&scx.id_gen);
     Ok(Plan::ExplainPlan {
         raw_plan: sql_expr,
         decorrelated_plan: expr,
@@ -1829,7 +1832,7 @@ fn handle_query(
 ) -> Result<(::expr::RelationExpr, RelationDesc, RowSetFinishing), anyhow::Error> {
     let (mut expr, desc, finishing) = query::plan_root_query(scx, query, lifetime)?;
     expr.bind_parameters(&params)?;
-    Ok((expr.decorrelate(), desc, finishing))
+    Ok((expr.decorrelate(&scx.id_gen), desc, finishing))
 }
 
 /// Whether a SQL object type can be interpreted as matching the type of the given catalog item.
@@ -1866,9 +1869,20 @@ pub struct StatementContext<'a> {
     /// The types of the parameters in the query. This is filled in as planning
     /// occurs.
     pub param_types: Rc<RefCell<BTreeMap<usize, ScalarType>>>,
+    // Ref-counted id generator
+    pub id_gen: IdGen,
 }
 
 impl<'a> StatementContext<'a> {
+    pub fn new(pcx: &'a PlanContext, catalog: &'a dyn Catalog) -> Self {
+        Self {
+            pcx,
+            catalog,
+            param_types: Rc::new(RefCell::new(BTreeMap::new())),
+            id_gen: IdGen::new(),
+        }
+    }
+
     pub fn allocate_name(&self, name: PartialName) -> FullName {
         FullName {
             database: match name.database {

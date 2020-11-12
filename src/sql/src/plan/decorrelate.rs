@@ -112,12 +112,11 @@ impl ColumnMap {
 impl RelationExpr {
     /// Rewrite `self` into a `expr::RelationExpr`.
     /// This requires rewriting all correlated subqueries (nested `RelationExpr`s) into flat queries
-    pub fn decorrelate(mut self) -> expr::RelationExpr {
-        let mut id_gen = expr::IdGen::default();
+    pub fn decorrelate(mut self, id_gen: &expr::IdGen) -> expr::RelationExpr {
         transform_expr::split_subquery_predicates(&mut self);
         transform_expr::try_simplify_quantified_comparisons(&mut self);
         expr::RelationExpr::constant(vec![vec![]], RelationType::new(vec![]))
-            .let_in(&mut id_gen, |id_gen, get_outer| {
+            .let_in(&id_gen, |id_gen, get_outer| {
                 self.applied_to(id_gen, get_outer, &ColumnMap::empty())
             })
     }
@@ -136,7 +135,7 @@ impl RelationExpr {
     /// assignment of values to outer rows.
     fn applied_to(
         self,
-        id_gen: &mut expr::IdGen,
+        id_gen: &expr::IdGen,
         get_outer: expr::RelationExpr,
         col_map: &ColumnMap,
     ) -> expr::RelationExpr {
@@ -486,7 +485,7 @@ impl ScalarExpr {
     /// each of these references can be found.
     fn applied_to(
         self,
-        id_gen: &mut expr::IdGen,
+        id_gen: &expr::IdGen,
         col_map: &ColumnMap,
         inner: &mut expr::RelationExpr,
     ) -> expr::ScalarExpr {
@@ -707,14 +706,14 @@ impl ScalarExpr {
 /// The caller must supply the `apply` function that applies the rewritten
 /// `inner` to `outer`.
 fn branch<F>(
-    id_gen: &mut expr::IdGen,
+    id_gen: &expr::IdGen,
     outer: expr::RelationExpr,
     col_map: &ColumnMap,
     mut inner: RelationExpr,
     apply: F,
 ) -> expr::RelationExpr
 where
-    F: FnOnce(&mut expr::IdGen, RelationExpr, expr::RelationExpr, &ColumnMap) -> expr::RelationExpr,
+    F: FnOnce(&expr::IdGen, RelationExpr, expr::RelationExpr, &ColumnMap) -> expr::RelationExpr,
 {
     // TODO: It would be nice to have a version of this code w/o optimizations,
     // at the least for purposes of understanding. It was difficult for one reader
@@ -841,7 +840,7 @@ where
 impl AggregateExpr {
     fn applied_to(
         self,
-        id_gen: &mut expr::IdGen,
+        id_gen: &expr::IdGen,
         col_map: &ColumnMap,
         inner: &mut expr::RelationExpr,
     ) -> expr::AggregateExpr {
@@ -866,7 +865,7 @@ fn attempt_outer_join(
     on: expr::ScalarExpr,
     kind: JoinKind,
     oa: usize,
-    id_gen: &mut expr::IdGen,
+    id_gen: &expr::IdGen,
 ) -> Option<expr::RelationExpr> {
     use expr::BinaryFunc;
 
