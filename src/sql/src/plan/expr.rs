@@ -44,11 +44,11 @@ pub enum RelationExpr {
         typ: RelationType,
     },
     // only needed for CTEs
-    // Let {
-    //     name: Name,
-    //     value: Box<RelationExpr>,
-    //     body: Box<RelationExpr>,
-    // },
+    Let {
+        id: expr::LocalId,
+        value: Box<RelationExpr>,
+        body: Box<RelationExpr>,
+    },
     Project {
         input: Box<RelationExpr>,
         outputs: Vec<usize>,
@@ -409,6 +409,7 @@ impl RelationExpr {
                 }
                 RelationType::new(base_cols)
             }
+            RelationExpr::Let { body, .. } => body.typ(outers, params),
         }
     }
 
@@ -431,6 +432,7 @@ impl RelationExpr {
                 aggregates,
                 ..
             } => group_key.len() + aggregates.len(),
+            RelationExpr::Let { body, .. } => body.arity(),
         }
     }
 
@@ -601,6 +603,14 @@ impl RelationExpr {
                     f(input);
                 }
             }
+            RelationExpr::Let {
+                ref value,
+                ref body,
+                ..
+            } => {
+                f(value);
+                f(body);
+            }
         }
     }
 
@@ -653,6 +663,14 @@ impl RelationExpr {
                 for input in inputs {
                     f(input);
                 }
+            }
+            RelationExpr::Let {
+                ref mut value,
+                ref mut body,
+                ..
+            } => {
+                f(value);
+                f(body);
             }
         }
     }
@@ -717,6 +735,10 @@ impl RelationExpr {
                 input.visit_columns(depth, f);
             }
             RelationExpr::Constant { .. } | RelationExpr::Get { .. } => (),
+            RelationExpr::Let { value, body, .. } => {
+                (*value).visit_columns(depth, f);
+                (*body).visit_columns(depth, f);
+            }
         }
     }
 
@@ -769,6 +791,11 @@ impl RelationExpr {
             | RelationExpr::Negate { input, .. }
             | RelationExpr::Threshold { input, .. } => input.bind_parameters(params),
             RelationExpr::Constant { .. } | RelationExpr::Get { .. } => Ok(()),
+            RelationExpr::Let { value, body, .. } => {
+                (*value).bind_parameters(params)?;
+                (*body).bind_parameters(params)?;
+                Ok(())
+            }
         }
     }
 
@@ -825,6 +852,10 @@ impl RelationExpr {
                 input.splice_parameters(params, depth);
             }
             RelationExpr::Constant { .. } | RelationExpr::Get { .. } => (),
+            RelationExpr::Let { value, body, .. } => {
+                (*value).splice_parameters(params, depth);
+                (*body).splice_parameters(params, depth);
+            }
         }
     }
 

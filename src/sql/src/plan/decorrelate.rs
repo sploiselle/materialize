@@ -157,6 +157,7 @@ impl RelationExpr {
                     typ,
                 })
             }
+            Let { .. } => unreachable!(),
             Get { id, typ } => {
                 // Get statements are only to external sources, and are not correlated with `get_outer`.
                 get_outer.product(SR::Get { id, typ })

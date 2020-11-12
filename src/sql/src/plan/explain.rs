@@ -140,7 +140,7 @@ impl RelationExpr {
                     | Negate { .. }
                     | Threshold { .. }
                     | Distinct { .. } => false,
-                    Join { .. } | Union { .. } => true,
+                    Join { .. } | Union { .. } | Let { .. } => true,
                     Constant { .. } | Get { .. } => unreachable!(), // these don't have children
                 },
             };
@@ -154,6 +154,7 @@ impl RelationExpr {
             let mut scalar_exprs = vec![];
             match &node.expr {
                 Constant { .. }
+                | Let { .. }
                 | Get { .. }
                 | Project { .. }
                 | Distinct { .. }
@@ -210,20 +211,26 @@ impl RelationExpr {
                 Constant { rows, .. } => {
                     write!(pretty, "Constant {}", Separated(" ", rows.clone())).unwrap();
                 }
-                Get { id, .. } => match id {
-                    Id::Local(_) => {
-                        unimplemented!("sql::RelationExpr::Get can't contain LocalId yet")
-                    }
-                    Id::Global(_) => write!(
-                        pretty,
-                        "Get {} ({})",
-                        id_humanizer
-                            .humanize_id(*id)
-                            .unwrap_or_else(|| "?".to_owned()),
-                        id,
-                    )
-                    .unwrap(),
-                },
+                Let { id, value, body } => write!(
+                    pretty,
+                    "Let {} ({}) %{} %{}",
+                    id_humanizer
+                        .humanize_id(Id::Local(*id))
+                        .unwrap_or_else(|| "?".to_owned()),
+                    id,
+                    expr_chain(&**value),
+                    expr_chain(&**body),
+                )
+                .unwrap(),
+                Get { id, .. } => write!(
+                    pretty,
+                    "Get {} ({})",
+                    id_humanizer
+                        .humanize_id(*id)
+                        .unwrap_or_else(|| "?".to_owned()),
+                    id,
+                )
+                .unwrap(),
                 Project { outputs, .. } => {
                     write!(pretty, "Project {}", Bracketed("(", ")", Indices(outputs))).unwrap()
                 }
