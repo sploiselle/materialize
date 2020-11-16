@@ -39,6 +39,7 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::bail;
 use itertools::Itertools;
 
+use expr::{Id, LocalId};
 use ore::collections::CollectionExt;
 use repr::RelationType;
 use repr::*;
@@ -115,9 +116,10 @@ impl RelationExpr {
     pub fn decorrelate(mut self, id_gen: &expr::IdGen) -> expr::RelationExpr {
         transform_expr::split_subquery_predicates(&mut self);
         transform_expr::try_simplify_quantified_comparisons(&mut self);
+        let mut ctes = HashMap::new();
         expr::RelationExpr::constant(vec![vec![]], RelationType::new(vec![]))
             .let_in(&id_gen, |id_gen, get_outer| {
-                self.applied_to(id_gen, get_outer, &ColumnMap::empty())
+                self.applied_to(id_gen, get_outer, &ColumnMap::empty(), &mut ctes)
             })
     }
 
@@ -138,6 +140,7 @@ impl RelationExpr {
         id_gen: &expr::IdGen,
         get_outer: expr::RelationExpr,
         col_map: &ColumnMap,
+        ctes: &mut HashMap<LocalId, Self>,
     ) -> expr::RelationExpr {
         use self::RelationExpr::*;
         use expr::RelationExpr as SR;
@@ -157,15 +160,32 @@ impl RelationExpr {
                     typ,
                 })
             }
-            Let { .. } => unreachable!(),
+            // `RelationExpr::Let` is only used to generate CTEs.
+            Let { id, value, body } => {
+                ctes.insert(id, *value);
+                body.applied_to(id_gen, get_outer.clone(), col_map, ctes)
+            }
             Get { id, typ } => {
-                // Get statements are only to external sources, and are not correlated with `get_outer`.
+                if let Id::Local(id) = id {
+                    if let Some(value) = ctes.get(&id) {
+                        // Inline because CTE values...
+                        // - Aren't stored anywhere outside their SQL
+                        //   `RelationExpr`, so there is nothing to get from the
+                        //   catalog.
+                        // - Need to be decorrelated.
+                        return value
+                            .clone()
+                            .applied_to(id_gen, get_outer.clone(), col_map, ctes);
+                    }
+                }
+                // Non-CTE Get statements are only to external sources, and are
+                // not correlated with `get_outer`.
                 get_outer.product(SR::Get { id, typ })
             }
             Project { input, outputs } => {
                 // Projections should be applied to the decorrelated `inner`, and to its columns,
                 // which means rebasing `outputs` to start `get_outer.arity()` columns later.
-                let input = input.applied_to(id_gen, get_outer.clone(), col_map);
+                let input = input.applied_to(id_gen, get_outer.clone(), col_map, ctes);
                 let outputs = (0..get_outer.arity())
                     .chain(outputs.into_iter().map(|i| get_outer.arity() + i))
                     .collect::<Vec<_>>();
@@ -173,7 +193,7 @@ impl RelationExpr {
             }
             Map { input, scalars } => {
                 // Scalar expressions may contain correlated subqueries. We must be cautious!
-                let mut input = input.applied_to(id_gen, get_outer, col_map);
+                let mut input = input.applied_to(id_gen, get_outer, col_map, ctes);
 
                 // We will proceed sequentially through the scalar expressions, for each transforming the decorrelated `input`
                 // into a relation with potentially more columns capable of addressing the needs of the scalar expression.
@@ -182,7 +202,7 @@ impl RelationExpr {
                 // The sequential traversal is present as expressions are allowed to depend on the values of prior expressions.
                 for scalar in scalars {
                     let old_arity = input.arity();
-                    let scalar = scalar.applied_to(id_gen, col_map, &mut input);
+                    let scalar = scalar.applied_to(id_gen, col_map, &mut input, ctes);
                     let new_arity = input.arity();
                     input = input.map(vec![scalar]);
                     if old_arity != new_arity {
@@ -203,7 +223,7 @@ impl RelationExpr {
 
                 let exprs = exprs
                     .into_iter()
-                    .map(|e| e.applied_to(id_gen, col_map, &mut input))
+                    .map(|e| e.applied_to(id_gen, col_map, &mut input, ctes))
                     .collect::<Vec<_>>();
 
                 let new_arity = input.arity();
@@ -223,10 +243,10 @@ impl RelationExpr {
                 // Filter expressions may contain correlated subqueries.
                 // We extend `get_outer` with sufficient values to determine the value of the predicate,
                 // then filter the results, then strip off any columns that were added for this purpose.
-                let mut input = input.applied_to(id_gen, get_outer, col_map);
+                let mut input = input.applied_to(id_gen, get_outer, col_map, ctes);
                 for predicate in predicates {
                     let old_arity = input.arity();
-                    let predicate = predicate.applied_to(id_gen, col_map, &mut input);
+                    let predicate = predicate.applied_to(id_gen, col_map, &mut input, ctes);
                     let new_arity = input.arity();
                     input = input.filter(vec![predicate]);
                     if old_arity != new_arity {
@@ -251,7 +271,7 @@ impl RelationExpr {
                 // As with normal joins, the `on` predicate may be correlated,
                 // and we treat it as a filter that follows the branch.
 
-                let left = left.applied_to(id_gen, get_outer, col_map);
+                let left = left.applied_to(id_gen, get_outer, col_map, ctes);
                 left.let_in(id_gen, |id_gen, get_left| {
                     let mut join = branch(
                         id_gen,
@@ -259,13 +279,13 @@ impl RelationExpr {
                         col_map,
                         *right,
                         |id_gen, right, get_left, col_map| {
-                            right.applied_to(id_gen, get_left, col_map)
+                            right.applied_to(id_gen, get_left, col_map, ctes)
                         },
                     );
 
                     // Plan the `on` predicate.
                     let old_arity = join.arity();
-                    let on = on.applied_to(id_gen, col_map, &mut join);
+                    let on = on.applied_to(id_gen, col_map, &mut join, ctes);
                     join = join.filter(vec![on]);
                     let new_arity = join.arity();
                     if old_arity != new_arity {
@@ -306,11 +326,11 @@ impl RelationExpr {
                 // against the records present in the left and right (decorrelated) inputs,
                 // depending on the type of join.
                 let oa = get_outer.arity();
-                let left = left.applied_to(id_gen, get_outer.clone(), col_map);
+                let left = left.applied_to(id_gen, get_outer.clone(), col_map, ctes);
                 let lt = left.typ();
                 let la = left.arity() - oa;
                 left.let_in(id_gen, |id_gen, get_left| {
-                    let right = right.applied_to(id_gen, get_outer.clone(), col_map);
+                    let right = right.applied_to(id_gen, get_outer.clone(), col_map, ctes);
                     let rt = right.typ();
                     let ra = right.arity() - oa;
                     right.let_in(id_gen, |id_gen, get_right| {
@@ -325,7 +345,7 @@ impl RelationExpr {
                                 .collect(),
                         );
                         let old_arity = product.arity();
-                        let on = on.applied_to(id_gen, col_map, &mut product);
+                        let on = on.applied_to(id_gen, col_map, &mut product, ctes);
 
                         // Attempt an efficient equijoin implementation, in which outer joins are
                         // more efficiently rendered than in general. This can return `None` if
@@ -399,10 +419,10 @@ impl RelationExpr {
             Union { base, inputs } => {
                 // Union is uncomplicated.
                 SR::Union {
-                    base: Box::new(base.applied_to(id_gen, get_outer.clone(), col_map)),
+                    base: Box::new(base.applied_to(id_gen, get_outer.clone(), col_map, ctes)),
                     inputs: inputs
                         .into_iter()
-                        .map(|input| input.applied_to(id_gen, get_outer.clone(), col_map))
+                        .map(|input| input.applied_to(id_gen, get_outer.clone(), col_map, ctes))
                         .collect(),
                 }
             }
@@ -414,13 +434,13 @@ impl RelationExpr {
                 // Reduce may contain expressions with correlated subqueries.
                 // In addition, here an empty reduction key signifies that we need to supply default values
                 // in the case that there are no results (as in a SQL aggregation without an explicit GROUP BY).
-                let mut input = input.applied_to(id_gen, get_outer.clone(), col_map);
+                let mut input = input.applied_to(id_gen, get_outer.clone(), col_map, ctes);
                 let applied_group_key = (0..get_outer.arity())
                     .chain(group_key.iter().map(|i| get_outer.arity() + i))
                     .collect();
                 let applied_aggregates = aggregates
                     .into_iter()
-                    .map(|aggregate| aggregate.applied_to(id_gen, col_map, &mut input))
+                    .map(|aggregate| aggregate.applied_to(id_gen, col_map, &mut input, ctes))
                     .collect::<Vec<_>>();
                 let input_type = input.typ();
                 let default = applied_aggregates
@@ -438,7 +458,9 @@ impl RelationExpr {
             }
             Distinct { input } => {
                 // Distinct is uncomplicated.
-                input.applied_to(id_gen, get_outer, col_map).distinct()
+                input
+                    .applied_to(id_gen, get_outer, col_map, ctes)
+                    .distinct()
             }
             TopK {
                 input,
@@ -448,7 +470,7 @@ impl RelationExpr {
                 offset,
             } => {
                 // TopK is uncomplicated, except that we must group by the columns of `get_outer` as well.
-                let input = input.applied_to(id_gen, get_outer.clone(), col_map);
+                let input = input.applied_to(id_gen, get_outer.clone(), col_map, ctes);
                 let applied_group_key = (0..get_outer.arity())
                     .chain(group_key.iter().map(|i| get_outer.arity() + i))
                     .collect();
@@ -463,11 +485,13 @@ impl RelationExpr {
             }
             Negate { input } => {
                 // Negate is uncomplicated.
-                input.applied_to(id_gen, get_outer, col_map).negate()
+                input.applied_to(id_gen, get_outer, col_map, ctes).negate()
             }
             Threshold { input } => {
                 // Threshold is uncomplicated.
-                input.applied_to(id_gen, get_outer, col_map).threshold()
+                input
+                    .applied_to(id_gen, get_outer, col_map, ctes)
+                    .threshold()
             }
         }
     }
@@ -489,6 +513,7 @@ impl ScalarExpr {
         id_gen: &expr::IdGen,
         col_map: &ColumnMap,
         inner: &mut expr::RelationExpr,
+        ctes: &mut HashMap<LocalId, RelationExpr>,
     ) -> expr::ScalarExpr {
         use self::ScalarExpr::*;
         use expr::ScalarExpr as SS;
@@ -500,18 +525,18 @@ impl ScalarExpr {
             CallNullary(func) => SS::CallNullary(func),
             CallUnary { func, expr } => SS::CallUnary {
                 func,
-                expr: Box::new(expr.applied_to(id_gen, col_map, inner)),
+                expr: Box::new(expr.applied_to(id_gen, col_map, inner, ctes)),
             },
             CallBinary { func, expr1, expr2 } => SS::CallBinary {
                 func,
-                expr1: Box::new(expr1.applied_to(id_gen, col_map, inner)),
-                expr2: Box::new(expr2.applied_to(id_gen, col_map, inner)),
+                expr1: Box::new(expr1.applied_to(id_gen, col_map, inner, ctes)),
+                expr2: Box::new(expr2.applied_to(id_gen, col_map, inner, ctes)),
             },
             CallVariadic { func, exprs } => SS::CallVariadic {
                 func,
                 exprs: exprs
                     .into_iter()
-                    .map(|expr| expr.applied_to(id_gen, col_map, inner))
+                    .map(|expr| expr.applied_to(id_gen, col_map, inner, ctes))
                     .collect::<Vec<_>>(),
             },
             If { cond, then, els } => {
@@ -536,7 +561,7 @@ impl ScalarExpr {
                 // and we would benefit from not introducing the complexity.
 
                 let inner_arity = inner.arity();
-                let cond_expr = cond.applied_to(id_gen, col_map, inner);
+                let cond_expr = cond.applied_to(id_gen, col_map, inner, ctes);
 
                 // Defensive copies, in case we mangle these in decorrelation.
                 let inner_clone = inner.clone();
@@ -544,8 +569,8 @@ impl ScalarExpr {
                 let else_clone = els.clone();
 
                 let cond_arity = inner.arity();
-                let then_expr = then.applied_to(id_gen, col_map, inner);
-                let else_expr = els.applied_to(id_gen, col_map, inner);
+                let then_expr = then.applied_to(id_gen, col_map, inner, ctes);
+                let else_expr = els.applied_to(id_gen, col_map, inner, ctes);
 
                 if cond_arity == inner.arity() {
                     // If no additional columns were added, we simply return the
@@ -564,7 +589,8 @@ impl ScalarExpr {
                     *inner = inner_clone.let_in(id_gen, |id_gen, get_inner| {
                         // Restrict to records satisfying `cond_expr` and apply `then` as a map.
                         let mut then_inner = get_inner.clone().filter(vec![cond_expr.clone()]);
-                        let then_expr = then_clone.applied_to(id_gen, col_map, &mut then_inner);
+                        let then_expr =
+                            then_clone.applied_to(id_gen, col_map, &mut then_inner, ctes);
                         let then_arity = then_inner.arity();
                         then_inner = then_inner
                             .map(vec![then_expr])
@@ -586,7 +612,8 @@ impl ScalarExpr {
                                 expr: Box::new(cond_expr.clone()),
                             }),
                         }]);
-                        let else_expr = else_clone.applied_to(id_gen, col_map, &mut else_inner);
+                        let else_expr =
+                            else_clone.applied_to(id_gen, col_map, &mut else_inner, ctes);
                         let else_arity = else_inner.arity();
                         else_inner = else_inner
                             .map(vec![else_expr])
@@ -620,7 +647,7 @@ impl ScalarExpr {
                     |id_gen, expr, get_inner, col_map| {
                         let exists = expr
                             // compute for every row in get_inner
-                            .applied_to(id_gen, get_inner.clone(), col_map)
+                            .applied_to(id_gen, get_inner.clone(), col_map, ctes)
                             // throw away actual values and just remember whether or not there were __any__ rows
                             .distinct_by((0..get_inner.arity()).collect())
                             // Append true to anything that returned any rows. This
@@ -648,7 +675,7 @@ impl ScalarExpr {
                     |id_gen, expr, get_inner, col_map| {
                         let select = expr
                             // compute for every row in get_inner
-                            .applied_to(id_gen, get_inner.clone(), col_map);
+                            .applied_to(id_gen, get_inner.clone(), col_map, ctes);
                         let col_type = select.typ().column_types.into_last();
                         // append Null to anything that didn't return any rows
                         let default = vec![(Datum::Null, col_type.nullable(true))];
@@ -844,6 +871,7 @@ impl AggregateExpr {
         id_gen: &expr::IdGen,
         col_map: &ColumnMap,
         inner: &mut expr::RelationExpr,
+        ctes: &mut HashMap<LocalId, RelationExpr>,
     ) -> expr::AggregateExpr {
         let AggregateExpr {
             func,
@@ -853,7 +881,7 @@ impl AggregateExpr {
 
         expr::AggregateExpr {
             func,
-            expr: expr.applied_to(id_gen, col_map, inner),
+            expr: expr.applied_to(id_gen, col_map, inner, ctes),
             distinct,
         }
     }
