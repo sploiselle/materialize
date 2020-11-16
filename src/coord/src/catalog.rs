@@ -1593,7 +1593,7 @@ impl IdHumanizer for Catalog {
     fn humanize_id(&self, id: Id) -> Option<String> {
         match id {
             Id::Global(id) => self.by_id.get(&id).map(|entry| entry.name.to_string()),
-            Id::Local(_) => None,
+            Id::Local(id) => Some(format!("cte{}", id)),
         }
     }
 }
