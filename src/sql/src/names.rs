@@ -128,3 +128,27 @@ impl From<FullName> for PartialName {
         }
     }
 }
+
+impl From<ObjectName> for PartialName {
+    fn from(o: ObjectName) -> PartialName {
+        let mut parts = o.0;
+
+        let item = parts.pop().unwrap().to_string();
+
+        let schema = match parts.pop() {
+            Some(schema) => Some(schema.to_string()),
+            None => None,
+        };
+
+        let database = match parts.pop() {
+            Some(database) => Some(database.to_string()),
+            None => None,
+        };
+
+        PartialName {
+            database,
+            schema,
+            item,
+        }
+    }
+}
