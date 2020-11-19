@@ -823,7 +823,9 @@ where
                 RelationExpr::Get { id, typ: _ } => {
                     // TODO: something more tasteful.
                     // perhaps load an empty collection, warn?
-                    panic!("Collection {} not pre-loaded", id);
+                    if let Id::Global(..) = id {
+                        panic!("Collection {} not pre-loaded", id);
+                    }
                 }
 
                 RelationExpr::Let { id, value, body } => {

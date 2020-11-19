@@ -183,79 +183,79 @@ impl Default for Optimizer {
         let transforms: Vec<Box<dyn crate::Transform + Send>> = vec![
             // The first block are peep-hole optimizations that simplify
             // the representation of the query and are largely uncontentious.
-            Box::new(crate::join_elision::JoinElision),
-            Box::new(crate::inline_let::InlineLet),
-            Box::new(crate::reduction::FoldConstants),
-            Box::new(crate::split_predicates::SplitPredicates),
-            Box::new(crate::fusion::filter::Filter),
-            Box::new(crate::fusion::map::Map),
-            Box::new(crate::projection_extraction::ProjectionExtraction),
-            Box::new(crate::fusion::project::Project),
-            Box::new(crate::fusion::join::Join),
-            Box::new(crate::join_elision::JoinElision),
-            Box::new(crate::empty_map::EmptyMap),
-            // Early actions include "no-brainer" transformations that reduce complexity in linear passes.
-            Box::new(crate::join_elision::JoinElision),
-            Box::new(crate::reduction::FoldConstants),
-            Box::new(crate::fusion::filter::Filter),
-            Box::new(crate::fusion::map::Map),
-            Box::new(crate::reduction::FoldConstants),
-            Box::new(crate::reduction::DeMorgans),
-            Box::new(crate::reduction::UndistributeAnd),
-            Box::new(crate::split_predicates::SplitPredicates),
-            Box::new(crate::Fixpoint {
-                limit: 100,
-                transforms: vec![
-                    Box::new(crate::nonnullable::NonNullable),
-                    Box::new(crate::reduction::FoldConstants),
-                    Box::new(crate::predicate_pushdown::PredicatePushdown),
-                    Box::new(crate::fusion::join::Join),
-                    Box::new(crate::fusion::filter::Filter),
-                    Box::new(crate::fusion::project::Project),
-                    Box::new(crate::fusion::map::Map),
-                    Box::new(crate::fusion::union::Union),
-                    Box::new(crate::empty_map::EmptyMap),
-                    Box::new(crate::join_elision::JoinElision),
-                    Box::new(crate::reduce_elision::ReduceElision),
-                    Box::new(crate::inline_let::InlineLet),
-                    Box::new(crate::update_let::UpdateLet),
-                    Box::new(crate::projection_extraction::ProjectionExtraction),
-                    Box::new(crate::projection_lifting::ProjectionLifting),
-                    Box::new(crate::map_lifting::LiteralLifting),
-                    Box::new(crate::nonnull_requirements::NonNullRequirements),
-                    Box::new(crate::column_knowledge::ColumnKnowledge),
-                    Box::new(crate::reduction_pushdown::ReductionPushdown),
-                    Box::new(crate::redundant_join::RedundantJoin),
-                    Box::new(crate::topk_elision::TopKElision),
-                    Box::new(crate::reduction::NegatePredicate),
-                    Box::new(crate::demand::Demand),
-                ],
-            }),
-            // As a final logical action, convert any constant expression to a constant.
-            // Some optimizations fight against this, and we want to be sure to end as a
-            // `RelationExpr::Constant` if that is the case, so that subsequent use can
-            // clearly see this.
-            Box::new(crate::reduction::FoldConstants),
-            // TODO (wangandi): materialize#616 the FilterEqualLiteral transform
-            // exists but is currently unevaluated with the new join implementations.
+            // Box::new(crate::join_elision::JoinElision),
+            // Box::new(crate::inline_let::InlineLet),
+            // Box::new(crate::reduction::FoldConstants),
+            // Box::new(crate::split_predicates::SplitPredicates),
+            // Box::new(crate::fusion::filter::Filter),
+            // Box::new(crate::fusion::map::Map),
+            // Box::new(crate::projection_extraction::ProjectionExtraction),
+            // Box::new(crate::fusion::project::Project),
+            // Box::new(crate::fusion::join::Join),
+            // Box::new(crate::join_elision::JoinElision),
+            // Box::new(crate::empty_map::EmptyMap),
+            // // Early actions include "no-brainer" transformations that reduce complexity in linear passes.
+            // Box::new(crate::join_elision::JoinElision),
+            // Box::new(crate::reduction::FoldConstants),
+            // Box::new(crate::fusion::filter::Filter),
+            // Box::new(crate::fusion::map::Map),
+            // Box::new(crate::reduction::FoldConstants),
+            // Box::new(crate::reduction::DeMorgans),
+            // Box::new(crate::reduction::UndistributeAnd),
+            // Box::new(crate::split_predicates::SplitPredicates),
+            // Box::new(crate::Fixpoint {
+            //     limit: 100,
+            //     transforms: vec![
+            //         Box::new(crate::nonnullable::NonNullable),
+            //         Box::new(crate::reduction::FoldConstants),
+            //         Box::new(crate::predicate_pushdown::PredicatePushdown),
+            //         Box::new(crate::fusion::join::Join),
+            //         Box::new(crate::fusion::filter::Filter),
+            //         Box::new(crate::fusion::project::Project),
+            //         Box::new(crate::fusion::map::Map),
+            //         Box::new(crate::fusion::union::Union),
+            //         Box::new(crate::empty_map::EmptyMap),
+            //         Box::new(crate::join_elision::JoinElision),
+            //         Box::new(crate::reduce_elision::ReduceElision),
+            //         Box::new(crate::inline_let::InlineLet),
+            //         Box::new(crate::update_let::UpdateLet),
+            //         Box::new(crate::projection_extraction::ProjectionExtraction),
+            //         Box::new(crate::projection_lifting::ProjectionLifting),
+            //         Box::new(crate::map_lifting::LiteralLifting),
+            //         Box::new(crate::nonnull_requirements::NonNullRequirements),
+            //         Box::new(crate::column_knowledge::ColumnKnowledge),
+            //         Box::new(crate::reduction_pushdown::ReductionPushdown),
+            //         Box::new(crate::redundant_join::RedundantJoin),
+            //         Box::new(crate::topk_elision::TopKElision),
+            //         Box::new(crate::reduction::NegatePredicate),
+            //         Box::new(crate::demand::Demand),
+            //     ],
+            // }),
+            // // As a final logical action, convert any constant expression to a constant.
+            // // Some optimizations fight against this, and we want to be sure to end as a
+            // // `RelationExpr::Constant` if that is the case, so that subsequent use can
+            // // clearly see this.
+            // Box::new(crate::reduction::FoldConstants),
+            // // TODO (wangandi): materialize#616 the FilterEqualLiteral transform
+            // // exists but is currently unevaluated with the new join implementations.
 
-            // Implementation transformations
-            Box::new(crate::Fixpoint {
-                limit: 100,
-                transforms: vec![
-                    Box::new(crate::projection_lifting::ProjectionLifting),
-                    Box::new(crate::join_implementation::JoinImplementation),
-                    Box::new(crate::fusion::filter::Filter),
-                    Box::new(crate::demand::Demand),
-                    Box::new(crate::map_lifting::LiteralLifting),
-                ],
-            }),
-            Box::new(crate::reduction_pushdown::ReductionPushdown),
-            Box::new(crate::cse::map::Map),
+            // // Implementation transformations
+            // Box::new(crate::Fixpoint {
+            //     limit: 100,
+            //     transforms: vec![
+            //         Box::new(crate::projection_lifting::ProjectionLifting),
+            //         Box::new(crate::join_implementation::JoinImplementation),
+            //         Box::new(crate::fusion::filter::Filter),
+            //         Box::new(crate::demand::Demand),
+            //         Box::new(crate::map_lifting::LiteralLifting),
+            //     ],
+            // }),
+            // Box::new(crate::reduction_pushdown::ReductionPushdown),
+            // Box::new(crate::cse::map::Map),
             Box::new(crate::projection_lifting::ProjectionLifting),
             Box::new(crate::join_implementation::JoinImplementation),
-            Box::new(crate::fusion::project::Project),
-            Box::new(crate::reduction::FoldConstants),
+            // Box::new(crate::fusion::project::Project),
+            // Box::new(crate::reduction::FoldConstants),
         ];
         Self { transforms }
     }
@@ -275,17 +275,17 @@ impl Optimizer {
     /// Simple fusion and elision transformations to render the query readable.
     pub fn pre_optimization() -> Self {
         let transforms: Vec<Box<dyn crate::Transform + Send>> = vec![
-            Box::new(crate::join_elision::JoinElision),
-            Box::new(crate::inline_let::InlineLet),
-            Box::new(crate::reduction::FoldConstants),
-            Box::new(crate::split_predicates::SplitPredicates),
-            Box::new(crate::fusion::filter::Filter),
-            Box::new(crate::fusion::map::Map),
-            Box::new(crate::projection_extraction::ProjectionExtraction),
-            Box::new(crate::fusion::project::Project),
-            Box::new(crate::fusion::join::Join),
-            Box::new(crate::join_elision::JoinElision),
-            Box::new(crate::empty_map::EmptyMap),
+            // Box::new(crate::join_elision::JoinElision),
+            // Box::new(crate::inline_let::InlineLet),
+            // Box::new(crate::reduction::FoldConstants),
+            // Box::new(crate::split_predicates::SplitPredicates),
+            // Box::new(crate::fusion::filter::Filter),
+            // Box::new(crate::fusion::map::Map),
+            // Box::new(crate::projection_extraction::ProjectionExtraction),
+            // Box::new(crate::fusion::project::Project),
+            // Box::new(crate::fusion::join::Join),
+            // Box::new(crate::join_elision::JoinElision),
+            // Box::new(crate::empty_map::EmptyMap),
         ];
         Self { transforms }
     }

@@ -162,22 +162,16 @@ impl RelationExpr {
             }
             // `RelationExpr::Let` is only used to generate CTEs.
             Let { id, value, body } => {
-                ctes.insert(id, *value);
-                body.applied_to(id_gen, get_outer.clone(), col_map, ctes)
+                let value = value.applied_to(id_gen, get_outer.clone(), col_map, ctes);
+                let body = body.applied_to(id_gen, get_outer.clone(), col_map, ctes);
+
+                SR::Let {
+                    id,
+                    value: Box::new(value),
+                    body: Box::new(body),
+                }
             }
             Get { id, typ } => {
-                if let Id::Local(id) = id {
-                    if let Some(value) = ctes.get(&id) {
-                        // Inline because CTE values...
-                        // - Aren't stored anywhere outside their SQL
-                        //   `RelationExpr`, so there is nothing to get from the
-                        //   catalog.
-                        // - Need to be decorrelated.
-                        return value
-                            .clone()
-                            .applied_to(id_gen, get_outer.clone(), col_map, ctes);
-                    }
-                }
                 // Non-CTE Get statements are only to external sources, and are
                 // not correlated with `get_outer`.
                 get_outer.product(SR::Get { id, typ })
