@@ -54,7 +54,7 @@ pub(crate) mod typeconv;
 pub use self::expr::RelationExpr;
 pub use error::PlanError;
 // This is used by sqllogictest to turn SQL values into `Datum`s.
-pub use query::scalar_type_from_sql;
+pub use query::{scalar_type_from_sql, unwrap_decimal_parts};
 pub use statement::{describe_statement, StatementContext, StatementDesc};
 
 /// Instructions for executing a SQL query.

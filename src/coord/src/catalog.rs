@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use build_info::DUMMY_BUILD_INFO;
 use dataflow_types::{SinkConnector, SinkConnectorBuilder, SourceConnector};
 use expr::{GlobalId, IdHumanizer, OptimizedRelationExpr, ScalarExpr};
-use repr::RelationDesc;
+use repr::{RelationDesc, ScalarType};
 use sql::ast::display::AstDisplay;
 use sql::catalog::CatalogError as SqlCatalogError;
 use sql::names::{DatabaseSpecifier, FullName, PartialName, SchemaName};
@@ -1791,8 +1791,77 @@ impl sql::catalog::Catalog for ConnCatalog<'_> {
         self.catalog.get_by_id(id)
     }
 
-    fn type_exists(&self, name: &FullName) -> bool {
+    fn item_exists(&self, name: &FullName) -> bool {
         self.catalog.try_get(name, self.conn_id).is_some()
+    }
+
+    fn try_get_scalar_type_by_id(&self, id: &GlobalId) -> Option<ScalarType> {
+        use ScalarType::*;
+        let entry = match self.catalog.try_get_by_id(*id) {
+            Some(e) => e,
+            None => return None,
+        };
+
+        let t = match entry.item() {
+            CatalogItem::Type(t) => t,
+            _ => return None,
+        };
+
+        Some(match t.inner {
+            TypeInner::Array { element_id } => {
+                let element_type = self.try_get_scalar_type_by_id(&element_id).unwrap();
+                ScalarType::Array(Box::new(element_type))
+            }
+            // OIDs are static, so these checks are guaranteed to be
+            // comprehensive and accurate.
+            TypeInner::Base => match entry.oid {
+                16 => Bool,
+                17 => Bytes,
+                20 => Int64,
+                23 => Int32,
+                25 => String,
+                26 => Oid,
+                700 => Float32,
+                701 => Float64,
+                1000 => Array(Box::new(Bool)),
+                1001 => Array(Box::new(Bytes)),
+                1007 => Array(Box::new(Int32)),
+                1009 => Array(Box::new(String)),
+                1016 => Array(Box::new(Int64)),
+                1021 => Array(Box::new(Float32)),
+                1022 => Array(Box::new(Float64)),
+                1028 => Array(Box::new(Oid)),
+                1082 => Date,
+                1083 => Time,
+                1114 => Timestamp,
+                1115 => Array(Box::new(Timestamp)),
+                1182 => Array(Box::new(Date)),
+                1183 => Array(Box::new(Time)),
+                1184 => TimestampTz,
+                1185 => Array(Box::new(TimestampTz)),
+                1186 => Interval,
+                1187 => Array(Box::new(Interval)),
+                1231 => Array(Box::new(Decimal(0, 0))),
+                1700 => Decimal(0, 0),
+                2249 => Record { fields: vec![] },
+                2287 => Array(Box::new(Record { fields: vec![] })),
+                2950 => Uuid,
+                2951 => Array(Box::new(Uuid)),
+                3802 => Jsonb,
+                3807 => Array(Box::new(Jsonb)),
+                _ => unreachable!("all builtin types already checked in try_get_scalar_type_by_id"),
+            },
+            TypeInner::List { element_id } => {
+                let element_type = self.try_get_scalar_type_by_id(&element_id).unwrap();
+                ScalarType::List(Box::new(element_type))
+            }
+            TypeInner::Map { key_id, value_id } => {
+                let key_type = self.try_get_scalar_type_by_id(&key_id).unwrap();
+                assert!(matches!(key_type, ScalarType::String));
+                let value_type = Box::new(self.try_get_scalar_type_by_id(&value_id).unwrap());
+                ScalarType::Map { value_type }
+            }
+        })
     }
 
     fn config(&self) -> &sql::catalog::CatalogConfig {

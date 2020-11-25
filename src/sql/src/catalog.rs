@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use build_info::{BuildInfo, DUMMY_BUILD_INFO};
 use expr::{GlobalId, ScalarExpr};
-use repr::RelationDesc;
+use repr::{RelationDesc, ScalarType};
 use uuid::Uuid;
 
 use crate::names::{FullName, PartialName, SchemaName};
@@ -101,8 +101,13 @@ pub trait Catalog: fmt::Debug {
     /// Panics if `id` does not specify a valid item.
     fn get_item_by_id(&self, id: &GlobalId) -> &dyn CatalogItem;
 
-    /// Reports whether the specified type exists in the catalog.
-    fn type_exists(&self, name: &FullName) -> bool;
+    /// Identifies if an item with this name already exists; useful to avoid
+    /// naming collisions when adding items to catalog that do not support `IF
+    /// NOT EXISTS`.
+    fn item_exists(&self, name: &FullName) -> bool;
+
+    /// Returns the `ScalarType` associated with `id` if one exists.
+    fn try_get_scalar_type_by_id(&self, id: &GlobalId) -> Option<ScalarType>;
 
     /// Returns the configuration of the catalog.
     fn config(&self) -> &CatalogConfig;
@@ -318,11 +323,15 @@ impl Catalog for DummyCatalog {
         unimplemented!();
     }
 
-    fn type_exists(&self, _: &FullName) -> bool {
+    fn item_exists(&self, _: &FullName) -> bool {
         false
     }
 
     fn config(&self) -> &CatalogConfig {
         &DUMMY_CONFIG
+    }
+
+    fn try_get_scalar_type_by_id(&self, _: &GlobalId) -> Option<ScalarType> {
+        None
     }
 }

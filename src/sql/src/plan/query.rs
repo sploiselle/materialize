@@ -43,7 +43,7 @@ use repr::{
     Timestamp,
 };
 
-use crate::catalog::CatalogItemType;
+use crate::catalog::{Catalog, CatalogItemType};
 use crate::names::PartialName;
 use crate::normalize;
 use crate::plan::error::PlanError;
@@ -56,7 +56,6 @@ use crate::plan::scope::{Scope, ScopeItem, ScopeItemName};
 use crate::plan::statement::StatementContext;
 use crate::plan::transform_ast;
 use crate::plan::typeconv::{self, CastContext};
-use crate::plan::Catalog;
 
 /// Plans a top-level query, returning the `RelationExpr` describing the query
 /// plan, the `RelationDesc` describing the shape of the result set, a
@@ -1862,7 +1861,7 @@ pub fn plan_expr<'a>(ecx: &'a ExprContext, e: &Expr) -> Result<CoercibleScalarEx
         // Generalized functions, operators, and casts.
         Expr::Op { op, expr1, expr2 } => plan_op(ecx, op, expr1, expr2.as_deref())?.into(),
         Expr::Cast { expr, data_type } => {
-            let to_scalar_type = scalar_type_from_sql(data_type)?;
+            let to_scalar_type = scalar_type_from_sql(ecx.qcx.scx.catalog, data_type)?;
             let expr = match &**expr {
                 // Special case a direct cast of an ARRAY or LIST expression so
                 // we can pass in the target type as a type hint. This is
@@ -2565,13 +2564,18 @@ fn find_trivial_column_equivalences(expr: &ScalarExpr) -> Vec<(usize, usize)> {
     equivalences
 }
 
-pub fn scalar_type_from_sql(data_type: &DataType) -> Result<ScalarType, anyhow::Error> {
+pub fn scalar_type_from_sql(
+    catalog: &dyn Catalog,
+    data_type: &DataType,
+) -> Result<ScalarType, anyhow::Error> {
     // `DataType`s that get translated into the same `ScalarType` have different
     // functionality within symbiosis. Because of the relationship with
     // symbiosis, this function should stay in sync with
     // symbiosis::push_column.catalog.
     Ok(match data_type {
-        DataType::Array(elem_type) => ScalarType::Array(Box::new(scalar_type_from_sql(elem_type)?)),
+        DataType::Array(elem_type) => {
+            ScalarType::Array(Box::new(scalar_type_from_sql(catalog, elem_type)?))
+        }
         // Differentiated from `DataType::Other("text")` by impact within symbiosis.
         DataType::Char(_) | DataType::Varchar(_) => ScalarType::String,
         DataType::Decimal(precision, scale) => {
@@ -2598,9 +2602,11 @@ pub fn scalar_type_from_sql(data_type: &DataType) -> Result<ScalarType, anyhow::
             }
             ScalarType::Float64
         }
-        DataType::List(elem_type) => ScalarType::List(Box::new(scalar_type_from_sql(elem_type)?)),
+        DataType::List(elem_type) => {
+            ScalarType::List(Box::new(scalar_type_from_sql(catalog, elem_type)?))
+        }
         DataType::Map { value_type } => ScalarType::Map {
-            value_type: Box::new(scalar_type_from_sql(value_type)?),
+            value_type: Box::new(scalar_type_from_sql(catalog, value_type)?),
         },
         DataType::Other(n) => match n.as_str() {
             "bool" | "boolean" => ScalarType::Bool,
@@ -2623,9 +2629,38 @@ pub fn scalar_type_from_sql(data_type: &DataType) -> Result<ScalarType, anyhow::
                 "TIMETZ is not supported \
             https://wiki.postgresql.org/wiki/Don%27t_Do_This#Don.27t_use_timetz"
             ),
-            _ => bail!("type \"{}\" does not exist", n),
+            _ => {
+                let name = normalize::object_name(ObjectName(vec![n.clone()]))?;
+                let name = catalog.resolve_item(&name)?;
+                let item = catalog.get_item(&name);
+                match catalog.try_get_scalar_type_by_id(&item.id()) {
+                    Some(t) => t,
+                    None => bail!("type \"{}\" does not exist", n),
+                }
+            }
         },
     })
+}
+
+pub fn unwrap_decimal_parts(data_type: &DataType) -> Result<(u8, u8), anyhow::Error> {
+    match data_type {
+        DataType::Decimal(precision, scale) => {
+            let precision = precision.unwrap_or(MAX_DECIMAL_PRECISION.into());
+            let scale = scale.unwrap_or(0);
+            if precision > MAX_DECIMAL_PRECISION.into() {
+                bail!(
+                    "decimal precision {} exceeds maximum precision {}",
+                    precision,
+                    MAX_DECIMAL_PRECISION
+                );
+            }
+            if scale > precision {
+                bail!("decimal scale {} exceeds precision {}", scale, precision);
+            }
+            Ok((precision as u8, scale as u8))
+        }
+        _ => panic!("can only call unwrap_decimal_parts on DataType::Decimal"),
+    }
 }
 
 pub fn scalar_type_from_pg(ty: &pgrepr::Type) -> Result<ScalarType, anyhow::Error> {

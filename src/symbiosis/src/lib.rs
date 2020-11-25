@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use pgrepr::Jsonb;
 use repr::adt::decimal::Significand;
-use repr::{Datum, RelationDesc, RelationType, Row, RowPacker, ScalarType};
+use repr::{Datum, RelationDesc, RelationType, Row, RowPacker};
 use sql::ast::{
     ColumnOption, CreateTableStatement, DataType, DeleteStatement, DropObjectsStatement,
     InsertStatement, ObjectType, Statement, TableConstraint, UpdateStatement,
@@ -45,7 +45,10 @@ use sql::ast::{
 use sql::catalog::Catalog;
 use sql::names::FullName;
 use sql::normalize;
-use sql::plan::{scalar_type_from_sql, MutationKind, Plan, PlanContext, StatementContext, Table};
+use sql::plan::{
+    scalar_type_from_sql, unwrap_decimal_parts, MutationKind, Plan, PlanContext, StatementContext,
+    Table,
+};
 
 pub struct Postgres {
     client: tokio_postgres::Client,
@@ -148,7 +151,7 @@ END $$;
                     columns
                         .iter()
                         .map(|c| {
-                            let ty = scalar_type_from_sql(&c.data_type)?;
+                            let ty = scalar_type_from_sql(catalog, &c.data_type)?;
                             let nullable =
                                 !c.options.iter().any(|o| o.option == ColumnOption::NotNull);
                             Ok(ty.nullable(nullable))
@@ -346,10 +349,7 @@ fn push_column(
             row.push(string.as_deref().into());
         }
         DataType::Decimal(_, _) => {
-            let desired_scale = match scalar_type_from_sql(sql_type).unwrap() {
-                ScalarType::Decimal(_precision, desired_scale) => desired_scale,
-                _ => unreachable!(),
-            };
+            let (_, desired_scale) = unwrap_decimal_parts(sql_type)?;
             match get_column_inner::<pgrepr::Numeric>(postgres_row, i, nullable)? {
                 None => row.push(Datum::Null),
                 Some(d) => {

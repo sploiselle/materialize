@@ -106,3 +106,6 @@ name            type
 int_list_c      user
 int_map_c       user
 int_list_list_c user
+
+# Allow creating tables using custom types
+> CREATE TABLE custom_types (a int_list_c, b int_map_c);
