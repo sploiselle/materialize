@@ -1989,3 +1989,16 @@ query T
 SELECT '{\{\"1\":2\}}'::jsonb_list_c;
 ----
 {"{\"1\":2.0}"}
+
+# 🔬🔬 Check custom type name resolution
+
+statement ok
+CREATE TYPE bool AS LIST (element_type='int4')
+
+query error invalid input syntax for bool: "\{1,2\}"
+SELECT '{1,2}'::bool;
+
+query T
+SELECT '{1,2}'::public.bool;
+----
+{1,2}

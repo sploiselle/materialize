@@ -2251,7 +2251,11 @@ impl<'a> Parser<'a> {
 
                 kw => DataType::Other(kw.into_ident()),
             },
-            Some(Token::Ident(id)) => other(&id),
+            Some(Token::Ident(..)) => {
+                self.prev_token();
+                let custom_name = self.parse_object_name()?;
+                DataType::Custom(custom_name)
+            }
             other => self.expected(self.peek_prev_pos(), "a data type name", other)?,
         };
         loop {

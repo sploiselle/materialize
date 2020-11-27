@@ -23,7 +23,7 @@ use std::fmt;
 use repr::adt::datetime::DateTimeField;
 
 use crate::ast::display::{self, AstDisplay, AstFormatter};
-use crate::ast::Ident;
+use crate::ast::ObjectName;
 
 #[derive(Debug)]
 pub struct ValueError(String);
@@ -190,7 +190,7 @@ pub enum DataType {
     /// Map
     Map { value_type: Box<DataType> },
     /// Types whose names don't accept parameters, e.g. INT
-    Other(Ident),
+    Other(ObjectName),
     /// Variable-length character type e.g. VARCHAR(10)
     Varchar(Option<u64>),
 }

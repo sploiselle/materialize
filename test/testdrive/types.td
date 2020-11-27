@@ -109,3 +109,19 @@ int_list_list_c user
 
 # Allow creating tables using custom types
 > CREATE TABLE custom_types (a int_list_c, b int_map_c);
+
+# Custom types are namespaced objects
+> CREATE SCHEMA other;
+
+> CREATE TYPE other.other_int_list_c AS LIST (element_type=int4);
+> CREATE TYPE other.other_int_map_c AS MAP (key_type=text, value_type=int4);
+
+> SHOW FULL TYPES FROM other;
+name                type
+-------------------------
+other_int_list_c    user
+other_int_map_c     user
+
+> CREATE TABLE custom_types_2 (a other.other_int_list_c, b other.other_int_map_c);
+
+> CREATE TYPE int_list_map AS MAP (key_type=text, value_type=other.other_int_list_c)

@@ -552,3 +552,16 @@ query T
 SELECT '{a=>\{\"1\":2\}}'::jsonb_map_c;
 ----
 {a=>"{\"1\":2.0}"}
+
+# 🔬🔬 Check custom type name resolution
+
+statement ok
+CREATE TYPE bool AS MAP (key_type=text, value_type='int4')
+
+query error invalid input syntax for bool: "\{a=>1\}"
+SELECT '{a=>1}'::bool;
+
+query T
+SELECT '{a=>1}'::public.bool;
+----
+{a=>1}
