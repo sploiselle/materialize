@@ -290,12 +290,14 @@ impl<'a> Parser<'a> {
         // in fact is a valid expression that should parse as the column name
         // "date".
         maybe!(self.maybe_parse(|parser| {
-            match parser.parse_data_type()? {
-                DataType::Other(n) if n.as_str() == "interval" => parser.parse_literal_interval(),
-                data_type => Ok(Expr::Cast {
+            let data_type = parser.parse_data_type()?;
+            if data_type.to_string().as_str() == "interval" {
+                parser.parse_literal_interval()
+            } else {
+                Ok(Expr::Cast {
                     expr: Box::new(Expr::Value(Value::String(parser.parse_literal_string()?))),
                     data_type,
-                }),
+                })
             }
         }));
 
@@ -2195,69 +2197,114 @@ impl<'a> Parser<'a> {
 
     /// Parse a SQL datatype (in the context of a CREATE TABLE statement for example)
     fn parse_data_type(&mut self) -> Result<DataType, ParserError> {
-        let other = |n: &str| -> DataType { DataType::Other(Ident::new(n)) };
-        let mut data_type = match self.next_token() {
+        let mut name = vec![];
+        macro_rules! other {
+            ($n:expr) => {{
+                name.push(Ident::new($n));
+                vec![]
+            }};
+            ($n:expr, $l:expr) => {{
+                name.push(Ident::new($n));
+                self.parse_type_mod($n, $l)?
+            }};
+        }
+
+        loop {
+            let i = match self.peek_token() {
+                Some(Token::Keyword(kw)) => kw.into_ident(),
+                Some(Token::Ident(id)) => Ident::new(id),
+                _ => break,
+            };
+            self.next_token();
+            if !self.consume_token(&Token::Dot) || name.len() == 2 {
+                self.prev_token();
+                break;
+            }
+            name.push(i);
+        }
+
+        assert!(name.len() < 3);
+
+        let typ_mod = match self.next_token() {
             Some(Token::Keyword(kw)) => match kw {
                 // Text-like types
                 CHAR | CHARACTER => {
-                    if self.parse_keyword(VARYING) {
-                        DataType::Varchar(self.parse_optional_precision()?)
+                    let name = if self.parse_keyword(VARYING) {
+                        "varchar"
                     } else {
-                        DataType::Char(self.parse_optional_precision()?)
-                    }
+                        "char"
+                    };
+                    other!(name, 1)
                 }
-                VARCHAR => DataType::Varchar(self.parse_optional_precision()?),
+                VARCHAR => {
+                    other!("varchar", 1)
+                }
 
                 // Number-like types
                 DEC | DECIMAL | NUMERIC => {
-                    let (precision, scale) = self.parse_optional_precision_scale()?;
-                    DataType::Decimal(precision, scale)
+                    other!("numeric", 2)
                 }
                 DOUBLE => {
                     let _ = self.parse_keyword(PRECISION);
-                    other("float8")
+                    other!("float8")
                 }
-                FLOAT => DataType::Float(self.parse_optional_precision()?),
+                FLOAT => {
+                    other!("float", 1)
+                }
 
                 // Time-like types
                 TIME => {
                     if self.parse_keyword(WITH) {
                         self.expect_keywords(&[TIME, ZONE])?;
-                        other("timetz")
+                        other!("timetz")
                     } else {
                         if self.parse_keyword(WITHOUT) {
                             self.expect_keywords(&[TIME, ZONE])?;
                         }
-                        other("time")
+                        other!("time")
                     }
                 }
                 TIMESTAMP => {
                     if self.parse_keyword(WITH) {
                         self.expect_keywords(&[TIME, ZONE])?;
-                        other("timestamptz")
+                        other!("timestamptz")
                     } else {
                         if self.parse_keyword(WITHOUT) {
                             self.expect_keywords(&[TIME, ZONE])?;
                         }
-                        other("timestamp")
+                        other!("timestamp")
                     }
                 }
-                TIMESTAMPTZ => other("timestamptz"),
+                TIMESTAMPTZ => {
+                    other!("timestamptz")
+                }
 
                 // MZ "proprietary" types
-                MAP => DataType::Map {
-                    value_type: Box::new(self.parse_map()?),
-                },
+                MAP => {
+                    if !name.is_empty() {
+                        self.expected(
+                            self.peek_prev_pos(),
+                            "unqualified MAP literal",
+                            Some(Token::Keyword(MAP)),
+                        )?
+                    }
+                    return self.parse_map();
+                }
 
-                kw => DataType::Other(kw.into_ident()),
+                // Everything else
+                kw => {
+                    name.push(kw.into_ident());
+                    vec![]
+                }
             },
-            Some(Token::Ident(..)) => {
-                self.prev_token();
-                let custom_name = self.parse_object_name()?;
-                DataType::Custom(custom_name)
-            }
+            Some(Token::Ident(i)) => other!(i),
             other => self.expected(self.peek_prev_pos(), "a data type name", other)?,
         };
+        let mut data_type = DataType::Other {
+            name: ObjectName(name),
+            typ_mod,
+        };
+
         loop {
             match self.peek_token() {
                 Some(Token::Keyword(LIST)) => {
@@ -2425,6 +2472,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_type_mod(
+        &mut self,
+        name: &str,
+        max_type_mods: usize,
+    ) -> Result<Vec<u64>, ParserError> {
+        if self.consume_token(&Token::LParen) {
+            let typ_mod = self.parse_comma_separated(Parser::parse_literal_uint)?;
+            if typ_mod.len() > max_type_mods {
+                return Err(self.error(
+                    self.peek_prev_pos(),
+                    format!("invalid {} type modifier", name),
+                ));
+            }
+            self.expect_token(&Token::RParen)?;
+            Ok(typ_mod)
+        } else {
+            Ok(vec![])
+        }
+    }
     fn parse_optional_precision(&mut self) -> Result<Option<u64>, ParserError> {
         if self.consume_token(&Token::LParen) {
             let n = self.parse_literal_uint()?;
@@ -2454,14 +2520,14 @@ impl<'a> Parser<'a> {
 
     fn parse_map(&mut self) -> Result<DataType, ParserError> {
         self.expect_token(&Token::LBracket)?;
-        if self.parse_data_type()? != DataType::Other(Ident::new("text")) {
-            self.prev_token();
-            return self.expected(self.peek_prev_pos(), "TEXT", self.peek_token());
-        }
+        let key_type = Box::new(self.parse_data_type()?);
         self.expect_token(&Token::Op("=>".to_owned()))?;
-        let typ = self.parse_data_type()?;
+        let value_type = Box::new(self.parse_data_type()?);
         self.expect_token(&Token::RBracket)?;
-        Ok(typ)
+        Ok(DataType::Map {
+            key_type,
+            value_type,
+        })
     }
 
     fn parse_delete(&mut self) -> Result<Statement, ParserError> {

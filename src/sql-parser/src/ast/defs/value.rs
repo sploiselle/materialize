@@ -20,10 +20,12 @@
 
 use std::fmt;
 
+use itertools::Itertools;
+
 use repr::adt::datetime::DateTimeField;
 
 use crate::ast::display::{self, AstDisplay, AstFormatter};
-use crate::ast::ObjectName;
+use crate::ast::{Ident, ObjectName};
 
 #[derive(Debug)]
 pub struct ValueError(String);
@@ -179,72 +181,98 @@ mod test {
 pub enum DataType {
     /// Array
     Array(Box<DataType>),
-    /// Fixed-length character type e.g. CHAR(10)
-    Char(Option<u64>),
-    /// Decimal type with optional precision and scale e.g. DECIMAL(10,2)
-    Decimal(Option<u64>, Option<u64>),
-    /// Floating point with optional precision e.g. FLOAT(8)
-    Float(Option<u64>),
     /// List
     List(Box<DataType>),
     /// Map
-    Map { value_type: Box<DataType> },
-    /// Types whose names don't accept parameters, e.g. INT
-    Other(ObjectName),
-    /// Variable-length character type e.g. VARCHAR(10)
-    Varchar(Option<u64>),
+    Map {
+        key_type: Box<DataType>,
+        value_type: Box<DataType>,
+    },
+    /// Types who don't embed other types, e.g. INT
+    Other { name: ObjectName, typ_mod: Vec<u64> },
 }
 
-impl AstDisplay for DataType {
-    fn fmt(&self, f: &mut AstFormatter) {
-        match self {
-            DataType::Array(ty) => {
-                f.write_node(&ty);
-                f.write_str("[]");
-            }
-            DataType::Char(size) => format_type_with_optional_length(f, "char", size),
-            DataType::Decimal(precision, scale) => {
-                if let Some(scale) = scale {
-                    f.write_str("numeric(");
-                    f.write_str(precision.unwrap());
-                    f.write_str(",");
-                    f.write_str(scale);
-                    f.write_str(")");
-                } else {
-                    format_type_with_optional_length(f, "numeric", precision)
-                }
-            }
-            DataType::Float(size) => format_type_with_optional_length(f, "float", size),
-            DataType::List(ty) => {
-                f.write_node(&ty);
-                f.write_str(" list");
-            }
-            DataType::Map { value_type } => {
-                f.write_str("map(text=>");
-                f.write_node(&value_type);
-                f.write_str(")");
-            }
-            DataType::Other(n) => match n.as_str() {
-                "bytes" => f.write_str("bytea"),
-                "string" => f.write_str("text"),
-                n => f.write_str(n),
-            },
-            DataType::Varchar(size) => {
-                format_type_with_optional_length(f, "character varying", size)
+impl DataType {
+    pub fn canonicalize_name_mz(&mut self) {
+        self.canonicalize_name_inner(true);
+    }
+
+    pub fn canonicalize_name_pg(&mut self) {
+        self.canonicalize_name_inner(false);
+    }
+
+    /// Converts unqualified "idiomatic" names to unqualified canonical names,
+    /// which can be resolved within the catalog.
+    fn canonicalize_name_inner(&mut self, internal: bool) {
+        if let DataType::Other {
+            ref mut name,
+            typ_mod,
+        } = self
+        {
+            let stringified_name = name.to_string();
+            let mut canonicalize = |canonical_name: &str| {
+                *name = ObjectName(vec![Ident::new(canonical_name)]);
+            };
+            match stringified_name.as_str() {
+                "boolean" => canonicalize("bool"),
+                "bytes" => canonicalize("bytea"),
+                "char" | "varchar" | "string" => canonicalize("text"),
+                "dec" | "decimal" => canonicalize("numeric"),
+                "float" => match typ_mod.clone().pop().unwrap_or(53) {
+                    v if v < 25 => canonicalize("float4"),
+                    v if v < 54 => canonicalize("float8"),
+                    _ => {}
+                },
+                "real" => canonicalize("float4"),
+                // Differentiated from one another by impact within symbiosis.
+                "int" | "integer" => canonicalize("int4"),
+                "smallint" if internal => canonicalize("int4"),
+                "bigint" => canonicalize("int8"),
+                "json" if internal => canonicalize("jsonb"),
+                _ => {}
             }
         }
     }
 }
 
-fn format_type_with_optional_length(
-    f: &mut AstFormatter,
-    sql_type: &'static str,
-    len: &Option<u64>,
-) {
-    f.write_str(sql_type);
-    if let Some(len) = len {
-        f.write_str("(");
-        f.write_str(len);
-        f.write_str(")");
+impl AstDisplay for DataType {
+    fn fmt(&self, f: &mut AstFormatter) {
+        match &self {
+            DataType::Array(ty) => {
+                f.write_node(&ty);
+                f.write_str("[]");
+            }
+            DataType::List(ty) => {
+                f.write_node(&ty);
+                f.write_str(" list");
+            }
+            DataType::Map {
+                key_type,
+                value_type,
+            } => {
+                f.write_str("map(");
+                f.write_node(&key_type);
+                f.write_str("=>");
+                f.write_node(&value_type);
+                f.write_str(")");
+            }
+            DataType::Other { name, typ_mod } => {
+                match format!("{}", name).as_str() {
+                    // These are typenames Postgres doesn't accept but we do out of
+                    // convenience.
+                    "bytes" => f.write_str("bytea"),
+                    "string" => f.write_str("text"),
+                    n => {
+                        f.write_str(n);
+                        if typ_mod.len() > 0 {
+                            f.write_str("(");
+                            f.write_str(Itertools::join(&mut typ_mod.iter(), ", "));
+                            f.write_str(")");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+impl_display!(DataType);

@@ -136,7 +136,7 @@ fn validate_fields(items: &BTreeMap<String, Item>, fields: &[Field]) -> Result<(
         match &f.ty {
             Type::Local(s) if !items.contains_key(s) => {
                 bail!(
-                    "Unable to analyze non built-in type that is not defined in input: {}",
+                    "!!!Unable to analyze non built-in type that is not defined in input: {}",
                     s
                 );
             }

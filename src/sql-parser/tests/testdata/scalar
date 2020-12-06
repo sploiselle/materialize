@@ -83,7 +83,7 @@ Op { op: "!~*", expr1: Identifier([Ident("a")]), expr2: Some(Value(String("foo")
 parse-scalar
 a !x 'foo'
 ----
-Op { op: "!", expr1: Identifier([Ident("a")]), expr2: Some(Cast { expr: Value(String("foo")), data_type: Other(Ident("x")) }) }
+Op { op: "!", expr1: Identifier([Ident("a")]), expr2: Some(Cast { expr: Value(String("foo")), data_type: Custom(ObjectName([Ident("x")])) }) }
 
 parse-scalar
 a !x

@@ -343,6 +343,9 @@ impl<'a> FromSql<'a> for Slt {
                         elements,
                     })
                 }
+                PgKind::Pseudo => {
+                    panic!("found pseudo type");
+                }
                 _ => unreachable!(),
             },
         })

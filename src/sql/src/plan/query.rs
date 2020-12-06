@@ -21,7 +21,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
 use std::iter;
 use std::mem;
@@ -2568,99 +2568,102 @@ pub fn scalar_type_from_sql(
     catalog: &dyn Catalog,
     data_type: &DataType,
 ) -> Result<ScalarType, anyhow::Error> {
+    let mut data_type = data_type.clone();
+    data_type.canonicalize_name_mz();
     // `DataType`s that get translated into the same `ScalarType` have different
     // functionality within symbiosis. Because of the relationship with
     // symbiosis, this function should stay in sync with
     // symbiosis::push_column.catalog.
     Ok(match data_type {
         DataType::Array(elem_type) => {
-            ScalarType::Array(Box::new(scalar_type_from_sql(catalog, elem_type)?))
-        }
-        // Differentiated from `DataType::Other("text")` by impact within symbiosis.
-        DataType::Char(_) | DataType::Varchar(_) => ScalarType::String,
-        DataType::Decimal(precision, scale) => {
-            let precision = precision.unwrap_or(MAX_DECIMAL_PRECISION.into());
-            let scale = scale.unwrap_or(0);
-            if precision > MAX_DECIMAL_PRECISION.into() {
-                bail!(
-                    "decimal precision {} exceeds maximum precision {}",
-                    precision,
-                    MAX_DECIMAL_PRECISION
-                );
-            }
-            if scale > precision {
-                bail!("decimal scale {} exceeds precision {}", scale, precision);
-            }
-            ScalarType::Decimal(precision as u8, scale as u8)
-        }
-        DataType::Float(Some(p)) if *p < 25 => ScalarType::Float32,
-        DataType::Float(p) => {
-            if let Some(p) = p {
-                if *p > 53 {
-                    bail!("precision for type float must be less than 54 bits")
-                }
-            }
-            ScalarType::Float64
+            ScalarType::Array(Box::new(scalar_type_from_sql(catalog, &elem_type)?))
         }
         DataType::List(elem_type) => {
-            ScalarType::List(Box::new(scalar_type_from_sql(catalog, elem_type)?))
+            ScalarType::List(Box::new(scalar_type_from_sql(catalog, &elem_type)?))
         }
-        DataType::Map { value_type } => ScalarType::Map {
-            value_type: Box::new(scalar_type_from_sql(catalog, value_type)?),
-        },
-        DataType::Other(n) => match n.as_str() {
-            "bool" | "boolean" => ScalarType::Bool,
-            "bytea" | "bytes" => ScalarType::Bytes,
-            "date" => ScalarType::Date,
-            "float4" | "real" => ScalarType::Float32,
-            "float8" => ScalarType::Float64,
-            "interval" => ScalarType::Interval,
-            // Differentiated from one another by impact within symbiosis.
-            "int" | "integer" | "int4" | "smallint" => ScalarType::Int32,
-            "bigint" | "int8" => ScalarType::Int64,
-            "json" | "jsonb" => ScalarType::Jsonb,
-            "oid" => ScalarType::Oid,
-            "uuid" => ScalarType::Uuid,
-            "string" | "text" => ScalarType::String,
-            "time" => ScalarType::Time,
-            "timestamp" => ScalarType::Timestamp,
-            "timestamptz" => ScalarType::TimestampTz,
-            "timetz" => bail!(
-                "TIMETZ is not supported \
-            https://wiki.postgresql.org/wiki/Don%27t_Do_This#Don.27t_use_timetz"
-            ),
-            _ => {
-                let name = normalize::object_name(ObjectName(vec![n.clone()]))?;
-                let name = catalog.resolve_item(&name)?;
-                let item = catalog.get_item(&name);
-                match catalog.try_get_scalar_type_by_id(&item.id()) {
-                    Some(t) => t,
-                    None => bail!("type \"{}\" does not exist", n),
-                }
+        DataType::Map {
+            key_type,
+            value_type,
+        } => {
+            match scalar_type_from_sql(catalog, &key_type)? {
+                ScalarType::String => {}
+                other => bail!("map key type must be text, got {}", other),
             }
-        },
+            ScalarType::Map {
+                value_type: Box::new(scalar_type_from_sql(catalog, &value_type)?),
+            }
+        }
+        DataType::Other { name, typ_mod } => {
+            let name = normalize::object_name(name)?;
+            let full_name = catalog.resolve_item(&name)?;
+            let item = catalog.get_item(&full_name);
+            match catalog.try_get_scalar_type_by_id(&item.id()) {
+                Some(t) => match t {
+                    ScalarType::Decimal(..) => {
+                        let (precision, scale) = unwrap_decimal_parts(typ_mod)?;
+                        ScalarType::Decimal(precision, scale)
+                    }
+                    t => t,
+                },
+                None => bail!("type \"{}\" does not exist", name),
+            }
+            // match name.to_string().as_str() {
+            //     "bool" | "boolean" => ScalarType::Bool,
+            //     "bytea" | "bytes" => ScalarType::Bytes,
+            //     // Differentiated from one another by impact within symbiosis.
+            //     "char" | "varchar" | "string" | "text" => ScalarType::String,
+            //     "date" => ScalarType::Date,
+            //     "dec" | "decimal" | "numeric" => {
+            //         let (precision, scale) = unwrap_decimal_parts(&data_type)?;
+            //         ScalarType::Decimal(precision, scale)
+            //     }
+            //     "float" => match typ_mod.clone().pop().unwrap_or(53) {
+            //         v if v < 25 => ScalarType::Float32,
+            //         v if v < 54 => ScalarType::Float64,
+            //         _ => bail!("precision for type float must be less than 54 bits"),
+            //     },
+            //     "float4" | "real" => ScalarType::Float32,
+            //     "float8" => ScalarType::Float64,
+            //     "interval" => ScalarType::Interval,
+            //     // Differentiated from one another by impact within symbiosis.
+            //     "int" | "integer" | "int4" | "smallint" => ScalarType::Int32,
+            //     "bigint" | "int8" => ScalarType::Int64,
+            //     "json" | "jsonb" => ScalarType::Jsonb,
+            //     "oid" => ScalarType::Oid,
+            //     "uuid" => ScalarType::Uuid,
+            //     "time" => ScalarType::Time,
+            //     "timestamp" => ScalarType::Timestamp,
+            //     "timestamptz" => ScalarType::TimestampTz,
+            //     "timetz" => bail!(
+            //         "TIMETZ is not supported \
+            //     https://wiki.postgresql.org/wiki/Don%27t_Do_This#Don.27t_use_timetz"
+            //     ),
+            //     _ => {}
+            // }
+        }
     })
 }
 
-pub fn unwrap_decimal_parts(data_type: &DataType) -> Result<(u8, u8), anyhow::Error> {
-    match data_type {
-        DataType::Decimal(precision, scale) => {
-            let precision = precision.unwrap_or(MAX_DECIMAL_PRECISION.into());
-            let scale = scale.unwrap_or(0);
-            if precision > MAX_DECIMAL_PRECISION.into() {
-                bail!(
-                    "decimal precision {} exceeds maximum precision {}",
-                    precision,
-                    MAX_DECIMAL_PRECISION
-                );
-            }
-            if scale > precision {
-                bail!("decimal scale {} exceeds precision {}", scale, precision);
-            }
-            Ok((precision as u8, scale as u8))
-        }
-        _ => panic!("can only call unwrap_decimal_parts on DataType::Decimal"),
+/// Returns the first two values provided as typ_mods as `u8`.
+///
+/// Note that this function assumes you have already determined that
+/// `data_type.name` should resolve to `ScalarType::Decimal`.
+pub fn unwrap_decimal_parts(typ_mod: Vec<u64>) -> Result<(u8, u8), anyhow::Error> {
+    let mut typ_mod: VecDeque<u64> = VecDeque::from(typ_mod.clone());
+    let precision = typ_mod.pop_front().unwrap_or(MAX_DECIMAL_PRECISION as u64);
+    let scale = typ_mod.pop_front().unwrap_or(0);
+    if precision > MAX_DECIMAL_PRECISION.into() {
+        bail!(
+            "decimal precision {} exceeds maximum precision {}",
+            precision,
+            MAX_DECIMAL_PRECISION
+        );
     }
+    if scale > precision {
+        bail!("decimal scale {} exceeds precision {}", scale, precision);
+    }
+
+    Ok((precision as u8, scale as u8))
 }
 
 pub fn scalar_type_from_pg(ty: &pgrepr::Type) -> Result<ScalarType, anyhow::Error> {
