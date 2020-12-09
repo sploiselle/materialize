@@ -766,7 +766,7 @@ impl<'a> Parser<'a> {
                         }
 
                         let fsec_max_precision = if low == DateTimeField::Second {
-                            self.parse_optional_precision()?
+                            self.parse_type_mod("interval", 1)?.pop()
                         } else {
                             None
                         };
@@ -778,7 +778,7 @@ impl<'a> Parser<'a> {
                             .parse()
                             .map_err(|e| self.error(self.peek_prev_pos(), e))?;
                         let fsec_max_precision = if low == DateTimeField::Second {
-                            self.parse_optional_precision()?
+                            self.parse_type_mod("interval", 1)?.pop()
                         } else {
                             None
                         };
@@ -2489,32 +2489,6 @@ impl<'a> Parser<'a> {
             Ok(typ_mod)
         } else {
             Ok(vec![])
-        }
-    }
-    fn parse_optional_precision(&mut self) -> Result<Option<u64>, ParserError> {
-        if self.consume_token(&Token::LParen) {
-            let n = self.parse_literal_uint()?;
-            self.expect_token(&Token::RParen)?;
-            Ok(Some(n))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn parse_optional_precision_scale(
-        &mut self,
-    ) -> Result<(Option<u64>, Option<u64>), ParserError> {
-        if self.consume_token(&Token::LParen) {
-            let n = self.parse_literal_uint()?;
-            let scale = if self.consume_token(&Token::Comma) {
-                Some(self.parse_literal_uint()?)
-            } else {
-                None
-            };
-            self.expect_token(&Token::RParen)?;
-            Ok((Some(n), scale))
-        } else {
-            Ok((None, None))
         }
     }
 
