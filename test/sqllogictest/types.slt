@@ -1,0 +1,712 @@
+# Copyright Materialize, Inc. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# 🔬 Type resolution (non-array)
+
+# shows that pg_catalog and materialize.pg_catalog resolution are equivalent
+
+query T
+SELECT '1'::pg_catalog.int4
+----
+1
+
+query T
+SELECT '1'::materialize.pg_catalog.int4
+----
+1
+
+# 🔬🔬 bool
+
+query T
+SELECT 'true'::bool
+----
+true
+
+query T
+SELECT 'true'::pg_catalog.bool
+----
+true
+
+# 🔬🔬🔬 bool alias
+
+query T
+SELECT 'true'::boolean
+----
+true
+
+query error
+SELECT 'true'::pg_catalog.boolean
+
+# 🔬🔬 bytea
+
+query T
+SELECT 'a'::bytea
+----
+a
+
+query T
+SELECT 'a'::pg_catalog.bytea
+----
+a
+
+# 🔬🔬🔬 bool alias
+
+query T
+SELECT 'a'::bytes
+----
+a
+
+query error
+SELECT ''::pg_catalog.bytes
+
+# 🔬🔬 date
+
+query T
+SELECT '2007-02-01'::date
+----
+2007-02-01
+
+query T
+SELECT '2007-02-01'::pg_catalog.date
+----
+2007-02-01
+
+# 🔬🔬 float4
+
+query T
+SELECT '1.2'::float4
+----
+1.200
+
+query T
+SELECT '1.2'::pg_catalog.float4
+----
+1.200
+
+# 🔬🔬🔬 float4 aliases
+
+query T
+SELECT '1.2'::float(1)
+----
+1.200
+
+query error
+SELECT '1.2'::pg_catalog.float(1)
+
+query T
+SELECT '1.2'::real
+----
+1.200
+
+query error
+SELECT '1.2'::pg_catalog.real
+
+# 🔬🔬 float8
+
+query T
+SELECT '1.2'::float8
+----
+1.200
+
+query T
+SELECT '1.2'::pg_catalog.float8
+----
+1.200
+
+# 🔬🔬🔬 float8 aliases
+
+query T
+SELECT '1.2'::float(53)
+----
+1.200
+
+query error
+SELECT '1.2'::pg_catalog.float(53)
+
+query T
+SELECT '1.2'::double
+----
+1.200
+
+query T
+SELECT '1.2'::pg_catalog.double
+----
+1.200
+
+# 🔬🔬 int4
+
+query T
+SELECT '1'::int4
+----
+1
+
+query T
+SELECT '1'::pg_catalog.int4
+----
+1
+
+# 🔬🔬🔬 int4 aliases
+
+query T
+SELECT '1'::int
+----
+1
+
+query error
+SELECT '1'::pg_catalog.int
+
+
+query T
+SELECT '1'::integer
+----
+1
+
+query error
+SELECT '1'::pg_catalog.integer
+
+
+query T
+SELECT '1'::smallint
+----
+1
+
+query error
+SELECT '1'::pg_catalog.smallint
+
+# 🔬🔬 int8
+
+query T
+SELECT '1'::int8
+----
+1
+
+query T
+SELECT '1'::pg_catalog.int8
+----
+1
+
+# 🔬🔬🔬 int8 aliases
+
+query T
+SELECT '1'::bigint
+----
+1
+
+query error
+SELECT '1'::pg_catalog.bigint
+
+# 🔬🔬 interval
+
+query T
+SELECT '1-2 3 4:5:6.7'::interval
+----
+1 year 2 months 3 days 04:05:06.7
+
+query T
+SELECT '1-2 3 4:5:6.7'::pg_catalog.interval
+----
+1 year 2 months 3 days 04:05:06.7
+
+# 🔬🔬 jsonb
+
+query T
+SELECT '{"1":2,"3":4}'::jsonb
+----
+{"1":2.0,"3":4.0}
+
+query T
+SELECT '{"1":2,"3":4}'::pg_catalog.jsonb
+----
+{"1":2.0,"3":4.0}
+
+# 🔬🔬🔬 jsonb aliases
+
+query T
+SELECT '{"1":2,"3":4}'::json
+----
+{"1":2.0,"3":4.0}
+
+query error
+SELECT '{"1":2,"3":4}'::pg_catalog.json
+
+# 🔬🔬 numeric
+
+query T
+SELECT '1'::numeric(38,0)
+----
+1
+
+query T
+SELECT '1'::pg_catalog.numeric(38,0)
+----
+1
+
+# 🔬🔬🔬 numeric aliases –– note that decimal alises all resolve to numeric when
+# qualified, unlike all other aliases
+
+query T
+SELECT '1'::decimal(38,0)
+----
+1
+
+query T
+SELECT '1'::pg_catalog.decimal(38,0)
+----
+1
+
+query T
+SELECT '1'::dec(38,0)
+----
+1
+
+query T
+SELECT '1'::pg_catalog.dec(38,0)
+----
+1
+
+# 🔬🔬 oid
+
+query T
+SELECT '1'::oid
+----
+1
+
+query T
+SELECT '1'::pg_catalog.oid
+----
+1
+
+# 🔬🔬 record
+
+query T
+SELECT ROW(1, 2) AS record;
+----
+(1,2)
+
+query error
+SELECT ROW(1, 2) AS pg_catalog.record;
+
+# 🔬🔬 text
+
+query T
+SELECT 'dog'::text
+----
+dog
+
+query T
+SELECT 'dog'::pg_catalog.text
+----
+dog
+
+# 🔬🔬🔬 text aliases
+
+query T
+SELECT 'dog'::char(10)
+----
+dog
+
+query error
+SELECT '1'::pg_catalog.char(10)
+
+query T
+SELECT 'dog'::varchar(10)
+----
+dog
+
+query error
+SELECT 'dog'::pg_catalog.varchar(10)
+
+# 🔬🔬 time
+
+query T
+SELECT '01:23:45'::time
+----
+01:23:45
+
+query T
+SELECT '01:23:45'::pg_catalog.time
+----
+01:23:45
+
+# 🔬🔬 timestamp
+
+query T
+SELECT '2007-02-01 15:04:05'::timestamp
+----
+2007-02-01 15:04:05
+
+query T
+SELECT '2007-02-01 15:04:05'::pg_catalog.timestamp
+----
+2007-02-01 15:04:05
+
+# 🔬🔬 timestamptz
+
+query T
+SELECT '2007-02-01 15:04:05'::timestamptz
+----
+2007-02-01 15:04:05+00
+
+query T
+SELECT '2007-02-01 15:04:05'::pg_catalog.timestamptz
+----
+2007-02-01 15:04:05+00
+
+# 🔬🔬 uuid
+
+query T
+SELECT '63616665-6630-3064-6465-616462656568'::uuid
+----
+63616665-6630-3064-6465-616462656568
+
+query T
+SELECT '63616665-6630-3064-6465-616462656568'::pg_catalog.uuid
+----
+63616665-6630-3064-6465-616462656568
+
+# 🔬 Type resolution of list element
+
+# 🔬🔬 bool list
+
+query T
+SELECT '{true}'::bool list::text
+----
+{t}
+
+query T
+SELECT '{true}'::pg_catalog.bool list::text
+----
+{t}
+
+# 🔬🔬🔬 bool list list
+
+query T
+SELECT '{true}'::boolean list::text
+----
+{t}
+
+query error
+SELECT '{true}'::pg_catalog.boolean list::text
+
+# 🔬🔬 bytea list
+
+query T
+SELECT '{a}'::bytea list::text
+----
+{\x61}
+
+query T
+SELECT '{a}'::pg_catalog.bytea list::text
+----
+{\x61}
+
+# 🔬🔬🔬 bool list list
+
+query T
+SELECT '{a}'::bytes list::text
+----
+{\x61}
+
+query error
+SELECT ''::pg_catalog.bytes
+
+# 🔬🔬 date list
+
+query T
+SELECT '{2007-02-01}'::date list::text
+----
+{2007-02-01}
+
+query T
+SELECT '{2007-02-01}'::pg_catalog.date list::text
+----
+{2007-02-01}
+
+# 🔬🔬 float4 list
+
+query T
+SELECT '{1.2}'::float4 list::text
+----
+{1.2}
+
+query T
+SELECT '{1.2}'::pg_catalog.float4 list::text
+----
+{1.2}
+
+# 🔬🔬🔬 float4 list listes
+
+query T
+SELECT '{1.2}'::float(1) list::text
+----
+{1.2}
+
+query error
+SELECT '{1.2}'::pg_catalog.float(1) list::text
+
+query T
+SELECT '{1.2}'::real list::text
+----
+{1.2}
+
+query error
+SELECT '{1.2}'::pg_catalog.real list::text
+
+# 🔬🔬 float8 list
+
+query T
+SELECT '{1.2}'::float8 list::text
+----
+{1.2}
+
+query T
+SELECT '{1.2}'::pg_catalog.float8 list::text
+----
+{1.2}
+
+# 🔬🔬🔬 float8 list listes
+
+query T
+SELECT '{1.2}'::float(53) list::text
+----
+{1.2}
+
+query error
+SELECT '{1.2}'::pg_catalog.float(53) list::text
+
+query T
+SELECT '{1.2}'::double list::text
+----
+{1.2}
+
+query T
+SELECT '{1.2}'::pg_catalog.double list::text
+----
+{1.2}
+
+# 🔬🔬 int4 list
+
+query T
+SELECT '{1}'::int4 list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.int4 list::text
+----
+{1}
+
+# 🔬🔬🔬 int4 list listes
+
+query T
+SELECT '{1}'::int list::text
+----
+{1}
+
+query error
+SELECT '{1}'::pg_catalog.int list::text
+
+
+query T
+SELECT '{1}'::integer list::text
+----
+{1}
+
+query error
+SELECT '{1}'::pg_catalog.integer list::text
+
+
+query T
+SELECT '{1}'::smallint list::text
+----
+{1}
+
+query error
+SELECT '{1}'::pg_catalog.smallint list::text
+
+# 🔬🔬 int8 list
+
+query T
+SELECT '{1}'::int8 list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.int8 list::text
+----
+{1}
+
+# 🔬🔬🔬 int8 list listes
+
+query T
+SELECT '{1}'::bigint list::text
+----
+{1}
+
+query error
+SELECT '{1}'::pg_catalog.bigint list::text
+
+# 🔬🔬 interval list
+
+query T
+SELECT '{1-2 3 4:5:6.7}'::interval list::text
+----
+{"1 year 2 months 3 days 04:05:06.7"}
+
+query T
+SELECT '{1-2 3 4:5:6.7}'::pg_catalog.interval list::text
+----
+{"1 year 2 months 3 days 04:05:06.7"}
+
+# 🔬🔬 jsonb list
+
+query T
+SELECT '{\{\"1\":2,\"3\":4\}}'::jsonb list::text
+----
+{NULL,NULL}
+
+query T
+SELECT '{\{\"1\":2,\"3\":4\}}'::pg_catalog.jsonb list::text
+----
+{NULL,NULL}
+
+# 🔬🔬🔬 jsonb list listes
+
+query T
+SELECT '{\{\"1\":2,\"3\":4\}}'::json list::text
+----
+{NULL,NULL}
+
+query error
+SELECT '{\{\"1\":2,\"3\":4\}}'::pg_catalog.json list::text
+
+# 🔬🔬 numeric list
+
+query T
+SELECT '{1}'::numeric(38,0) list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.numeric(38,0) list::text
+----
+{1}
+
+# 🔬🔬🔬 numeric list listes –– note that decimal alises all resolve to numeric when
+# qualified, unlike all other aliases
+
+query T
+SELECT '{1}'::decimal(38,0) list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.decimal(38,0) list::text
+----
+{1}
+
+query T
+SELECT '{1}'::dec(38,0) list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.dec(38,0) list::text
+----
+{1}
+
+# 🔬🔬 oid list
+
+query T
+SELECT '{1}'::oid list::text
+----
+{1}
+
+query T
+SELECT '{1}'::pg_catalog.oid list::text
+----
+{1}
+
+# 🔬🔬 text list
+
+query T
+SELECT '{dog}'::text list::text
+----
+{dog}
+
+query T
+SELECT '{dog}'::pg_catalog.text list::text
+----
+{dog}
+
+# 🔬🔬🔬 text list listes
+
+query T
+SELECT '{dog}'::char(10) list::text
+----
+{dog}
+
+query error
+SELECT '{1}'::pg_catalog.char(10) list::text
+
+query T
+SELECT '{dog}'::varchar(10) list::text
+----
+{dog}
+
+query error
+SELECT '{dog}'::pg_catalog.varchar(10) list::text
+
+# 🔬🔬 time list
+
+query T
+SELECT '{01:23:45}'::time list::text
+----
+{01:23:45}
+
+query T
+SELECT '{01:23:45}'::pg_catalog.time list::text
+----
+{01:23:45}
+
+# 🔬🔬 timestamp list
+
+query T
+SELECT '{2007-02-01 15:04:05}'::timestamp list::text
+----
+{"2007-02-01 15:04:05"}
+
+query T
+SELECT '{2007-02-01 15:04:05}'::pg_catalog.timestamp list::text
+----
+{"2007-02-01 15:04:05"}
+
+# 🔬🔬 timestamptz list
+
+query T
+SELECT '{2007-02-01 15:04:05}'::timestamptz list::text
+----
+{"2007-02-01 15:04:05+00"}
+
+query T
+SELECT '{2007-02-01 15:04:05}'::pg_catalog.timestamptz list::text
+----
+{"2007-02-01 15:04:05+00"}
+
+# 🔬🔬 uuid list
+
+query T
+SELECT '{63616665-6630-3064-6465-616462656568}'::uuid list::text
+----
+{63616665-6630-3064-6465-616462656568}
+
+query T
+SELECT '{63616665-6630-3064-6465-616462656568}'::pg_catalog.uuid list::text
+----
+{63616665-6630-3064-6465-616462656568}
