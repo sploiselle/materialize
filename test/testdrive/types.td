@@ -41,8 +41,6 @@ int4
 int8
 interval
 jsonb
-list
-map
 numeric
 oid
 record
@@ -81,8 +79,6 @@ int4             system
 int8             system
 interval         system
 jsonb            system
-list             system
-map              system
 numeric          system
 oid              system
 record           system
@@ -158,32 +154,32 @@ other_int_map_c     user
 
 > CREATE TYPE float8_array_list_c AS LIST (element_type='_float8');
 > CREATE TABLE float8_array_list_t (a float8_array_list_c);
-> INSERT INTO float8_array_list_t VALUES (LIST[ARRAY[1.2,2.3]]);
+> INSERT INTO float8_array_list_t VALUES (LIST[ARRAY[1.2::float8,2.3::float8]]);
 
 > CREATE TYPE date_array_list_c AS LIST (element_type='_date');
 > CREATE TABLE date_array_list_t (a date_array_list_c);
-> INSERT INTO date_array_list_t VALUES (LIST[ARRAY[2001-01-01]]);
+> INSERT INTO date_array_list_t VALUES (LIST[ARRAY['2001-01-01'::date]]);
 
 > CREATE TYPE time_array_list_c AS LIST (element_type='_time');
 > CREATE TABLE time_array_list_t (a time_array_list_c);
-> INSERT INTO time_array_list_t VALUES (LIST[ARRAY['12:34:56']]);
+> INSERT INTO time_array_list_t VALUES (LIST[ARRAY['12:34:56'::time]]);
 
 > CREATE TYPE timestamp_array_list_c AS LIST (element_type='_timestamp');
 > CREATE TABLE timestamp_array_list_t (a timestamp_array_list_c);
-> INSERT INTO timestamp_array_list_t VALUES (LIST[ARRAY['2001-01-01 12:34:56']]);
+> INSERT INTO timestamp_array_list_t VALUES (LIST[ARRAY['2001-01-01 12:34:56'::timestamp]]);
 
 > CREATE TYPE timestamptz_array_list_c AS LIST (element_type='_timestamptz');
 > CREATE TABLE timestamptz_array_list_t (a timestamptz_array_list_c);
-> INSERT INTO timestamptz_array_list_t VALUES (LIST[ARRAY['2001-01-01 12:34:56']]);
+> INSERT INTO timestamptz_array_list_t VALUES (LIST[ARRAY['2001-01-01 12:34:56'::timestamptz]]);
 
 > CREATE TYPE interval_array_list_c AS LIST (element_type='_interval');
 > CREATE TABLE interval_array_list_t (a interval_array_list_c);
-> INSERT INTO interval_array_list_t VALUES (LIST[ARRAY['1y 2d 3h 4m']]);
+> INSERT INTO interval_array_list_t VALUES (LIST[ARRAY['1y 2d 3h 4m'::interval]]);
 
-> CREATE TYPE numeric_array_list_c AS LIST (element_type='_numeric');
-> CREATE TABLE numeric_array_list_t (a numeric_array_list_c);
-> INSERT INTO numeric_array_list_t VALUES (LIST[ARRAY['1.23,2.34']]);
+# > CREATE TYPE numeric_array_list_c AS LIST (element_type='_numeric');
+# > CREATE TABLE numeric_array_list_t (a numeric_array_list_c);
+# > INSERT INTO numeric_array_list_t VALUES (LIST[ARRAY[1.23, 2.34]]);
 
 > CREATE TYPE jsonb_array_list_c AS LIST (element_type='_jsonb');
 > CREATE TABLE jsonb_array_list_t (a jsonb_array_list_c);
-> INSERT INTO jsonb_array_list_t VALUES (LIST[ARRAY['\{\"1\":2\}']]);;
+> INSERT INTO jsonb_array_list_t VALUES (LIST[ARRAY['\{\"1\":2\}'::jsonb]]);;
