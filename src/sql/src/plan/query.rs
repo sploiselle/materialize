@@ -2595,8 +2595,7 @@ pub fn scalar_type_from_sql(
         }
         DataType::Other { name, typ_mod } => {
             let name = normalize::object_name(name)?;
-            let full_name = catalog.resolve_item(&name)?;
-            let item = catalog.get_item(&full_name);
+            let item = catalog.resolve_item(&name)?;
             match catalog.try_get_scalar_type_by_id(&item.id()) {
                 Some(t) => match t {
                     ScalarType::Decimal(..) => {
