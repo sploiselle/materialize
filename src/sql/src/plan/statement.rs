@@ -1545,7 +1545,7 @@ fn handle_create_table(
         columns
             .iter()
             .map(|c| {
-                let ty = scalar_type_from_sql(scx.catalog, &c.data_type)?;
+                let ty = scalar_type_from_sql(scx.catalog, c.data_type.clone())?;
                 let mut nullable = true;
                 for option in c.options.iter() {
                     match &option.option {

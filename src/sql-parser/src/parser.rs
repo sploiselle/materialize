@@ -2297,7 +2297,7 @@ impl<'a> Parser<'a> {
                     vec![]
                 }
             },
-            Some(Token::Ident(i)) => other!(i),
+            Some(Token::Ident(id)) => other!(id),
             other => self.expected(self.peek_prev_pos(), "a data type name", other)?,
         };
         let mut data_type = DataType::Other {

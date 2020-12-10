@@ -151,7 +151,7 @@ END $$;
                     columns
                         .iter()
                         .map(|c| {
-                            let ty = scalar_type_from_sql(catalog, &c.data_type)?;
+                            let ty = scalar_type_from_sql(catalog, c.data_type.clone())?;
                             let nullable =
                                 !c.options.iter().any(|o| o.option == ColumnOption::NotNull);
                             Ok(ty.nullable(nullable))
@@ -324,7 +324,7 @@ END $$;
                     row,
                     &postgres_row,
                     c,
-                    &sql_types[c],
+                    sql_types[c].clone(),
                     desc.typ().column_types[c].nullable,
                 )?;
             }
@@ -338,10 +338,9 @@ fn push_column(
     mut row: RowPacker,
     postgres_row: &tokio_postgres::Row,
     i: usize,
-    sql_type: &DataType,
+    mut sql_type: DataType,
     nullable: bool,
 ) -> Result<RowPacker, anyhow::Error> {
-    let mut sql_type = sql_type.clone();
     sql_type.canonicalize_name_pg();
     // NOTE this needs to stay in sync with materialize::sql::scalar_type_from_sql
     // in some cases, we use slightly different representations than postgres does for the same sql types, so we have to be careful about conversions
