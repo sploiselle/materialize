@@ -210,7 +210,7 @@ impl DataType {
     fn canonicalize_name_inner(&mut self, internal: bool) {
         if let DataType::Other {
             ref mut name,
-            typ_mod,
+            ref mut typ_mod,
         } = self
         {
             let stringified_name = name.to_string();
@@ -221,7 +221,10 @@ impl DataType {
                 "bigint" => canonicalize("int8"),
                 "boolean" => canonicalize("bool"),
                 "bytes" => canonicalize("bytea"),
-                "char" | "varchar" | "string" => canonicalize("text"),
+                "char" | "varchar" => {
+                    canonicalize("text");
+                    *typ_mod = vec![];
+                }
                 "dec" | "decimal" => canonicalize("numeric"),
                 "float" => match typ_mod.clone().pop().unwrap_or(53) {
                     v if v < 25 => canonicalize("float4"),
@@ -232,6 +235,7 @@ impl DataType {
                 "json" if internal => canonicalize("jsonb"),
                 "real" => canonicalize("float4"),
                 "smallint" if internal => canonicalize("int4"),
+                "string" => canonicalize("text"),
                 _ => {}
             }
         }
@@ -260,19 +264,11 @@ impl AstDisplay for DataType {
                 f.write_str(")");
             }
             DataType::Other { name, typ_mod } => {
-                match name.to_string().as_str() {
-                    // These are typenames Postgres doesn't accept but we do out of
-                    // convenience.
-                    "bytes" => f.write_str("bytea"),
-                    "string" => f.write_str("text"),
-                    n => {
-                        f.write_str(n);
-                        if typ_mod.len() > 0 {
-                            f.write_str("(");
-                            f.write_str(Itertools::join(&mut typ_mod.iter(), ","));
-                            f.write_str(")");
-                        }
-                    }
+                f.write_node(&name);
+                if typ_mod.len() > 0 {
+                    f.write_str("(");
+                    f.write_str(Itertools::join(&mut typ_mod.iter(), ","));
+                    f.write_str(")");
                 }
             }
         }

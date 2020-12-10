@@ -13,9 +13,9 @@ use repr::ColumnName;
 use sql_parser::ast::display::AstDisplay;
 use sql_parser::ast::visit_mut::{self, VisitMut};
 use sql_parser::ast::{
-    ColumnDef, CreateIndexStatement, CreateSinkStatement, CreateSourceStatement,
-    CreateTableStatement, CreateTypeStatement, CreateViewStatement, DataType, Function,
-    FunctionArgs, Ident, IfExistsBehavior, ObjectName, SqlOption, Statement, TableFactor, Value,
+    CreateIndexStatement, CreateSinkStatement, CreateSourceStatement, CreateTableStatement,
+    CreateTypeStatement, CreateViewStatement, DataType, Function, FunctionArgs, Ident,
+    IfExistsBehavior, ObjectName, SqlOption, Statement, TableFactor, Value,
 };
 
 use crate::names::{DatabaseSpecifier, FullName, PartialName};
@@ -155,8 +155,7 @@ pub fn create_statement(scx: &StatementContext, mut stmt: Statement) -> Result<S
         }
 
         fn visit_data_type_mut(&mut self, data_type: &'ast mut DataType) {
-            // Type names are ObjectNames, so they must be resolvable to
-            // an object within the catalog.
+            // DataType::Other names must be canonicalized before catalog lookups.
             data_type.canonicalize_name_mz();
             visit_mut::visit_data_type_mut(self, data_type);
         }
