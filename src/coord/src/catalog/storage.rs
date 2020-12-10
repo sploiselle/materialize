@@ -251,6 +251,45 @@ impl Connection {
         res
     }
 
+    pub fn get_catalog_item_version(&mut self) -> Result<usize, Error> {
+        let tx = self.inner.transaction()?;
+        let current_setting: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE name = 'catalog_item_version';",
+                params![],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let version = match current_setting {
+            Some(v) => v.parse::<i64>().unwrap() as usize,
+            None => {
+                tx.execute(
+                    "INSERT INTO settings (name, value) VALUES ('catalog_item_version', 0);",
+                    params![],
+                )?;
+                0
+            }
+        };
+        tx.commit()?;
+        Ok(version as usize)
+    }
+
+    pub fn inc_catalog_item_version(&mut self) -> Result<(), Error> {
+        let tx = self.inner.transaction()?;
+        let current_version: String = tx.query_row(
+            "SELECT value FROM settings WHERE name = 'catalog_item_version';",
+            params![],
+            |row| row.get(0),
+        )?;
+        let new_id = current_version.parse::<i64>().unwrap() + 1;
+        tx.execute(
+            "UPDATE settings SET value = ? WHERE name = 'catalog_item_version'",
+            params![new_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn load_databases(&self) -> Result<Vec<(i64, String)>, Error> {
         self.inner
             .prepare("SELECT id, name FROM databases")?

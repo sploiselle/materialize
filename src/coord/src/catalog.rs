@@ -379,6 +379,10 @@ impl CatalogEntry {
     }
 }
 
+lazy_static! {
+    static ref CATALOG_ITEM_MIGRATIONS: Vec<Box<dyn Fn() + Send + Sync>> = vec![];
+}
+
 impl Catalog {
     /// Opens or creates a catalog that stores data at `path`.
     ///
@@ -386,6 +390,8 @@ impl Catalog {
     /// of the catalog.
     pub fn open(config: Config) -> Result<(Catalog, Vec<Event>), Error> {
         let (storage, experimental_mode, cluster_id) = storage::Connection::open(&config)?;
+
+        let cc = config.clone();
 
         let mut catalog = Catalog {
             by_name: BTreeMap::new(),
@@ -400,8 +406,8 @@ impl Catalog {
                 nonce: rand::random(),
                 experimental_mode,
                 cluster_id,
-                cache_directory: config.cache_directory,
-                build_info: config.build_info,
+                cache_directory: cc.cache_directory,
+                build_info: cc.build_info,
             },
         };
         let mut events = vec![];
@@ -461,7 +467,7 @@ impl Catalog {
                 item: builtin.name().into(),
             };
             match builtin {
-                Builtin::Log(log) if config.enable_logging => {
+                Builtin::Log(log) if cc.enable_logging => {
                     let index_name = format!("{}_primary_idx", log.name);
                     let oid = catalog.allocate_oid()?;
                     events.push(catalog.insert_item(
@@ -548,7 +554,7 @@ impl Catalog {
                     );
                 }
 
-                Builtin::View(view) if config.enable_logging || !view.needs_logs => {
+                Builtin::View(view) if cc.enable_logging || !view.needs_logs => {
                     let item = catalog
                         .parse_item(view.sql.into(), PlanContext::default())
                         .unwrap_or_else(|e| {
@@ -619,7 +625,18 @@ impl Catalog {
             events.push(catalog.insert_item(id, oid, name, item));
         }
 
-        Ok((catalog, events))
+        // Check catalog version
+        let catalog_item_version = catalog.storage().get_catalog_item_version()?;
+
+        // If not, perform next migration
+        if CATALOG_ITEM_MIGRATIONS.len() > catalog_item_version {
+            CATALOG_ITEM_MIGRATIONS[catalog_item_version]();
+            catalog.storage().inc_catalog_item_version()?;
+            Catalog::open(config)
+        } else {
+            // Return catalog open
+            Ok((catalog, events))
+        }
     }
 
     pub fn for_session(&self, session: &Session) -> ConnCatalog {
