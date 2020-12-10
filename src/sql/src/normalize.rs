@@ -13,9 +13,9 @@ use repr::ColumnName;
 use sql_parser::ast::display::AstDisplay;
 use sql_parser::ast::visit_mut::{self, VisitMut};
 use sql_parser::ast::{
-    CreateIndexStatement, CreateSinkStatement, CreateSourceStatement, CreateTableStatement,
-    CreateTypeStatement, CreateViewStatement, DataType, Function, FunctionArgs, Ident,
-    IfExistsBehavior, ObjectName, SqlOption, Statement, TableFactor, Value,
+    ColumnDef, CreateIndexStatement, CreateSinkStatement, CreateSourceStatement,
+    CreateTableStatement, CreateTypeStatement, CreateViewStatement, DataType, Function,
+    FunctionArgs, Ident, IfExistsBehavior, ObjectName, SqlOption, Statement, TableFactor, Value,
 };
 
 use crate::names::{DatabaseSpecifier, FullName, PartialName};
@@ -77,7 +77,7 @@ pub fn unresolve(name: FullName) -> ObjectName {
     ObjectName(out)
 }
 
-/// Normalizes a `CREATE { SOURCE | VIEW | INDEX | SINK }` statement so that the
+/// Normalizes a `CREATE { SOURCE | VIEW | INDEX | SINK | TYPE }` statement so that the
 /// statement does not depend upon any session parameters, nor specify any
 /// non-default options (like `MATERIALIZED`, `IF NOT EXISTS`, etc).
 ///
@@ -158,11 +158,15 @@ pub fn create_statement(scx: &StatementContext, mut stmt: Statement) -> Result<S
             // Type names are ObjectNames, so they must be resolvable to
             // an object within the catalog.
             data_type.canonicalize_name_mz();
+            visit_mut::visit_data_type_mut(self, data_type);
         }
 
         fn visit_object_name_mut(&mut self, object_name: &'ast mut ObjectName) {
             match self.scx.resolve_item(object_name.clone()) {
-                Ok(full_name) => *object_name = unresolve(full_name.name().clone()),
+                Ok(full_name) => {
+                    // println!("full_name {:?}", full_name);
+                    *object_name = unresolve(full_name.name().clone());
+                }
                 Err(e) => self.err = Some(e),
             };
         }
@@ -196,12 +200,21 @@ pub fn create_statement(scx: &StatementContext, mut stmt: Statement) -> Result<S
 
         Statement::CreateTable(CreateTableStatement {
             name,
-            columns: _,
+            columns,
             constraints: _,
             with_options: _,
             if_not_exists,
         }) => {
             *name = allocate_name(name)?;
+            {
+                let mut normalizer = QueryNormalizer { scx, err: None };
+                for c in columns {
+                    normalizer.visit_column_def_mut(c);
+                }
+                if let Some(err) = normalizer.err {
+                    return Err(err);
+                }
+            }
             *if_not_exists = false;
         }
 

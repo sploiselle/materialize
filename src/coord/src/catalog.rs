@@ -1106,6 +1106,10 @@ impl Catalog {
 
                         let schema_id = tx.load_schema_id(database_id, &name.schema)?;
                         let serialized_item = self.serialize_item(&item);
+                        println!(
+                            "inserting {:?},{:?},{:?},{:?}",
+                            id, schema_id, &name.item, &item
+                        );
                         tx.insert_item(id, schema_id, &name.item, &serialized_item)?;
                     }
 

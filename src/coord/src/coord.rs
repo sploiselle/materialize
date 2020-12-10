@@ -1806,6 +1806,7 @@ where
         };
         let id = self.catalog.allocate_id()?;
         let oid = self.catalog.allocate_oid()?;
+        println!("creating type {:?} w/ oid {:?}", name, oid);
         let op = catalog::Op::CreateItem {
             id,
             oid,

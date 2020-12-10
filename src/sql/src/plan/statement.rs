@@ -1563,6 +1563,8 @@ fn handle_create_table(
     let name = scx.allocate_name(normalize::object_name(name.clone())?);
     let desc = RelationDesc::new(typ, names.into_iter().map(Some));
 
+    println!("stmt {:?}", stmt);
+
     let create_sql = normalize::create_statement(&scx, Statement::CreateTable(stmt.clone()))?;
     let table = Table { create_sql, desc };
     Ok(Plan::CreateTable {
