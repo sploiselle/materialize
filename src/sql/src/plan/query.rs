@@ -2568,11 +2568,24 @@ pub fn scalar_type_from_sql(
     catalog: &dyn Catalog,
     mut data_type: DataType,
 ) -> Result<ScalarType, anyhow::Error> {
+    let validate_typ_mod_len = |name: &str, typ_mod: &[u64], max_len: usize| {
+        if typ_mod.len() > max_len {
+            bail!("invalid {} type modifier", name)
+        } else {
+            Ok(())
+        }
+    };
+
+    // Ensure aliases that accept type mods that are not used are valid.
+    if let DataType::Other { name, typ_mod } = &data_type {
+        match name.to_string().as_str() {
+            "char" => validate_typ_mod_len("char", &typ_mod, 1)?,
+            "varchar" => validate_typ_mod_len("varchar", &typ_mod, 1)?,
+            _ => {}
+        }
+    }
+
     data_type.canonicalize_name_mz();
-    // `DataType`s that get translated into the same `ScalarType` have different
-    // functionality within symbiosis. Because of the relationship with
-    // symbiosis, this function should stay in sync with
-    // symbiosis::push_column.catalog.
     Ok(match data_type {
         DataType::Array(elem_type) => {
             ScalarType::Array(Box::new(scalar_type_from_sql(catalog, *elem_type)?))
@@ -2598,10 +2611,14 @@ pub fn scalar_type_from_sql(
             match catalog.try_get_scalar_type_by_id(&item.id()) {
                 Some(t) => match t {
                     ScalarType::Decimal(..) => {
+                        validate_typ_mod_len(&name.to_string(), &typ_mod, 2)?;
                         let (precision, scale) = unwrap_decimal_parts(typ_mod)?;
                         ScalarType::Decimal(precision, scale)
                     }
-                    t => t,
+                    t => {
+                        validate_typ_mod_len(&name.to_string(), &typ_mod, 0)?;
+                        t
+                    }
                 },
                 None => bail!("type \"{}\" does not exist", name),
             }
