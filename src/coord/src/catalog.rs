@@ -399,9 +399,11 @@ lazy_static! {
                             }))
                         }
                     };
+                    println!("id {:?} item {:?}", id, item);
                     let serialized_item = catalog.serialize_item(&item);
                     let tx = storage.transaction()?;
-                    tx.update_item(id.clone(), &name.item, &serialized_item)?;
+                    tx.update_item(id, &name.item, &serialized_item)?;
+                    tx.commit()?;
                 }
                 Ok(())
             })
