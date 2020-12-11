@@ -390,6 +390,7 @@ lazy_static! {
             Box::new(|catalog: &mut Catalog| {
                 let mut storage = catalog.storage();
                 let items = storage.load_items()?;
+                let tx = storage.transaction()?;
                 for (id, name, def) in items {
                     let item = match catalog.deserialize_item(def) {
                         Ok(item) => item,
@@ -401,10 +402,9 @@ lazy_static! {
                     };
                     println!("id {:?} item {:?}", id, item);
                     let serialized_item = catalog.serialize_item(&item);
-                    let tx = storage.transaction()?;
                     tx.update_item(id, &name.item, &serialized_item)?;
-                    tx.commit()?;
                 }
+                tx.commit()?;
                 Ok(())
             })
             // Add new migrations here.
