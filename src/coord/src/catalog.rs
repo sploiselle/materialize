@@ -380,11 +380,11 @@ impl CatalogEntry {
 }
 
 lazy_static! {
-    /// Catalog content migrations/
-    static ref CATALOG_MIGRATIONS: Vec<Box<dyn Fn(&mut Catalog) -> Result<(), Error> + Send + Sync>> =
+    /// Catalog content migrations
+    static ref CATALOG_CONTENT_MIGRATIONS: Vec<Box<dyn Fn(&mut Catalog) -> Result<(), Error> + Send + Sync>> =
         vec![
-            // Reparses and rewrites all catalog items, which was necessary
-            // because we began qualifying type names.
+            // Rewrites all catalog items to use new fully-qualified type
+            // references.
             //
             // Introduced for v0.6.0
             Box::new(|catalog: &mut Catalog| {
@@ -667,16 +667,15 @@ impl Catalog {
             events.push(catalog.insert_item(id, oid, name, item));
         }
 
-        // Check catalog version
-        let catalog_item_version = catalog.storage().get_catalog_item_version()?;
+        // Check and perform any unseen migrations
+        let catalog_item_version = catalog.storage().get_catalog_content_version()?;
 
-        // If not, perform next migration
-        if CATALOG_MIGRATIONS.len() > catalog_item_version {
-            CATALOG_MIGRATIONS[catalog_item_version](&mut catalog)?;
-            catalog.storage().inc_catalog_item_version()?;
+        if CATALOG_CONTENT_MIGRATIONS.len() > catalog_item_version {
+            CATALOG_CONTENT_MIGRATIONS[catalog_item_version](&mut catalog)?;
+            catalog.storage().inc_catalog_content_version()?;
+            // Ensure in-memory state reflects catalog, so just re-open catalog.
             Catalog::open(config)
         } else {
-            // Return catalog open
             Ok((catalog, events))
         }
     }

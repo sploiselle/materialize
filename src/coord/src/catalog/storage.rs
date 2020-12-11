@@ -251,7 +251,7 @@ impl Connection {
         res
     }
 
-    pub fn get_catalog_item_version(&mut self) -> Result<usize, Error> {
+    pub fn get_catalog_content_version(&mut self) -> Result<usize, Error> {
         let tx = self.inner.transaction()?;
         let current_setting: Option<String> = tx
             .query_row(
@@ -274,7 +274,7 @@ impl Connection {
         Ok(version as usize)
     }
 
-    pub fn inc_catalog_item_version(&mut self) -> Result<(), Error> {
+    pub fn inc_catalog_content_version(&mut self) -> Result<(), Error> {
         let tx = self.inner.transaction()?;
         let current_version: String = tx.query_row(
             "SELECT value FROM settings WHERE name = 'catalog_item_version';",
