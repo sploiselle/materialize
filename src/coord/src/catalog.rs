@@ -380,7 +380,47 @@ impl CatalogEntry {
 }
 
 lazy_static! {
-    static ref CATALOG_ITEM_MIGRATIONS: Vec<Box<dyn Fn() + Send + Sync>> = vec![];
+    /// Catalog content migrations/
+    static ref CATALOG_MIGRATIONS: Vec<Box<dyn Fn(&mut Catalog) -> Result<(), Error> + Send + Sync>> =
+        vec![
+            // Reparses and rewrites all catalog items, which was necessary
+            // because we began qualifying type names.
+            //
+            // Introduced for v0.6.0
+            Box::new(|catalog: &mut Catalog| {
+                let mut storage = catalog.storage();
+                let items = storage.load_items()?;
+                for (id, name, def) in items {
+                    let item = match catalog.deserialize_item(def) {
+                        Ok(item) => item,
+                        Err(e) => {
+                            return Err(Error::new(ErrorKind::Corruption {
+                                detail: format!("failed to deserialize item {} ({}): {}", id, name, e),
+                            }))
+                        }
+                    };
+                    let serialized_item = catalog.serialize_item(&item);
+                    let tx = storage.transaction()?;
+                    tx.update_item(id.clone(), &name.item, &serialized_item)?;
+                }
+                Ok(())
+            })
+            // Add new migrations here.
+            //
+            // Migrations should be preceded with a comment of the following form:
+            //
+            //     > Short summary of migration's purpose.
+            //     >
+            //     > Introduced in <VERSION>.
+            //     >
+            //     > Optional additional commentary about safety or approach.
+            //
+            // Please include @benesch on any code reviews that add or edit migrations.
+            // Migrations must preserve backwards compatibility with all past releases
+            // of materialized. Migrations can be edited up until they ship in a
+            // release, after which they must never be removed, only patched by future
+            // migrations.
+        ];
 }
 
 impl Catalog {
@@ -629,8 +669,8 @@ impl Catalog {
         let catalog_item_version = catalog.storage().get_catalog_item_version()?;
 
         // If not, perform next migration
-        if CATALOG_ITEM_MIGRATIONS.len() > catalog_item_version {
-            CATALOG_ITEM_MIGRATIONS[catalog_item_version]();
+        if CATALOG_MIGRATIONS.len() > catalog_item_version {
+            CATALOG_MIGRATIONS[catalog_item_version](&mut catalog)?;
             catalog.storage().inc_catalog_item_version()?;
             Catalog::open(config)
         } else {
@@ -1123,10 +1163,6 @@ impl Catalog {
 
                         let schema_id = tx.load_schema_id(database_id, &name.schema)?;
                         let serialized_item = self.serialize_item(&item);
-                        println!(
-                            "inserting {:?},{:?},{:?},{:?}",
-                            id, schema_id, &name.item, &item
-                        );
                         tx.insert_item(id, schema_id, &name.item, &serialized_item)?;
                     }
 
