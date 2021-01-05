@@ -713,10 +713,6 @@ fn add_time_interval<'a>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a> {
     Datum::Time(t)
 }
 
-fn ceil_float32<'a>(a: Datum<'a>) -> Datum<'a> {
-    Datum::from(a.unwrap_float32().ceil())
-}
-
 fn ceil_float64<'a>(a: Datum<'a>) -> Datum<'a> {
     Datum::from(a.unwrap_float64().ceil())
 }
@@ -726,10 +722,6 @@ fn ceil_decimal<'a>(a: Datum<'a>, scale: u8) -> Datum<'a> {
     Datum::from(decimal.with_scale(scale).ceil().significand())
 }
 
-fn floor_float32<'a>(a: Datum<'a>) -> Datum<'a> {
-    Datum::from(a.unwrap_float32().floor())
-}
-
 fn floor_float64<'a>(a: Datum<'a>) -> Datum<'a> {
     Datum::from(a.unwrap_float64().floor())
 }
@@ -737,10 +729,6 @@ fn floor_float64<'a>(a: Datum<'a>) -> Datum<'a> {
 fn floor_decimal<'a>(a: Datum<'a>, scale: u8) -> Datum<'a> {
     let decimal = a.unwrap_decimal();
     Datum::from(decimal.with_scale(scale).floor().significand())
-}
-
-fn round_float32<'a>(a: Datum<'a>) -> Datum<'a> {
-    Datum::from(a.unwrap_float32().round())
 }
 
 fn round_float64<'a>(a: Datum<'a>) -> Datum<'a> {
@@ -1113,14 +1101,6 @@ fn neg_decimal<'a>(a: Datum<'a>) -> Datum<'a> {
 
 pub fn neg_interval<'a>(a: Datum<'a>) -> Datum<'a> {
     Datum::from(-a.unwrap_interval())
-}
-
-fn sqrt_float32<'a>(a: Datum<'a>) -> Result<Datum, EvalError> {
-    let x = a.unwrap_float32();
-    if x < 0.0 {
-        return Err(EvalError::NegSqrt);
-    }
-    Ok(Datum::from(x.sqrt()))
 }
 
 fn sqrt_float64<'a>(a: Datum<'a>) -> Result<Datum, EvalError> {
@@ -2708,7 +2688,6 @@ pub enum UnaryFunc {
     NegFloat64,
     NegDecimal,
     NegInterval,
-    SqrtFloat32,
     SqrtFloat64,
     SqrtDec(u8),
     AbsInt32,
@@ -2814,10 +2793,8 @@ pub enum UnaryFunc {
     CastInPlace {
         return_ty: ScalarType,
     },
-    CeilFloat32,
     CeilFloat64,
     CeilDecimal(u8),
-    FloorFloat32,
     FloorFloat64,
     FloorDecimal(u8),
     Ascii,
@@ -2841,7 +2818,6 @@ pub enum UnaryFunc {
     JsonbTypeof,
     JsonbStripNulls,
     JsonbPretty,
-    RoundFloat32,
     RoundFloat64,
     RoundDecimal(u8),
     TrimWhitespace,
@@ -2962,13 +2938,10 @@ impl UnaryFunc {
                 cast_list1_to_list2(a, &*cast_expr, temp_storage)
             }
             UnaryFunc::CastInPlace { .. } => Ok(a),
-            UnaryFunc::CeilFloat32 => Ok(ceil_float32(a)),
             UnaryFunc::CeilFloat64 => Ok(ceil_float64(a)),
             UnaryFunc::CeilDecimal(scale) => Ok(ceil_decimal(a, *scale)),
-            UnaryFunc::FloorFloat32 => Ok(floor_float32(a)),
             UnaryFunc::FloorFloat64 => Ok(floor_float64(a)),
             UnaryFunc::FloorDecimal(scale) => Ok(floor_decimal(a, *scale)),
-            UnaryFunc::SqrtFloat32 => sqrt_float32(a),
             UnaryFunc::SqrtFloat64 => sqrt_float64(a),
             UnaryFunc::SqrtDec(scale) => sqrt_dec(a, *scale),
             UnaryFunc::Ascii => Ok(ascii(a)),
@@ -3002,7 +2975,6 @@ impl UnaryFunc {
             UnaryFunc::JsonbTypeof => Ok(jsonb_typeof(a)),
             UnaryFunc::JsonbStripNulls => Ok(jsonb_strip_nulls(a, temp_storage)),
             UnaryFunc::JsonbPretty => Ok(jsonb_pretty(a, temp_storage)),
-            UnaryFunc::RoundFloat32 => Ok(round_float32(a)),
             UnaryFunc::RoundFloat64 => Ok(round_float64(a)),
             UnaryFunc::RoundDecimal(scale) => Ok(round_decimal_unary(a, *scale)),
             UnaryFunc::TrimWhitespace => Ok(trim_whitespace(a)),
@@ -3121,7 +3093,6 @@ impl UnaryFunc {
             | CastStringToMap { return_ty, .. }
             | CastInPlace { return_ty } => (return_ty.clone()).nullable(false),
 
-            CeilFloat32 | FloorFloat32 | RoundFloat32 => ScalarType::Float32.nullable(in_nullable),
             CeilFloat64 | FloorFloat64 | RoundFloat64 => ScalarType::Float64.nullable(in_nullable),
             CeilDecimal(scale) | FloorDecimal(scale) | RoundDecimal(scale) | SqrtDec(scale) => {
                 match input_type.scalar_type {
@@ -3131,7 +3102,6 @@ impl UnaryFunc {
                 input_type.scalar_type.nullable(in_nullable)
             }
 
-            SqrtFloat32 => ScalarType::Float32.nullable(true),
             SqrtFloat64 => ScalarType::Float64.nullable(true),
 
             Not | NegInt32 | NegInt64 | NegFloat32 | NegFloat64 | NegDecimal | NegInterval
@@ -3285,13 +3255,10 @@ impl fmt::Display for UnaryFunc {
             UnaryFunc::CastList1ToList2 { .. } => f.write_str("list1tolist2"),
             UnaryFunc::CastMapToString { .. } => f.write_str("maptostr"),
             UnaryFunc::CastInPlace { .. } => f.write_str("castinplace"),
-            UnaryFunc::CeilFloat32 => f.write_str("ceilf32"),
             UnaryFunc::CeilFloat64 => f.write_str("ceilf64"),
             UnaryFunc::CeilDecimal(_) => f.write_str("ceildec"),
-            UnaryFunc::FloorFloat32 => f.write_str("floorf32"),
             UnaryFunc::FloorFloat64 => f.write_str("floorf64"),
             UnaryFunc::FloorDecimal(_) => f.write_str("floordec"),
-            UnaryFunc::SqrtFloat32 => f.write_str("sqrtf32"),
             UnaryFunc::SqrtFloat64 => f.write_str("sqrtf64"),
             UnaryFunc::SqrtDec(_) => f.write_str("sqrtdec"),
             UnaryFunc::Ascii => f.write_str("ascii"),
@@ -3315,7 +3282,6 @@ impl fmt::Display for UnaryFunc {
             UnaryFunc::JsonbTypeof => f.write_str("jsonb_typeof"),
             UnaryFunc::JsonbStripNulls => f.write_str("jsonb_strip_nulls"),
             UnaryFunc::JsonbPretty => f.write_str("jsonb_pretty"),
-            UnaryFunc::RoundFloat32 => f.write_str("roundf32"),
             UnaryFunc::RoundFloat64 => f.write_str("roundf64"),
             UnaryFunc::RoundDecimal(_) => f.write_str("roundunary"),
             UnaryFunc::TrimWhitespace => f.write_str("btrim"),
