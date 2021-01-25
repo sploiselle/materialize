@@ -1167,6 +1167,7 @@ pub struct TableFuncPlan {
     pub column_names: Vec<Option<ColumnName>>,
 }
 
+#[derive(Debug)]
 pub enum Func {
     Scalar(Vec<FuncImpl<ScalarExpr>>),
     Aggregate(Vec<FuncImpl<(ScalarExpr, AggregateFunc)>>),
@@ -1781,7 +1782,7 @@ lazy_static! {
                 params!(Float64) => Operation::identity(),
                 params!(DecimalAny) => Operation::identity(),
                 params!(Int32) => Operation::unary(|ecx, e| {
-                      super::typeconv::plan_cast(
+                      typeconv::plan_cast(
                           "internal.avg_promotion", ecx, CastContext::Explicit,
                           e, &ScalarType::Decimal(10, 0),
                       )
