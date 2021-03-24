@@ -426,6 +426,7 @@ impl Value {
                 let d = strconv::parse_numeric(raw)?;
                 Value::RDN(RDNValue(d))
             }
+            Type::APD => unreachable!(),
         })
     }
 
@@ -453,6 +454,7 @@ impl Value {
             Type::TimestampTz => DateTime::<Utc>::from_sql(ty.inner(), raw).map(Value::TimestampTz),
             Type::Uuid => Uuid::from_sql(ty.inner(), raw).map(Value::Uuid),
             Type::RDN => RDNValue::from_sql(ty.inner(), raw).map(Value::RDN),
+            Type::APD => unreachable!(),
         }
     }
 }
@@ -505,6 +507,7 @@ pub fn null_datum(ty: &Type) -> (Datum<'static>, ScalarType) {
         }
         Type::Numeric => ScalarType::Decimal(MAX_DECIMAL_PRECISION, 0),
         Type::RDN => ScalarType::Numeric { scale: None },
+        Type::APD => ScalarType::APD,
         Type::Oid => ScalarType::Oid,
         Type::Text => ScalarType::String,
         Type::Time => ScalarType::Time,
