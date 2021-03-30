@@ -44,7 +44,7 @@ use ore::fmt::FormatBuffer;
 use ore::lex::LexBuf;
 use ore::str::StrExt;
 
-use crate::adt::apd::{self, APD_DATUM_WIDTH, APD_MAX_PRECISION};
+use crate::adt::apd::{self, APD_DATUM_MAX_PRECISION, APD_DATUM_WIDTH};
 use crate::adt::array::ArrayDimension;
 use crate::adt::datetime::{self, DateTimeField, ParsedDateTime};
 use crate::adt::decimal::Decimal;
@@ -481,8 +481,10 @@ pub fn parse_apd(s: &str) -> Result<OrderedDecimal<DecNumber<APD_DATUM_WIDTH>>, 
 
     let cx_status = cx.status();
     if cx_status.rounded() || cx_status.subnormal() {
-        Err(ParseError::out_of_range("apd", s)
-            .with_details(format!("exceeds maximum precision {}", APD_MAX_PRECISION)))
+        Err(ParseError::out_of_range("apd", s).with_details(format!(
+            "exceeds maximum precision {}",
+            APD_DATUM_MAX_PRECISION
+        )))
     } else if n.is_infinite() {
         Err(ParseError::invalid_input_syntax("apd", s))
     } else {
