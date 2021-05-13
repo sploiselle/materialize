@@ -73,7 +73,7 @@ pub fn get_precision(n: &OrderedDecimal<Decimal<APD_DATUM_WIDTH>>) -> u32 {
     }
 }
 
-/// Ensures that a generated `OrderedDecimal<Decimal128>` does not exceed
+/// Ensures that a generated `OrderedDecimal<Decimal>` does not exceed
 /// `rust-dec`'s maximum precision. This method is useful when accepting input
 /// from e.g. users, Kafka.
 ///
