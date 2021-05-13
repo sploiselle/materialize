@@ -11,7 +11,7 @@ use std::fmt::{self, Write};
 use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use dec::{Decimal as DecNumber, Decimal128, OrderedDecimal};
+use dec::{Decimal as DecNumber, OrderedDecimal};
 use enum_kinds::EnumKind;
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
@@ -69,9 +69,6 @@ pub enum Datum<'a> {
     List(DatumList<'a>),
     /// A mapping from string keys to `Datum`s.
     Map(DatumMap<'a>),
-    /// A refactor of `Decimal` using `rust-dec`; allows up to 34 digits of
-    /// precision.
-    Numeric(OrderedDecimal<Decimal128>),
     /// A refactor of `Decimal` using `rust-dec`; allows up to 39 digits of
     /// precision.
     APD(OrderedDecimal<DecNumber<APD_DATUM_WIDTH>>),
@@ -351,19 +348,6 @@ impl<'a> Datum<'a> {
     ///
     /// Panics if the datum is not [`Datum::Numeric`].
     #[track_caller]
-    pub fn unwrap_numeric(&self) -> OrderedDecimal<Decimal128> {
-        match self {
-            Datum::Numeric(n) => *n,
-            _ => panic!("Datum::unwrap_numeric called on {:?}", self),
-        }
-    }
-
-    /// Unwraps the numeric value within this datum.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the datum is not [`Datum::Numeric`].
-    #[track_caller]
     pub fn unwrap_apd(&self) -> OrderedDecimal<DecNumber<APD_DATUM_WIDTH>> {
         match self {
             Datum::APD(n) => *n,
@@ -449,8 +433,6 @@ impl<'a> Datum<'a> {
                         .all(|(_k, v)| v.is_null() || is_instance_of_scalar(v, value_type)),
                     (Datum::Map(_), _) => false,
                     (Datum::JsonNull, _) => false,
-                    (Datum::Numeric(_), ScalarType::Numeric { .. }) => true,
-                    (Datum::Numeric(_), _) => false,
                     (Datum::APD(_), ScalarType::APD { .. }) => true,
                     (Datum::APD(_), _) => false,
                 }
@@ -584,18 +566,6 @@ impl From<Uuid> for Datum<'static> {
     }
 }
 
-impl From<Decimal128> for Datum<'static> {
-    fn from(d: Decimal128) -> Datum<'static> {
-        Datum::Numeric(OrderedDecimal(d))
-    }
-}
-
-impl From<OrderedDecimal<Decimal128>> for Datum<'static> {
-    fn from(d: OrderedDecimal<Decimal128>) -> Datum<'static> {
-        Datum::Numeric(d)
-    }
-}
-
 impl<'a, T> From<Option<T>> for Datum<'a>
 where
     Datum<'a>: From<T>,
@@ -679,7 +649,6 @@ impl fmt::Display for Datum<'_> {
                 write_delimited(f, ", ", dict, |f, (k, v)| write!(f, "{}: {}", k, v))?;
                 f.write_str("}")
             }
-            Datum::Numeric(n) => write!(f, "{}", n.0.to_standard_notation_string()),
             Datum::APD(n) => write!(f, "{}", n.0.to_standard_notation_string()),
             Datum::JsonNull => f.write_str("json_null"),
             Datum::Dummy => f.write_str("dummy"),
@@ -775,9 +744,6 @@ pub enum ScalarType {
         value_type: Box<ScalarType>,
         custom_oid: Option<u32>,
     },
-    Numeric {
-        scale: Option<u8>,
-    },
     APD {
         scale: Option<u8>,
     },
@@ -793,18 +759,6 @@ impl<'a> ScalarType {
         match self {
             ScalarType::Decimal(p, s) => (*p, *s),
             _ => panic!("ScalarType::unwrap_decimal_parts called on {:?}", self),
-        }
-    }
-
-    /// Returns the contained decimal precision and scale.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the scalar type is not [`ScalarType::Numeric`].
-    pub fn unwrap_numeric_scale(&self) -> Option<u8> {
-        match self {
-            ScalarType::Numeric { scale } => *scale,
-            _ => panic!("ScalarType::unwrap_numeric_scale called on {:?}", self),
         }
     }
 
@@ -930,7 +884,6 @@ impl PartialEq for ScalarType {
             | (Uuid, Uuid)
             | (Jsonb, Jsonb)
             | (Oid, Oid)
-            | (Numeric { .. }, Numeric { .. })
             | (APD { .. }, APD { .. }) => true,
             (
                 List {
@@ -987,7 +940,6 @@ impl PartialEq for ScalarType {
             | (Record { .. }, _)
             | (Oid, _)
             | (Map { .. }, _)
-            | (Numeric { .. }, _)
             | (APD { .. }, _) => false,
         }
     }
@@ -1048,8 +1000,7 @@ impl Hash for ScalarType {
                 value_type.hash(state);
                 custom_oid.hash(state);
             }
-            Numeric { .. } => state.write_u8(19),
-            APD { .. } => state.write_u8(20),
+            APD { .. } => state.write_u8(19),
         }
     }
 }
