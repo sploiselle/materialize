@@ -1213,6 +1213,24 @@ fn div_decimal<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
     }
 }
 
+fn div_apd<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
+    let mut cx = apd::cx_datum();
+    let mut a = a.unwrap_apd().0;
+    cx.div(&mut a, &b.unwrap_apd().0);
+
+    if cx.status().division_by_zero() {
+        Err(EvalError::DivisionByZero)
+    } else if cx.status().overflow() {
+        Err(EvalError::FloatOverflow)
+    } else if cx.status().subnormal() {
+        Err(EvalError::FloatUnderflow)
+    } else if apd::exceeds_max_precision(&a) {
+        Err(EvalError::APDFieldOverflow)
+    } else {
+        Ok(Datum::APD(OrderedDecimal(a)))
+    }
+}
+
 fn div_interval<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
     let b = b.unwrap_float64();
     if b == 0.0 {
@@ -2339,6 +2357,7 @@ pub enum BinaryFunc {
     DivFloat32,
     DivFloat64,
     DivDecimal,
+    DivAPD,
     DivInterval,
     ModInt32,
     ModInt64,
@@ -2470,6 +2489,7 @@ impl BinaryFunc {
             BinaryFunc::DivFloat32 => eager!(div_float32),
             BinaryFunc::DivFloat64 => eager!(div_float64),
             BinaryFunc::DivDecimal => eager!(div_decimal),
+            BinaryFunc::DivAPD => eager!(div_apd),
             BinaryFunc::DivInterval => eager!(div_interval),
             BinaryFunc::ModInt32 => eager!(mod_int32),
             BinaryFunc::ModInt64 => eager!(mod_int64),
@@ -2580,6 +2600,7 @@ impl BinaryFunc {
                 | DivFloat64
                 | ModFloat64
                 | DivDecimal
+                | DivAPD
                 | ModDecimal
         );
         match self {
@@ -2618,7 +2639,9 @@ impl BinaryFunc {
             AddInterval | SubInterval | SubTimestamp | SubTimestampTz | MulInterval
             | DivInterval => ScalarType::Interval.nullable(in_nullable),
 
-            AddAPD | SubAPD | MulAPD => ScalarType::APD { scale: None }.nullable(in_nullable),
+            AddAPD | SubAPD | MulAPD | DivAPD => {
+                ScalarType::APD { scale: None }.nullable(in_nullable)
+            }
 
             // TODO(benesch): we correctly compute types for decimal scale, but
             // not decimal precision... because nothing actually cares about
@@ -2860,6 +2883,7 @@ impl BinaryFunc {
             | DivFloat32
             | DivFloat64
             | DivDecimal
+            | DivAPD
             | ModInt32
             | ModInt64
             | ModFloat32
@@ -2988,6 +3012,7 @@ impl fmt::Display for BinaryFunc {
             BinaryFunc::DivFloat32 => f.write_str("/"),
             BinaryFunc::DivFloat64 => f.write_str("/"),
             BinaryFunc::DivDecimal => f.write_str("/"),
+            BinaryFunc::DivAPD => f.write_str("/"),
             BinaryFunc::DivInterval => f.write_str("/"),
             BinaryFunc::ModInt32 => f.write_str("%"),
             BinaryFunc::ModInt64 => f.write_str("%"),

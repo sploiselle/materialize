@@ -256,3 +256,141 @@ query T
 SELECT ('NaN'::apd * '2'::apd)::text
 ----
 NaN
+
+# Division
+query T
+SELECT ('1'::apd / '2'::apd)::text;
+----
+0.5
+
+query T
+SELECT ('2.0'::apd / '1'::apd)::text;
+----
+2.0
+
+query T
+SELECT ('1'::apd / '0.5'::apd)::text;
+----
+2
+
+query T
+SELECT ('2.0'::apd / '1.1'::apd)::text;
+----
+1.81818181818181818181818181818181818182
+
+query error value out of range: overflow
+SELECT ('1'::apd / '0.000000000000000000000000000000000000001'::apd)::text;
+
+query error value out of range: overflow
+SELECT ('123456789012345678901234567890123456789'::apd / '.1'::apd)::text
+
+query error value out of range: underflow
+SELECT ('1E-39'::apd / '10'::apd)::text
+
+query error value out of range: exceeds maximum precision 39
+SELECT ('.123456789012345678901234567890123456789'::apd / '10'::apd)::text
+
+query error division by zero
+SELECT ('1'::apd / '0'::apd)::text
+
+query error division by zero
+SELECT ('1'::apd / '0.0'::apd)::text;
+
+query error division by zero
+SELECT ('1'::apd / ('-1'::apd + '1.0'::apd))::text;
+
+# Improve results of the bug that precipitated the refactor
+query R
+SELECT 1::NUMERIC(38, 10) / 1.2103500000::numeric(38, 10);
+----
+0.826000000000
+
+query T
+SELECT ('1'::apd / '1.21035'::apd)::text
+----
+0.826207295410418473995125376957078531003
+
+query T
+SELECT ('NaN'::apd / '2'::apd)::text
+----
+NaN
+
+query T
+SELECT ('2'::apd / 'NaN'::apd)::text
+----
+NaN
+
+# Specify scale
+query T
+SELECT ('0.2'::apd(39,1))::text;
+----
+0.2
+
+query T
+SELECT ('0.2'::apd(39,3))::text;
+----
+0.200
+
+query T
+SELECT ('0.002'::apd(39,1))::text;
+----
+0.0
+
+query T
+SELECT ('0.12'::apd(39,2) + '0.2'::apd(39,1))::text;
+----
+0.32
+
+query T
+SELECT ('0.12'::apd(39,1) + '0.2'::apd(39,2))::text;
+----
+0.30
+
+query T
+SELECT ('0.12'::apd + '0.2'::apd)::apd(39,3)::text;
+----
+0.320
+
+query T
+SELECT ('0.12'::apd + '0.2'::apd)::apd(39,1)::text;
+----
+0.3
+
+query T
+SELECT ('0.12'::apd(39,2) * '0.2'::apd(39,1))::text;
+----
+0.024
+
+query T
+SELECT ('0.12'::apd(39,1) * '0.2'::apd(39,2))::text;
+----
+0.020
+
+query T
+SELECT ('0.12'::apd * '0.2'::apd)::apd(39,3)::text;
+----
+0.024
+
+query T
+SELECT ('0.14'::apd * '0.2'::apd)::apd(39,2)::text;
+----
+0.03
+
+query T
+SELECT ('0.12'::apd * '0.2'::apd)::apd(39,1)::text;
+----
+0.0
+
+query T
+SELECT ('NaN'::apd(39,1))::text;
+----
+NaN
+
+query error precision for type apd must be within \[1-39\], have 40
+SELECT ('0.2'::apd(40,1))::text;
+
+query error scale for type apd must be within \[0-39\], have 40
+SELECT ('0.2'::apd(39,40))::text;
+
+query error apd scale 39 must be between 0 and precision 1
+SELECT ('0.2'::apd(1,39))::text;
