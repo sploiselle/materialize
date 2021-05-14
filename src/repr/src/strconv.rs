@@ -31,7 +31,7 @@ use std::num::FpCategory;
 
 use chrono::offset::{Offset, TimeZone};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
-use dec::{Context, Decimal as DecNumber, OrderedDecimal};
+use dec::{Decimal as DecNumber, OrderedDecimal};
 use fast_float::FastFloat;
 use lazy_static::lazy_static;
 use num_traits::Float as NumFloat;
@@ -44,6 +44,7 @@ use ore::fmt::FormatBuffer;
 use ore::lex::LexBuf;
 use ore::str::StrExt;
 
+use crate::adt::apd::{self, APD_DATUM_WIDTH, APD_MAX_PRECISION};
 use crate::adt::array::ArrayDimension;
 use crate::adt::datetime::{self, DateTimeField, ParsedDateTime};
 use crate::adt::decimal::Decimal;
@@ -438,8 +439,8 @@ where
     Nestable::Yes
 }
 
-pub fn parse_apd(s: &str) -> Result<OrderedDecimal<DecNumber<13>>, ParseError> {
-    let mut cx = Context::<DecNumber<13>>::default();
+pub fn parse_apd(s: &str) -> Result<OrderedDecimal<DecNumber<APD_DATUM_WIDTH>>, ParseError> {
+    let mut cx = apd::cx_datum();
     let n = match cx.parse(s) {
         Ok(n) => n,
         Err(e) => {
@@ -447,14 +448,25 @@ pub fn parse_apd(s: &str) -> Result<OrderedDecimal<DecNumber<13>>, ParseError> {
         }
     };
 
+    if apd::over_or_under_flow(&cx) {
+        return Err(ParseError::out_of_range("apd", s)
+            .with_details(format!(", exceeds maximum precision {}", APD_MAX_PRECISION)));
+    } else {
+        assert!(
+            !cx.status().any(),
+            "unexpected context status {:#?}",
+            cx.status()
+        );
+    }
+
     Ok(OrderedDecimal(n))
 }
 
-pub fn format_apd<F>(buf: &mut F, n: &OrderedDecimal<DecNumber<13>>) -> Nestable
+pub fn format_apd<F>(buf: &mut F, n: &OrderedDecimal<DecNumber<APD_DATUM_WIDTH>>) -> Nestable
 where
     F: FormatBuffer,
 {
-    write!(buf, "{}", n);
+    write!(buf, "{}", n.0.to_standard_notation_string());
     Nestable::Yes
 }
 

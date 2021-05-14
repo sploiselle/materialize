@@ -55,6 +55,32 @@ pub fn twos_complement_be_to_i128(input: &[u8]) -> Result<i128, anyhow::Error> {
     Ok(significand)
 }
 
+fn cx<const W: usize>() -> Context<Decimal<W>> {
+    let mut cx = Context::<Decimal<W>>::default();
+    cx.set_max_exponent(isize::try_from(W * 3).unwrap())
+        .unwrap();
+    cx.set_min_exponent(-(isize::try_from(W * 3).unwrap()))
+        .unwrap();
+    cx
+}
+
+/// Returns a new context approrpriate for operating on APD datums
+pub fn cx_datum() -> Context<Decimal<APD_DATUM_WIDTH>> {
+    cx::<APD_DATUM_WIDTH>()
+}
+
+/// Returns a new context approrpriate for operating on APD aggregations
+pub fn cx_agg() -> Context<Decimal<APD_AGG_WIDTH>> {
+    cx::<APD_AGG_WIDTH>()
+}
+
+/// Checks whether the context represents an over- or underflow w/r/t our
+/// desired precision.
+pub fn over_or_under_flow(cx: &Context<Decimal<APD_DATUM_WIDTH>>) -> bool {
+    let s = cx.status();
+    s.inexact() || s.rounded() || s.subnormal()
+}
+
 /// Returns `n`'s precision, i.e. the total number of digits represented by `n`
 /// in standard notation.
 pub fn get_precision(n: &OrderedDecimal<Decimal<APD_DATUM_WIDTH>>) -> u32 {

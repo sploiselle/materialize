@@ -81,6 +81,7 @@ use dataflow_types::DataflowError;
 use dec::{Context as DecCx, Decimal as DecNum, OrderedDecimal};
 use expr::{AggregateExpr, AggregateFunc, MirRelationExpr};
 use ore::cast::CastFrom;
+use repr::adt::apd;
 use repr::{Datum, DatumList, Row, RowArena};
 
 use super::context::Context;
@@ -1152,8 +1153,7 @@ impl Semigroup for AccumInner {
                     non_nulls: other_non_nulls,
                 },
             ) => {
-                let mut cx_w = DecCx::<DecNum<27>>::default();
-                cx_w.set_max_exponent(27 * 3).unwrap();
+                let mut cx_w = apd::cx_agg();
                 cx_w.add(&mut accum.0, &other_accum.0);
                 assert!(!cx_w.status().inexact(), "AccumInner::APD overflow");
                 // Reduce to reclaim unused decimal precision. Note that this

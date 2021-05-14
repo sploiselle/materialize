@@ -21,7 +21,7 @@ use chrono::{
     DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Timelike,
     Utc,
 };
-use dec::{Context as DecCx, Decimal as DecNum, OrderedDecimal};
+use dec::OrderedDecimal;
 use hmac::{Hmac, Mac, NewMac};
 use itertools::Itertools;
 use md5::{Digest, Md5};
@@ -1023,11 +1023,16 @@ fn add_decimal<'a>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a> {
     Datum::from(a.unwrap_decimal() + b.unwrap_decimal())
 }
 
-fn add_apd<'a>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a> {
-    let mut cx = DecCx::<DecNum<13>>::default();
+fn add_apd<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
+    let mut cx = apd::cx_datum();
     let mut a = a.unwrap_apd().0;
     cx.add(&mut a, &b.unwrap_apd().0);
-    Datum::APD(OrderedDecimal(a))
+    if apd::over_or_under_flow(&cx) {
+        Err(EvalError::NumericFieldOverflow)
+    } else {
+        assert!(!cx.status().any());
+        Ok(Datum::APD(OrderedDecimal(a)))
+    }
 }
 
 fn add_interval<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
@@ -2408,7 +2413,7 @@ impl BinaryFunc {
             BinaryFunc::AddDateInterval => Ok(eager!(add_date_interval)),
             BinaryFunc::AddTimeInterval => Ok(eager!(add_time_interval)),
             BinaryFunc::AddDecimal => Ok(eager!(add_decimal)),
-            BinaryFunc::AddAPD => Ok(eager!(add_apd)),
+            BinaryFunc::AddAPD => eager!(add_apd),
             BinaryFunc::AddInterval => eager!(add_interval),
             BinaryFunc::SubInt32 => eager!(sub_int32),
             BinaryFunc::SubInt64 => eager!(sub_int64),

@@ -14,8 +14,8 @@ use byteorder::{NetworkEndian, WriteBytesExt};
 use chrono::Timelike;
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use repr::adt::apd;
 use repr::adt::jsonb::JsonbRef;
-use repr::adt::{apd};
 use repr::{ColumnName, ColumnType, Datum, RelationDesc, Row, ScalarType};
 use serde_json::json;
 

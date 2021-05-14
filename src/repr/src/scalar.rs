@@ -647,7 +647,7 @@ impl fmt::Display for Datum<'_> {
                 write_delimited(f, ", ", dict, |f, (k, v)| write!(f, "{}: {}", k, v))?;
                 f.write_str("}")
             }
-            Datum::APD(n) => write!(f, "{}", n.0),
+            Datum::APD(n) => write!(f, "{}", n.0.to_standard_notation_string()),
             Datum::JsonNull => f.write_str("json_null"),
             Datum::Dummy => f.write_str("dummy"),
         }
