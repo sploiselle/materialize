@@ -145,3 +145,54 @@ query T
 SELECT ('NaN'::apd + '2'::apd)::text
 ----
 NaN
+
+# Multiplication
+query T
+SELECT ('1.1'::apd * '2.2'::apd)::text
+----
+2.42
+
+query T
+SELECT ('1.1'::apd * '-2.2'::apd)::text
+----
+-2.42
+
+query T
+SELECT ('-1.1'::apd * '2.2'::apd)::text
+----
+-2.42
+
+query T
+SELECT ('-1.1'::apd * '-2.2'::apd)::text
+----
+2.42
+
+query T
+SELECT ('-1.1'::apd * '.2'::apd)::text
+----
+-0.22
+
+query T
+SELECT ('.1'::apd * '-2.2'::apd)::text
+----
+-0.22
+
+query error value out of range: overflow
+SELECT ('123456789012345678901234567890123456789'::apd * '10'::apd)::text
+
+query error value out of range: underflow
+SELECT ('1E-39'::apd * '.1'::apd)::text
+
+query error value out of range: exceeds maximum precision 39
+SELECT ('.123456789012345678901234567890123456789'::apd * '.1'::apd)::text
+
+# known bad behavior in old i128 implementation
+query T
+SELECT ('1.50000000'::apd * '1.50000000'::apd)::text
+----
+2.2500000000000000
+
+query T
+SELECT ('NaN'::apd - '2'::apd)::text
+----
+NaN

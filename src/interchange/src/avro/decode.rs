@@ -624,8 +624,7 @@ fn pack_value(v: Value, mut row: Row, n: SchemaNode) -> anyhow::Result<Row> {
             let mut cx = DecimalCx::<DecNum<APD_DATUM_WIDTH>>::default();
             let mut n = cx.from_i128(coefficient);
             n.set_exponent(-i32::try_from(scale).unwrap());
-            let n = OrderedDecimal(n);
-            if apd::exceeds_max_precision(&n.0) {
+            if apd::exceeds_max_precision(&n) {
                 bail!(
                     "APD value {} exceed maximum precision {}",
                     n,
@@ -638,7 +637,7 @@ fn pack_value(v: Value, mut row: Row, n: SchemaNode) -> anyhow::Result<Row> {
                 bail!("Unexpected error encoding numeric: {:?}", cx.status());
             }
 
-            row.push(Datum::APD(n))
+            row.push(Datum::APD(OrderedDecimal(n)))
         }
         Value::Bytes(b) => row.push(Datum::Bytes(&b)),
         Value::String(s) | Value::Enum(_ /* idx */, s) => row.push(Datum::String(&s)),

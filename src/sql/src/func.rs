@@ -2263,6 +2263,7 @@ lazy_static! {
                     let expr = lhs.call_binary(rhs, MulDecimal);
                     Ok(rescale_decimal(expr, si, so))
                 }), 1760;
+                params!(APD { scale: None }, APD { scale: None }) => MulAPD, 17600;
             },
             "/" => Scalar {
                 params!(Int32, Int32) => DivInt32, 528;

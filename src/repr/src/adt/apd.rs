@@ -15,7 +15,7 @@
 use std::convert::TryFrom;
 
 use anyhow::bail;
-use dec::{Context, Decimal, OrderedDecimal};
+use dec::{Context, Decimal};
 use lazy_static::lazy_static;
 
 /// The maximum number of digits expressable in an APD.

@@ -14,6 +14,7 @@ use std::mem;
 use serde::{Deserialize, Serialize};
 
 use ore::collections::CollectionExt;
+use repr::adt::apd::APD_DATUM_MAX_PRECISION;
 use repr::adt::array::InvalidArrayError;
 use repr::adt::datetime::DateTimeUnits;
 use repr::adt::regex::Regex;
@@ -885,6 +886,7 @@ pub enum EvalError {
     FloatOverflow,
     FloatUnderflow,
     NumericFieldOverflow,
+    APDFieldOverflow,
     Int32OutOfRange,
     Int64OutOfRange,
     IntervalOutOfRange,
@@ -933,6 +935,13 @@ impl fmt::Display for EvalError {
             EvalError::FloatOverflow => f.write_str("value out of range: overflow"),
             EvalError::FloatUnderflow => f.write_str("value out of range: underflow"),
             EvalError::NumericFieldOverflow => f.write_str("numeric field overflow"),
+            EvalError::APDFieldOverflow => {
+                write!(
+                    f,
+                    "value out of range: exceeds maximum precision {}",
+                    APD_DATUM_MAX_PRECISION
+                )
+            }
             EvalError::Int32OutOfRange => f.write_str("integer out of range"),
             EvalError::Int64OutOfRange => f.write_str("bigint out of range"),
             EvalError::IntervalOutOfRange => f.write_str("interval out of range"),
