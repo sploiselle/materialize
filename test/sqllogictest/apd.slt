@@ -1378,3 +1378,89 @@ query T
 SELECT '1.23456789'::apd(39,5) < '1.23456789'::apd(39,4);
 ----
 true
+
+# Integer casts
+
+## int4
+
+query T
+SELECT (1::apd(39,3))::text;
+----
+1.000
+
+query T
+SELECT (-1::apd(39,3))::text;
+----
+-1.000
+
+query T
+SELECT (2147483647::apd)::text;
+----
+2147483647
+
+query T
+SELECT (2147483647::apd(39,3))::text;
+----
+2147483647.000
+
+query T
+SELECT (-2147483648::apd)::text;
+----
+-2147483648
+
+query T
+SELECT (-2147483648::apd(39,3))::text;
+----
+-2147483648.000
+
+query T
+SELECT (0::apd)::text;
+----
+0
+
+query T
+SELECT (0::apd(39,3))::text;
+----
+0.000
+
+## int8
+
+query T
+SELECT (1::int8::apd)::text;
+----
+1
+
+query T
+SELECT (-1::int8::apd(39,3))::text;
+----
+-1.000
+
+query T
+SELECT (9223372036854775807::apd)::text;
+----
+9223372036854775807
+
+query T
+SELECT (9223372036854775807::apd(39,3))::text;
+----
+9223372036854775807.000
+
+query T
+SELECT (-9223372036854775808::apd)::text;
+----
+-9223372036854775808
+
+query T
+SELECT (-9223372036854775808::apd(39,3))::text;
+----
+-9223372036854775808.000
+
+query T
+SELECT (0::int8::apd)::text;
+----
+0
+
+query T
+SELECT (0::int8::apd(39,3))::text;
+----
+0.000
