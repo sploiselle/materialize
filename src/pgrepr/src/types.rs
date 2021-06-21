@@ -112,7 +112,7 @@ impl Type {
             postgres_types::Type::INT8 => Some(Type::Int8),
             postgres_types::Type::INTERVAL => Some(Type::Interval),
             postgres_types::Type::JSONB => Some(Type::Jsonb),
-            postgres_types::Type::NUMERIC => Some(Type::Numeric),
+            postgres_types::Type::NUMERIC => Some(Type::APD),
             postgres_types::Type::OID => Some(Type::Oid),
             // TODO(petrosagg): char and bpchar values should not be stored as Text. see #6757
             postgres_types::Type::TEXT
@@ -171,7 +171,7 @@ impl Type {
             Type::Timestamp => &postgres_types::Type::TIMESTAMP,
             Type::TimestampTz => &postgres_types::Type::TIMESTAMPTZ,
             Type::Uuid => &postgres_types::Type::UUID,
-            Type::APD => &APD,
+            Type::APD => &postgres_types::Type::NUMERIC,
         }
     }
 

@@ -28,6 +28,7 @@ use std::iter;
 use std::mem;
 
 use anyhow::{anyhow, bail, ensure, Context};
+use dec::OrderedDecimal;
 use expr::LocalId;
 use itertools::Itertools;
 use ore::iter::IteratorExt;
@@ -44,7 +45,7 @@ use sql_parser::ast::{
 
 use ::expr::{GlobalId, Id, RowSetFinishing};
 use repr::adt::apd::APD_DATUM_MAX_PRECISION;
-use repr::adt::decimal::{Decimal, MAX_DECIMAL_PRECISION};
+use repr::adt::decimal::MAX_DECIMAL_PRECISION;
 use repr::{
     strconv, ColumnName, ColumnType, Datum, RelationDesc, RelationType, RowArena, ScalarType,
     Timestamp,
@@ -2968,24 +2969,38 @@ fn plan_case<'a>(
 fn plan_literal<'a>(l: &'a Value) -> Result<CoercibleScalarExpr, anyhow::Error> {
     let (datum, scalar_type) = match l {
         Value::Number(s) => {
-            let d: Decimal = s.parse()?;
-            if d.scale() == 0 {
-                let significand = d.significand();
-                if let Ok(n) = significand.try_into() {
-                    (Datum::Int32(n), ScalarType::Int32)
-                } else if let Ok(n) = significand.try_into() {
-                    (Datum::Int64(n), ScalarType::Int64)
-                } else {
-                    (
-                        Datum::from(significand),
-                        ScalarType::Decimal(MAX_DECIMAL_PRECISION, d.scale()),
-                    )
+            match strconv::parse_apd(s.as_str()) {
+                Ok(OrderedDecimal(d)) => {
+                    if !s.contains(&['E', '.'][..]) {
+                        // Maybe representable as an int?
+                        if let Ok(n) = d.try_into() {
+                            (Datum::Int32(n), ScalarType::Int32)
+                        } else if let Ok(n) = d.try_into() {
+                            (Datum::Int64(n), ScalarType::Int64)
+                        } else {
+                            (
+                                Datum::APD(OrderedDecimal(d)),
+                                ScalarType::APD { scale: None },
+                            )
+                        }
+                    } else {
+                        (
+                            Datum::APD(OrderedDecimal(d)),
+                            ScalarType::APD { scale: None },
+                        )
+                    }
                 }
-            } else {
-                (
-                    Datum::from(d.significand()),
-                    ScalarType::Decimal(MAX_DECIMAL_PRECISION, d.scale()),
-                )
+                Err(..) => {
+                    let f64_val = s.parse::<f64>()?;
+                    if f64_val.is_finite() {
+                        (Datum::from(f64_val), ScalarType::Float64)
+                    } else {
+                        bail!(
+                            "number {} exceeds min/max representation of all numeric types",
+                            s
+                        )
+                    }
+                }
             }
         }
         Value::HexString(_) => unsupported!(3114, "hex string literals"),
@@ -3096,12 +3111,9 @@ pub fn scalar_type_from_sql(
                         ScalarType::APD { scale }
                     }
                     ScalarType::Decimal(..) => {
-                        let (precision, scale) =
+                        let (_precision, scale) =
                             unwrap_numeric_typ_mod(typ_mod, MAX_DECIMAL_PRECISION, "numeric")?;
-                        ScalarType::Decimal(
-                            precision.unwrap_or(MAX_DECIMAL_PRECISION),
-                            scale.unwrap_or(0),
-                        )
+                        ScalarType::APD { scale }
                     }
                     ScalarType::String => {
                         // TODO(justin): we should look up in the catalog to see

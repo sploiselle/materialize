@@ -133,10 +133,8 @@ impl ToSql for Apd {
             0
         });
         out.put_u16(scale);
-        if !is_nan {
-            for digit in digits[d_i..].iter() {
-                out.put_u16(*digit);
-            }
+        for digit in digits[d_i..].iter() {
+            out.put_u16(*digit);
         }
 
         Ok(IsNull::No)
