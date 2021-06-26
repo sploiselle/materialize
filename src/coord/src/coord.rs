@@ -54,6 +54,7 @@ use futures::future::{self, FutureExt, TryFutureExt};
 use futures::stream::{self, StreamExt};
 use itertools::Itertools;
 use rand::Rng;
+use repr::adt::apd;
 use timely::communication::WorkerGuards;
 use timely::order::PartialOrder;
 use timely::progress::{Antichain, ChangeBatch, Timestamp as _};
@@ -3032,10 +3033,9 @@ impl Coordinator {
             if let MirScalarExpr::CallNullary(f @ NullaryFunc::MzLogicalTimestamp) = e {
                 observes_ts = true;
                 if let ExprPrepStyle::OneShot { logical_time } = style {
-                    *e = MirScalarExpr::literal_ok(
-                        Datum::from(i128::from(logical_time)),
-                        f.output_type().scalar_type,
-                    );
+                    let mut cx = apd::cx_datum();
+                    let ts = cx.from_u64(logical_time);
+                    *e = MirScalarExpr::literal_ok(Datum::from(ts), f.output_type().scalar_type);
                 }
             }
         });

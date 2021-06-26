@@ -18,7 +18,7 @@ use dataflow_types::PeekResponse;
 use expr::GlobalId;
 use ore::collections::CollectionExt;
 use ore::thread::JoinOnDropHandle;
-use repr::{ColumnType, Datum, Row, ScalarType};
+use repr::{ColumnType, Datum, Row};
 use sql::ast::{Raw, Statement};
 
 use crate::command::{
@@ -390,14 +390,6 @@ impl SessionClient {
                 Datum::Float32(n) => float_to_json(n.into_inner() as f64),
                 Datum::Float64(n) => float_to_json(n.into_inner()),
                 Datum::String(s) => serde_json::Value::String(s.to_string()),
-                Datum::Decimal(d) => serde_json::Value::String(if col_types.len() > idx {
-                    match col_types[idx].scalar_type {
-                        ScalarType::Decimal(_precision, scale) => d.with_scale(scale).to_string(),
-                        _ => datum.to_string(),
-                    }
-                } else {
-                    datum.to_string()
-                }),
                 Datum::List(list) => serde_json::Value::Array(
                     list.iter()
                         .map(|entry| datum_to_json(&entry, idx, col_types))

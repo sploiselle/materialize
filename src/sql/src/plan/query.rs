@@ -44,7 +44,7 @@ use sql_parser::ast::{
 };
 
 use ::expr::{GlobalId, Id, RowSetFinishing};
-use repr::adt::apd::APD_DATUM_MAX_PRECISION;
+use repr::adt::apd::{self, APD_DATUM_MAX_PRECISION};
 use repr::adt::decimal::MAX_DECIMAL_PRECISION;
 use repr::{
     strconv, ColumnName, ColumnType, Datum, RelationDesc, RelationType, RowArena, ScalarType,
@@ -766,10 +766,9 @@ pub fn eval_as_of<'a>(
     let evaled = ex.eval(&[], temp_storage)?;
 
     Ok(match ex.typ(desc.typ()).scalar_type {
-        ScalarType::Decimal(_, 0) => evaled.unwrap_decimal().as_i128().try_into()?,
-        ScalarType::Decimal(_, _) => {
-            bail!("decimal with fractional component is not a valid timestamp")
-        }
+        ScalarType::APD { .. } => apd::cx_datum()
+            .try_into_i128(evaled.unwrap_apd().0)?
+            .try_into()?,
         ScalarType::Int32 => evaled.unwrap_int32().try_into()?,
         ScalarType::Int64 => evaled.unwrap_int64().try_into()?,
         ScalarType::TimestampTz => evaled.unwrap_timestamptz().timestamp_millis().try_into()?,
@@ -2978,16 +2977,10 @@ fn plan_literal<'a>(l: &'a Value) -> Result<CoercibleScalarExpr, anyhow::Error> 
                         } else if let Ok(n) = d.try_into() {
                             (Datum::Int64(n), ScalarType::Int64)
                         } else {
-                            (
-                                Datum::APD(OrderedDecimal(d)),
-                                ScalarType::APD { scale: None },
-                            )
+                            (Datum::from(d), ScalarType::APD { scale: None })
                         }
                     } else {
-                        (
-                            Datum::APD(OrderedDecimal(d)),
-                            ScalarType::APD { scale: None },
-                        )
+                        (Datum::from(d), ScalarType::APD { scale: None })
                     }
                 }
                 Err(..) => {

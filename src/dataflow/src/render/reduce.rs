@@ -1415,10 +1415,6 @@ where
                         accum: (*f * float_scale) as i128,
                         non_nulls: 1,
                     },
-                    Datum::Decimal(d) => AccumInner::SimpleNumber {
-                        accum: d.as_i128(),
-                        non_nulls: 1,
-                    },
                     Datum::Null => AccumInner::SimpleNumber {
                         accum: 0,
                         non_nulls: 0,
@@ -1553,9 +1549,6 @@ where
                             (AggregateFunc::SumFloat64, AccumInner::SimpleNumber { accum, .. }) => {
                                 Datum::Float64(((*accum as f64) / float_scale).into())
                             }
-                            (AggregateFunc::SumDecimal, AccumInner::SimpleNumber { accum, .. }) => {
-                                Datum::from(*accum)
-                            }
                             (
                                 AggregateFunc::SumAPD,
                                 AccumInner::APD {
@@ -1582,13 +1575,16 @@ where
                                 } else if *nans > 0 || (pos_inf && neg_inf) {
                                     // NaNs are NaNs and cases where we've seen a
                                     // mixture of positive and negative infinities.
-                                    Datum::APD(OrderedDecimal(Apd::nan()))
+                                    Datum::from(Apd::nan())
                                 } else if pos_inf {
-                                    Datum::APD(OrderedDecimal(Apd::infinity()))
+                                    Datum::from(Apd::infinity())
                                 } else if neg_inf {
-                                    Datum::APD(OrderedDecimal(-Apd::infinity()))
+                                    let mut cx = apd::cx_datum();
+                                    let mut d = Apd::infinity();
+                                    cx.neg(&mut d);
+                                    Datum::from(d)
                                 } else {
-                                    Datum::APD(OrderedDecimal(d))
+                                    Datum::from(d)
                                 }
                             }
                             _ => panic!(
@@ -1650,7 +1646,6 @@ fn reduction_type(func: &AggregateFunc) -> ReductionType {
         | AggregateFunc::SumInt64
         | AggregateFunc::SumFloat32
         | AggregateFunc::SumFloat64
-        | AggregateFunc::SumDecimal
         | AggregateFunc::SumAPD
         | AggregateFunc::Count
         | AggregateFunc::Any
@@ -1661,7 +1656,6 @@ fn reduction_type(func: &AggregateFunc) -> ReductionType {
         | AggregateFunc::MaxInt64
         | AggregateFunc::MaxFloat32
         | AggregateFunc::MaxFloat64
-        | AggregateFunc::MaxDecimal
         | AggregateFunc::MaxBool
         | AggregateFunc::MaxString
         | AggregateFunc::MaxDate
@@ -1672,7 +1666,6 @@ fn reduction_type(func: &AggregateFunc) -> ReductionType {
         | AggregateFunc::MinInt64
         | AggregateFunc::MinFloat32
         | AggregateFunc::MinFloat64
-        | AggregateFunc::MinDecimal
         | AggregateFunc::MinBool
         | AggregateFunc::MinString
         | AggregateFunc::MinDate
@@ -1763,7 +1756,6 @@ pub mod monoids {
             | AggregateFunc::MaxInt64
             | AggregateFunc::MaxFloat32
             | AggregateFunc::MaxFloat64
-            | AggregateFunc::MaxDecimal
             | AggregateFunc::MaxBool
             | AggregateFunc::MaxString
             | AggregateFunc::MaxDate
@@ -1774,7 +1766,6 @@ pub mod monoids {
             | AggregateFunc::MinInt64
             | AggregateFunc::MinFloat32
             | AggregateFunc::MinFloat64
-            | AggregateFunc::MinDecimal
             | AggregateFunc::MinBool
             | AggregateFunc::MinString
             | AggregateFunc::MinDate
@@ -1784,7 +1775,6 @@ pub mod monoids {
             | AggregateFunc::SumInt64
             | AggregateFunc::SumFloat32
             | AggregateFunc::SumFloat64
-            | AggregateFunc::SumDecimal
             | AggregateFunc::SumAPD
             | AggregateFunc::Count
             | AggregateFunc::Any

@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use lowertest::MzEnumReflect;
 use ore::cast::CastFrom;
 use repr::adt::apd;
-use repr::adt::decimal::{Significand, MAX_DECIMAL_PRECISION};
 use repr::adt::regex::Regex as ReprRegex;
 use repr::{CachedRecordIter, ColumnType, Datum, Diff, RelationType, Row, RowArena, ScalarType};
 
@@ -91,18 +90,6 @@ where
         .into_iter()
         .filter(|d| !d.is_null())
         .map(|d| d.unwrap_ordered_float64())
-        .max();
-    Datum::from(x)
-}
-
-fn max_decimal<'a, I>(datums: I) -> Datum<'a>
-where
-    I: IntoIterator<Item = Datum<'a>>,
-{
-    let x: Option<Significand> = datums
-        .into_iter()
-        .filter(|d| !d.is_null())
-        .map(|d| d.unwrap_decimal())
         .max();
     Datum::from(x)
 }
@@ -229,18 +216,6 @@ where
     Datum::from(x)
 }
 
-fn min_decimal<'a, I>(datums: I) -> Datum<'a>
-where
-    I: IntoIterator<Item = Datum<'a>>,
-{
-    let x: Option<Significand> = datums
-        .into_iter()
-        .filter(|d| !d.is_null())
-        .map(|d| d.unwrap_decimal())
-        .min();
-    Datum::from(x)
-}
-
 fn min_bool<'a, I>(datums: I) -> Datum<'a>
 where
     I: IntoIterator<Item = Datum<'a>>,
@@ -355,19 +330,6 @@ where
     }
 }
 
-fn sum_decimal<'a, I>(datums: I) -> Datum<'a>
-where
-    I: IntoIterator<Item = Datum<'a>>,
-{
-    let mut datums = datums.into_iter().filter(|d| !d.is_null()).peekable();
-    if datums.peek().is_none() {
-        Datum::Null
-    } else {
-        let sum: Significand = datums.map(|d| d.unwrap_decimal()).sum();
-        Datum::from(sum)
-    }
-}
-
 fn sum_apd<'a, I>(datums: I) -> Datum<'a>
 where
     I: IntoIterator<Item = Datum<'a>>,
@@ -382,7 +344,7 @@ where
     } else {
         let mut cx = apd::cx_datum();
         let sum = cx.sum(datums.iter());
-        Datum::APD(OrderedDecimal(sum))
+        Datum::from(sum)
     }
 }
 
@@ -465,7 +427,6 @@ pub enum AggregateFunc {
     MaxInt64,
     MaxFloat32,
     MaxFloat64,
-    MaxDecimal,
     MaxBool,
     MaxString,
     MaxDate,
@@ -476,7 +437,6 @@ pub enum AggregateFunc {
     MinInt64,
     MinFloat32,
     MinFloat64,
-    MinDecimal,
     MinBool,
     MinString,
     MinDate,
@@ -486,7 +446,6 @@ pub enum AggregateFunc {
     SumInt64,
     SumFloat32,
     SumFloat64,
-    SumDecimal,
     SumAPD,
     Count,
     Any,
@@ -521,7 +480,6 @@ impl AggregateFunc {
             AggregateFunc::MaxInt64 => max_int64(datums),
             AggregateFunc::MaxFloat32 => max_float32(datums),
             AggregateFunc::MaxFloat64 => max_float64(datums),
-            AggregateFunc::MaxDecimal => max_decimal(datums),
             AggregateFunc::MaxBool => max_bool(datums),
             AggregateFunc::MaxString => max_string(datums),
             AggregateFunc::MaxDate => max_date(datums),
@@ -532,7 +490,6 @@ impl AggregateFunc {
             AggregateFunc::MinInt64 => min_int64(datums),
             AggregateFunc::MinFloat32 => min_float32(datums),
             AggregateFunc::MinFloat64 => min_float64(datums),
-            AggregateFunc::MinDecimal => min_decimal(datums),
             AggregateFunc::MinBool => min_bool(datums),
             AggregateFunc::MinString => min_string(datums),
             AggregateFunc::MinDate => min_date(datums),
@@ -542,7 +499,6 @@ impl AggregateFunc {
             AggregateFunc::SumInt64 => sum_int64(datums),
             AggregateFunc::SumFloat32 => sum_float32(datums),
             AggregateFunc::SumFloat64 => sum_float64(datums),
-            AggregateFunc::SumDecimal => sum_decimal(datums),
             AggregateFunc::SumAPD => sum_apd(datums),
             AggregateFunc::Count => count(datums),
             AggregateFunc::Any => any(datums),
@@ -589,7 +545,7 @@ impl AggregateFunc {
             AggregateFunc::JsonbAgg => ScalarType::Jsonb,
             AggregateFunc::JsonbObjectAgg => ScalarType::Jsonb,
             AggregateFunc::SumInt32 => ScalarType::Int64,
-            AggregateFunc::SumInt64 => ScalarType::Decimal(MAX_DECIMAL_PRECISION, 0),
+            AggregateFunc::SumInt64 => ScalarType::APD { scale: None },
             _ => input_type.scalar_type,
         };
         // Count never produces null, and other aggregations only produce
@@ -696,7 +652,6 @@ impl fmt::Display for AggregateFunc {
             AggregateFunc::MaxInt64 => f.write_str("max"),
             AggregateFunc::MaxFloat32 => f.write_str("max"),
             AggregateFunc::MaxFloat64 => f.write_str("max"),
-            AggregateFunc::MaxDecimal => f.write_str("max"),
             AggregateFunc::MaxBool => f.write_str("max"),
             AggregateFunc::MaxString => f.write_str("max"),
             AggregateFunc::MaxDate => f.write_str("max"),
@@ -707,7 +662,6 @@ impl fmt::Display for AggregateFunc {
             AggregateFunc::MinInt64 => f.write_str("min"),
             AggregateFunc::MinFloat32 => f.write_str("min"),
             AggregateFunc::MinFloat64 => f.write_str("min"),
-            AggregateFunc::MinDecimal => f.write_str("min"),
             AggregateFunc::MinBool => f.write_str("min"),
             AggregateFunc::MinString => f.write_str("min"),
             AggregateFunc::MinDate => f.write_str("min"),
@@ -717,7 +671,6 @@ impl fmt::Display for AggregateFunc {
             AggregateFunc::SumInt64 => f.write_str("sum"),
             AggregateFunc::SumFloat32 => f.write_str("sum"),
             AggregateFunc::SumFloat64 => f.write_str("sum"),
-            AggregateFunc::SumDecimal => f.write_str("sum"),
             AggregateFunc::SumAPD => f.write_str("sum"),
             AggregateFunc::Count => f.write_str("count"),
             AggregateFunc::Any => f.write_str("any"),

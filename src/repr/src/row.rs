@@ -26,32 +26,36 @@ use crate::adt::apd::Apd;
 use crate::adt::array::{
     Array, ArrayDimension, ArrayDimensions, InvalidArrayError, MAX_ARRAY_DIMENSIONS,
 };
-use crate::adt::decimal::Significand;
 use crate::adt::interval::Interval;
 use crate::Datum;
 use fmt::Debug;
 
 /// A packed representation for `Datum`s.
 ///
-/// `Datum` is easy to work with but very space inefficent. A `Datum::Int32(42)` is laid out in memory like this:
+/// `Datum` is easy to work with but very space inefficent. A `Datum::Int32(42)`
+/// is laid out in memory like this:
 ///
 ///   tag: 3
 ///   padding: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 ///   data: 0 0 0 42
 ///   padding: 0 0 0 0 0 0 0 0 0 0 0 0
 ///
-/// For a total of 32 bytes! The second set of padding is needed in case we were to write a `Datum::Decimal` into this location. The first set of padding is needed to align that hypothetical decimal to a 16 bytes boundary.
+/// For a total of 32 bytes! The second set of padding is needed in case we were
+/// to write a 16-byte datum into this location. The first set of padding is
+/// needed to align that hypothetical decimal to a 16 bytes boundary.
 ///
-/// A `Row` stores zero or more `Datum`s without any padding.
-/// We avoid the need for the first set of padding by only providing access to the `Datum`s via calls to `ptr::read_unaligned`, which on modern x86 is barely penalized.
-/// We avoid the need for the second set of padding by not providing mutable access to the `Datum`. Instead, `Row` is append-only.
+/// A `Row` stores zero or more `Datum`s without any padding. We avoid the need
+/// for the first set of padding by only providing access to the `Datum`s via
+/// calls to `ptr::read_unaligned`, which on modern x86 is barely penalized. We
+/// avoid the need for the second set of padding by not providing mutable access
+/// to the `Datum`. Instead, `Row` is append-only.
 ///
 /// A `Row` can be built from a collection of `Datum`s using `Row::pack`, but it
 /// is more efficient to use `Row::pack_slice` so that a right-sized allocation
 /// can be created. If that is not possible, consider using the "packer"
-/// pattern: allocate one row, pack into it, and then call [`Row::finish_and_reuse`]
-/// to receive a copy of that row, leaving behind the original allocation to
-/// pack future rows.
+/// pattern: allocate one row, pack into it, and then call
+/// [`Row::finish_and_reuse`] to receive a copy of that row, leaving behind the
+/// original allocation to pack future rows.
 ///
 /// Creating a row via [`Row::pack_slice`]:
 ///
@@ -192,7 +196,6 @@ enum Tag {
     Int64,
     Float32,
     Float64,
-    Decimal,
     Date,
     Time,
     Timestamp,
@@ -330,10 +333,6 @@ unsafe fn read_datum<'a>(data: &'a [u8], offset: &mut usize) -> Datum<'a> {
             let duration = read_copy::<i128>(data, offset);
             Datum::Interval(Interval { months, duration })
         }
-        Tag::Decimal => {
-            let s = read_copy::<Significand>(data, offset);
-            Datum::Decimal(s)
-        }
         Tag::BytesTiny
         | Tag::BytesShort
         | Tag::BytesLong
@@ -381,7 +380,7 @@ unsafe fn read_datum<'a>(data: &'a [u8], offset: &mut usize) -> Datum<'a> {
             let lsu_u8 = &data[*offset..(*offset + lsu_u8_len)];
             *offset += lsu_u8_len;
             let d = Apd::from_raw_parts(digits, exponent, bits, lsu_u8);
-            Datum::APD(OrderedDecimal(d))
+            Datum::from(d)
         }
     }
 }
@@ -492,10 +491,6 @@ fn push_datum<T: Bytes>(data: &mut T, datum: Datum) {
             push_copy!(data, i.months, i32);
             push_copy!(data, i.duration, i128);
         }
-        Datum::Decimal(s) => {
-            data.push(Tag::Decimal as u8);
-            push_copy!(data, s, Significand);
-        }
         Datum::Bytes(bytes) => {
             let tag = match bytes.len() {
                 0..=255 => Tag::BytesTiny,
@@ -601,7 +596,6 @@ pub fn datum_size(datum: &Datum) -> usize {
         Datum::Timestamp(_) => 1 + size_of::<NaiveDateTime>(),
         Datum::TimestampTz(_) => 1 + size_of::<DateTime<Utc>>(),
         Datum::Interval(_) => 1 + size_of::<i32>() + size_of::<i128>(),
-        Datum::Decimal(_) => 1 + size_of::<Significand>(),
         Datum::Bytes(bytes) => {
             // We use a variable length representation of slice length.
             let bytes_for_length = match bytes.len() {
@@ -1573,7 +1567,7 @@ mod tests {
             Datum::Int64(0),
             Datum::Float32(OrderedFloat(0.0)),
             Datum::Float64(OrderedFloat(0.0)),
-            Datum::Decimal(Significand::new(0)),
+            Datum::from(Apd::from(0)),
             Datum::Date(NaiveDate::from_ymd(1, 1, 1)),
             Datum::Timestamp(NaiveDateTime::from_timestamp(0, 0)),
             Datum::TimestampTz(DateTime::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc)),
