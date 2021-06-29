@@ -675,13 +675,6 @@ pub trait AvroDecode: Sized {
 
     fn scalar(self, _scalar: Scalar) -> Result<Self::Out, AvroError>;
 
-    fn decimal<'a, R: AvroRead>(
-        self,
-        _precision: usize,
-        _scale: usize,
-        _r: ValueOrReader<'a, &'a [u8], R>,
-    ) -> Result<Self::Out, AvroError>;
-
     fn apd<'a, R: AvroRead>(
         self,
         _precision: usize,
@@ -743,7 +736,7 @@ pub mod public_decoders {
                     Ok(out)
                 }
                 define_unexpected! {
-                    array, record, union_branch, map, enum_variant, decimal, apd, bytes, string, json, uuid, fixed
+                    array, record, union_branch, map, enum_variant, apd, bytes, string, json, uuid, fixed
                 }
             }
 
@@ -834,15 +827,6 @@ pub mod public_decoders {
             Ok((self.conv)(self.inner.scalar(scalar)?)?)
         }
 
-        fn decimal<'a, R: AvroRead>(
-            mut self,
-            precision: usize,
-            scale: usize,
-            r: ValueOrReader<'a, &'a [u8], R>,
-        ) -> Result<Self::Out, AvroError> {
-            Ok((self.conv)(self.inner.decimal(precision, scale, r)?)?)
-        }
-
         fn apd<'a, R: AvroRead>(
             mut self,
             precision: usize,
@@ -914,7 +898,7 @@ pub mod public_decoders {
             Ok(self.buf)
         }
         define_unexpected! {
-            record, union_branch, map, enum_variant, scalar, decimal, apd, bytes, string, json, uuid, fixed
+            record, union_branch, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
         }
     }
 
@@ -938,7 +922,7 @@ pub mod public_decoders {
             Ok(self.buf)
         }
         define_unexpected! {
-            record, union_branch, map, enum_variant, scalar, decimal, apd, bytes, string, json, uuid, fixed
+            record, union_branch, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
         }
     }
     impl<T: AvroDecodable> StatefulAvroDecodable for Vec<T> {
@@ -988,14 +972,6 @@ pub mod public_decoders {
         }
         fn scalar(self, _scalar: Scalar) -> Result<(), AvroError> {
             Ok(())
-        }
-        fn decimal<'a, R: AvroRead>(
-            self,
-            _precision: usize,
-            _scale: usize,
-            r: ValueOrReader<'a, &'a [u8], R>,
-        ) -> Result<(), AvroError> {
-            self.maybe_skip(r)
         }
         fn apd<'a, R: AvroRead>(
             self,
@@ -1101,27 +1077,6 @@ pub mod public_decoders {
         }
         fn scalar(self, scalar: Scalar) -> Result<Value, AvroError> {
             Ok(scalar.into())
-        }
-        fn decimal<'a, R: AvroRead>(
-            self,
-            precision: usize,
-            scale: usize,
-            r: ValueOrReader<'a, &'a [u8], R>,
-        ) -> Result<Value, AvroError> {
-            let unscaled = match r {
-                ValueOrReader::Value(buf) => buf.to_vec(),
-                ValueOrReader::Reader { len, r } => {
-                    let mut buf = vec![];
-                    buf.resize_with(len, Default::default);
-                    r.read_exact(&mut buf)?;
-                    buf
-                }
-            };
-            Ok(Value::Decimal(DecimalValue {
-                unscaled,
-                precision,
-                scale,
-            }))
         }
         fn apd<'a, R: AvroRead>(
             self,
@@ -1260,7 +1215,6 @@ pub fn give_value<D: AvroDecode>(d: D, v: &Value) -> Result<D::Out, AvroError> {
         Value::Timestamp(val) => d.scalar(Scalar::Timestamp(*val)),
         // The &[u8] parameter here (and elsewhere in this function) is arbitrary, but we have to put in something in order for the function
         // to type-check
-        Value::Decimal(val) => d.decimal::<&[u8]>(val.precision, val.scale, V(&val.unscaled)),
         Value::Apd(val) => d.apd::<&[u8]>(val.precision, val.scale, V(&val.unscaled)),
         Value::Bytes(val) => d.bytes::<&[u8]>(V(val)),
         Value::String(val) => d.string::<&[u8]>(V(val)),

@@ -133,8 +133,6 @@ pub enum Value {
     ///
     /// The value of the decimal can be computed as follows:
     /// <em>unscaled</em> × 10<sup>-<em>scale</em></sup>.
-    Decimal(DecimalValue),
-    /// A parallel numeric type powered by `rust-dec`.
     Apd(DecimalValue),
     /// A `bytes` Avro value.
     Bytes(Vec<u8>),
@@ -382,18 +380,6 @@ impl Value {
             (&Value::Date(_), SchemaPiece::Date) => true,
             (&Value::Timestamp(_), SchemaPiece::TimestampMicro) => true,
             (&Value::Timestamp(_), SchemaPiece::TimestampMilli) => true,
-            (
-                &Value::Decimal(DecimalValue {
-                    precision: vp,
-                    scale: vs,
-                    ..
-                }),
-                SchemaPiece::Decimal {
-                    precision: sp,
-                    scale: ss,
-                    fixed_size: _,
-                },
-            ) => vp == *sp && vs == *ss,
             (
                 &Value::Apd(DecimalValue {
                     precision: vp,
