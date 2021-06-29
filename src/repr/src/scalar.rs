@@ -667,7 +667,7 @@ pub enum ScalarType {
     /// must be less than or equal to the precision.
     ///
     /// [`MAX_DECIMAL_PRECISION`]: crate::adt::decimal::MAX_DECIMAL_PRECISION
-    Decimal(u8, u8),
+    APD { scale: Option<u8> },
     /// The type of [`Datum::Date`].
     Date,
     /// The type of [`Datum::Time`].
@@ -728,9 +728,6 @@ pub enum ScalarType {
     Map {
         value_type: Box<ScalarType>,
         custom_oid: Option<u32>,
-    },
-    APD {
-        scale: Option<u8>,
     },
 }
 
@@ -868,8 +865,6 @@ impl PartialEq for ScalarType {
     fn eq(&self, other: &Self) -> bool {
         use ScalarType::*;
         match (self, other) {
-            (Decimal(_, s1), Decimal(_, s2)) => s1 == s2,
-
             (Bool, Bool)
             | (Int32, Int32)
             | (Int64, Int64)
@@ -926,7 +921,6 @@ impl PartialEq for ScalarType {
             | (Int64, _)
             | (Float32, _)
             | (Float64, _)
-            | (Decimal(_, _), _)
             | (Date, _)
             | (Time, _)
             | (Timestamp, _)
@@ -955,12 +949,7 @@ impl Hash for ScalarType {
             Int64 => state.write_u8(2),
             Float32 => state.write_u8(3),
             Float64 => state.write_u8(4),
-            Decimal(_, s) => {
-                // TODO(benesch): we should properly implement decimal precision
-                // tracking, or just remove it.
-                state.write_u8(5);
-                state.write_u8(*s);
-            }
+            APD { .. } => state.write_u8(5),
             Date => state.write_u8(6),
             Time => state.write_u8(7),
             Timestamp => state.write_u8(8),
@@ -1001,7 +990,6 @@ impl Hash for ScalarType {
                 value_type.hash(state);
                 custom_oid.hash(state);
             }
-            APD { .. } => state.write_u8(19),
         }
     }
 }

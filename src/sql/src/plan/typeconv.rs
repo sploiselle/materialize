@@ -291,8 +291,8 @@ lazy_static! {
                 let scale = to_type.unwrap_apd_scale().unwrap();
                 Some(move |e: HirScalarExpr|e.call_unary(UnaryFunc::RescaleAPD(scale)))
             }),
-            (APD, Float32) => Assignment: CastAPDToFloat32,
-            (APD, Float64) => Assignment: CastAPDToFloat64,
+            (APD, Float32) => Implicit: CastAPDToFloat32,
+            (APD, Float64) => Implicit: CastAPDToFloat64,
             (APD, Int32) => Assignment: CastAPDToInt32,
             (APD, Int64) => Assignment: CastAPDToInt64,
             (APD, String) => Assignment: CastAPDToString
@@ -397,7 +397,7 @@ pub fn to_jsonb(ecx: &ExprContext, expr: HirScalarExpr) -> HirScalarExpr {
         Int32 => plan_cast("to_jsonb", ecx, CastContext::Explicit, expr, &Int64)
             .expect("cast known to exist")
             .call_unary(UnaryFunc::CastJsonbOrNullToJsonb),
-        Float32 | Decimal(..) => plan_cast("to_jsonb", ecx, CastContext::Explicit, expr, &Float64)
+        Float32 | APD { .. } => plan_cast("to_jsonb", ecx, CastContext::Explicit, expr, &Float64)
             .expect("cast known to exist")
             .call_unary(UnaryFunc::CastJsonbOrNullToJsonb),
         Record { fields, .. } => {
@@ -432,15 +432,14 @@ fn guess_compatible_cast_type(types: &[ScalarType]) -> Option<&ScalarType> {
         // [`TypeCategory::Numeric`]
         ScalarType::Int32 => 0,
         ScalarType::Int64 => 1,
-        ScalarType::Decimal(_, _) => 2,
-        ScalarType::APD { scale: None } => 3,
-        ScalarType::Float32 => 4,
-        ScalarType::Float64 => 5,
+        ScalarType::APD { scale: None } => 2,
+        ScalarType::Float32 => 3,
+        ScalarType::Float64 => 4,
         // [`TypeCategory::DateTime`]
-        ScalarType::Date => 6,
-        ScalarType::Timestamp => 7,
-        ScalarType::TimestampTz => 8,
-        _ => 9,
+        ScalarType::Date => 5,
+        ScalarType::Timestamp => 6,
+        ScalarType::TimestampTz => 7,
+        _ => 8,
     })
 }
 
@@ -483,22 +482,7 @@ pub fn guess_best_common_type(
     }
 
     // Determine best cast type among known types.
-    if let Some(btt) = guess_compatible_cast_type(&known_types) {
-        if let ScalarType::Decimal(_, _) = btt {
-            // Determine best decimal scale (i.e. largest).
-            let mut max_s = 0;
-            for t in known_types {
-                if let ScalarType::Decimal(_, s) = t {
-                    max_s = std::cmp::max(s, max_s);
-                }
-            }
-            return Some(ScalarType::Decimal(38, max_s));
-        } else {
-            return Some(btt.clone());
-        }
-    }
-
-    None
+    guess_compatible_cast_type(&known_types).map(|t| t.clone())
 }
 
 pub fn plan_coerce<'a>(

@@ -22,17 +22,15 @@ use uuid::Uuid;
 use ore::fmt::FormatBuffer;
 use repr::adt::apd::{self as adt_apd};
 use repr::adt::array::ArrayDimension;
-use repr::adt::decimal::MAX_DECIMAL_PRECISION;
 use repr::adt::jsonb::JsonbRef;
 use repr::strconv::{self, Nestable};
 use repr::{ColumnName, Datum, RelationType, Row, RowArena, ScalarType};
 
-use crate::{Apd, Format, Interval, Jsonb, Numeric, Type};
+use crate::{Apd, Format, Interval, Jsonb, Type};
 
 pub mod apd;
 pub mod interval;
 pub mod jsonb;
-pub mod numeric;
 pub mod record;
 
 /// A PostgreSQL datum.
@@ -68,7 +66,7 @@ pub enum Value {
     /// A map of string keys and homogeneous values.
     Map(BTreeMap<String, Option<Value>>),
     /// An arbitrary precision number.
-    Numeric(Numeric),
+    Apd(Apd),
     /// A sequence of heterogeneous values.
     Record(Vec<Option<Value>>),
     /// A time.
@@ -81,8 +79,6 @@ pub enum Value {
     Text(String),
     /// A universally unique identifier.
     Uuid(Uuid),
-    /// Refactored numeric using `rust-dec`.
-    Apd(Apd),
 }
 
 impl Value {
@@ -154,10 +150,6 @@ impl Value {
 
     /// Converts a Materialize datum and type from this value.
     ///
-    /// The conversion happens in the obvious manner, except that a
-    /// `Value::Numeric`'s scale will be recorded in the returned scalar type,
-    /// not the datum.
-    ///
     /// To construct a null datum, see the [`null_datum`] function.
     pub fn into_datum<'a>(self, buf: &'a RowArena, typ: &Type) -> (Datum<'a>, ScalarType) {
         match self {
@@ -222,10 +214,6 @@ impl Value {
                     },
                 )
             }
-            Value::Numeric(d) => (
-                Datum::from(d.0.significand()),
-                ScalarType::Decimal(MAX_DECIMAL_PRECISION, d.0.scale()),
-            ),
             Value::Record(_) => {
                 // This situation is handled gracefully by Value::decode; if we
                 // wind up here it's a programming error.
@@ -287,7 +275,6 @@ impl Value {
                 None => buf.write_null(),
                 Some(elem) => elem.encode_text(buf.nonnull_buffer()),
             }),
-            Value::Numeric(n) => strconv::format_decimal(buf, &n.0),
             Value::Record(elems) => strconv::format_record(buf, elems, |buf, elem| match elem {
                 None => buf.write_null(),
                 Some(elem) => elem.encode_text(buf.nonnull_buffer()),
@@ -343,7 +330,6 @@ impl Value {
                 self.encode_text(buf);
                 Ok(postgres_types::IsNull::No)
             }
-            Value::Numeric(n) => n.to_sql(&PgType::NUMERIC, buf),
             Value::Record(fields) => {
                 let nfields = pg_len("record field length", fields.len())?;
                 buf.put_i32(nfields);
@@ -410,7 +396,7 @@ impl Value {
                 matches!(**value_type, Type::Map { .. }),
                 |elem_text| Value::decode_text(value_type, elem_text.as_bytes()).map(Some),
             )?),
-            Type::Numeric => Value::Numeric(Numeric(strconv::parse_decimal(raw)?)),
+            Type::Numeric | Type::APD => Value::Apd(Apd(strconv::parse_apd(raw)?)),
             Type::Record(_) => {
                 return Err("input of anonymous composite types is not implemented".into())
             }
@@ -419,7 +405,6 @@ impl Value {
             Type::Timestamp => Value::Timestamp(strconv::parse_timestamp(raw)?),
             Type::TimestampTz => Value::TimestampTz(strconv::parse_timestamptz(raw)?),
             Type::Uuid => Value::Uuid(Uuid::parse_str(raw)?),
-            Type::APD => Value::Apd(Apd(strconv::parse_apd(raw)?)),
         })
     }
 
@@ -439,14 +424,13 @@ impl Value {
             Type::Jsonb => Jsonb::from_sql(ty.inner(), raw).map(Value::Jsonb),
             Type::List(_) => Value::decode_text(ty, raw), // just using the text encoding for now
             Type::Map { .. } => Value::decode_text(ty, raw), // just using the text encoding for now
-            Type::Numeric => Numeric::from_sql(ty.inner(), raw).map(Value::Numeric),
             Type::Record(_) => Err("input of anonymous composite types is not implemented".into()),
             Type::Text => String::from_sql(ty.inner(), raw).map(Value::Text),
             Type::Time => NaiveTime::from_sql(ty.inner(), raw).map(Value::Time),
             Type::Timestamp => NaiveDateTime::from_sql(ty.inner(), raw).map(Value::Timestamp),
             Type::TimestampTz => DateTime::<Utc>::from_sql(ty.inner(), raw).map(Value::TimestampTz),
             Type::Uuid => Uuid::from_sql(ty.inner(), raw).map(Value::Uuid),
-            Type::APD => Apd::from_sql(ty.inner(), raw).map(Value::Apd),
+            Type::Numeric | Type::APD => Apd::from_sql(ty.inner(), raw).map(Value::Apd),
         }
     }
 }
@@ -497,7 +481,7 @@ pub fn null_datum(ty: &Type) -> (Datum<'static>, ScalarType) {
                 custom_oid: None,
             }
         }
-        Type::Numeric => ScalarType::Decimal(MAX_DECIMAL_PRECISION, 0),
+        Type::Numeric => ScalarType::APD { scale: None },
         Type::APD => ScalarType::APD { scale: None },
         Type::Oid => ScalarType::Oid,
         Type::Text => ScalarType::String,

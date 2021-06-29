@@ -268,7 +268,7 @@ impl Type {
                 value_type: Box::new(value_type.to_scalar_type_lossy()),
                 custom_oid: None,
             },
-            Type::Numeric => ScalarType::Decimal(0, 0),
+            Type::Numeric => ScalarType::APD { scale: None },
             Type::Oid => ScalarType::Oid,
             Type::Record(_) => ScalarType::Record {
                 fields: vec![],
@@ -292,7 +292,6 @@ impl From<&ScalarType> for Type {
             ScalarType::Bool => Type::Bool,
             ScalarType::Bytes => Type::Bytea,
             ScalarType::Date => Type::Date,
-            ScalarType::Decimal(_, _) => Type::Numeric,
             ScalarType::Float64 => Type::Float8,
             ScalarType::Float32 => Type::Float4,
             ScalarType::Int32 => Type::Int4,

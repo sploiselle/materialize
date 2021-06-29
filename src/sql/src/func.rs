@@ -96,8 +96,7 @@ impl TypeCategory {
             | ScalarType::Time
             | ScalarType::Timestamp
             | ScalarType::TimestampTz => Self::DateTime,
-            ScalarType::Decimal(..)
-            | ScalarType::Float32
+            ScalarType::Float32
             | ScalarType::Float64
             | ScalarType::Int32
             | ScalarType::Int64
@@ -119,7 +118,6 @@ impl TypeCategory {
             | ParamType::ListElementAny
             | ParamType::NonVecAny
             | ParamType::MapAny => Self::Pseudo,
-            ParamType::DecimalAny => Self::Numeric,
             ParamType::Plain(t) => Self::from_type(t),
         }
     }
@@ -373,13 +371,6 @@ impl ParamList {
 
         for (i, typ) in typs.iter().enumerate() {
             let param = &self[i];
-
-            // Require explicitly cast Decimal values to prevent confusion
-            // w/ current apd impls
-            if param == &ParamType::DecimalAny && !matches!(typ, Some(ScalarType::Decimal(..))) {
-                return false;
-            }
-
             if let Some(typ) = typ {
                 // Ensures either `typ` can at least be implicitly cast to a
                 // type `param` accepts. Implicit in this check is that unknown
@@ -504,9 +495,7 @@ impl ParamList {
     /// type consistency.
     fn resolve_polymorphic_types(&self, typs: &[Option<ScalarType>]) -> Option<ScalarType> {
         // Determines if types have the same [`ScalarBaseType`], and if complex
-        // types' elements do, as well. This function's primary use is allowing
-        // matches between `ScalarType::Decimal` values with different scales,
-        // and doing so for complex objects that embed them, as well.
+        // types' elements do, as well.
         fn complex_base_eq(l: &ScalarType, r: &ScalarType) -> bool {
             match (l, r) {
                 (ScalarType::Array(l), ScalarType::Array(r))
@@ -522,52 +511,6 @@ impl ParamList {
                     complex_base_eq(l, r)
                 }
                 (l, r) => ScalarBaseType::from(l) == ScalarBaseType::from(r),
-            }
-        }
-
-        // Returns a commmon form of `self` and `other` using the "greatest
-        // common" `ScalarType::Decimal`, or `None` if one does not exist.
-        //
-        // This computation includes complex types such as lists whose element
-        // types are `ScalarType::Decimal`.
-        //
-        // This is necesssary because in PostgreSQL, the numeric type does not
-        // preserve scale information, so polymorphic type resolution will
-        // always treat two numeric types as equivalent. To match this behavior
-        // in Materialize, we special-case equality here so that we can consider
-        // decimals with different scales to be equivalent and resolve the
-        // polymorphic constraint to the decimal type with the larger scale.
-        fn find_greatest_common_decimal(l: &ScalarType, r: &ScalarType) -> Option<ScalarType> {
-            match (l, r) {
-                (ScalarType::Decimal(p1, s1), ScalarType::Decimal(p2, s2)) => Some(
-                    ScalarType::Decimal(std::cmp::max(*p1, *p2), std::cmp::max(*s1, *s2)),
-                ),
-                (ScalarType::Array(l), ScalarType::Array(r)) => {
-                    let common = find_greatest_common_decimal(l, r)?;
-                    Some(ScalarType::Array(Box::new(common)))
-                }
-                (
-                    ScalarType::List {
-                        element_type: l, ..
-                    },
-                    ScalarType::List {
-                        element_type: r, ..
-                    },
-                ) => {
-                    let common = find_greatest_common_decimal(l, r)?;
-                    Some(ScalarType::List {
-                        element_type: Box::new(common),
-                        custom_oid: None,
-                    })
-                }
-                (ScalarType::Map { value_type: l, .. }, ScalarType::Map { value_type: r, .. }) => {
-                    let common = find_greatest_common_decimal(l, r)?;
-                    Some(ScalarType::Map {
-                        value_type: Box::new(common),
-                        custom_oid: None,
-                    })
-                }
-                _ => None,
             }
         }
 
@@ -613,15 +556,6 @@ impl ParamList {
                         constrained_type = Some(typ.clone());
                         custom_oid_lock = true;
                         element_lock = true;
-                    } else if !element_lock {
-                        if let Some(d) = find_greatest_common_decimal(typ, constrained) {
-                            // `d` should never be a custom type because it is a
-                            // system-generated type. If users want to control
-                            // the resultant type's OID, they can provide
-                            // explicit casts to the desired OID.
-                            assert!(!d.is_custom_type());
-                            *constrained = d;
-                        }
                     }
                 }
                 (ParamType::ListElementAny, Some(t), None) => {
@@ -644,19 +578,6 @@ impl ParamList {
                             element_type: Box::new(t.clone()),
                         });
                         element_lock = true;
-                    } else if !element_lock {
-                        if let Some(d) = find_greatest_common_decimal(t, &constrained_element_type)
-                        {
-                            // `d` should never be a custom type because it is a
-                            // system-generated type. If users want to control
-                            // the resultant type's OID, they can provide
-                            // explicit casts to the desired OID.
-                            assert!(!d.is_custom_type());
-                            *constrained_list = ScalarType::List {
-                                custom_oid: None,
-                                element_type: Box::new(d),
-                            };
-                        }
                     }
                 }
                 (ParamType::NonVecAny, Some(t), None) => {
@@ -724,12 +645,6 @@ impl From<Vec<ParamType>> for ParamList {
 pub enum ParamType {
     /// A pseudotype permitting any type.
     Any,
-    /// A special, Materialize-specific parameter type permitting a decimal of
-    /// any precision and scale. Note that while `DecimalAny` matches the
-    /// conceptual definition of the word "pseudotype", it does not match the
-    /// PostgreSQL definition, as parameters of type `DecimalAny` are considered
-    /// to exactly match arguments of decimal type.
-    DecimalAny,
     /// A polymorphic pseudotype permitting any array type.  For more details,
     /// see [`ParamList::resolve_polymorphic_types`].
     ArrayAny,
@@ -764,9 +679,6 @@ impl ParamType {
             Any | ListElementAny => true,
             NonVecAny => !t.is_vec(),
             MapAny => matches!(t, Map { .. }),
-            DecimalAny => {
-                typeconv::can_cast(ecx, CastContext::Implicit, t, &ScalarType::Decimal(0, 0))
-            }
             Plain(to) => typeconv::can_cast(ecx, CastContext::Implicit, t, to),
         }
     }
@@ -794,7 +706,7 @@ impl ParamType {
         use ParamType::*;
         match self {
             ArrayAny | ListAny | MapAny | ListElementAny | NonVecAny => true,
-            Any | DecimalAny | Plain(_) => false,
+            Any | Plain(_) => false,
         }
     }
 
@@ -813,7 +725,6 @@ impl ParamType {
             },
             ParamType::Any => postgres_types::Type::ANY.oid(),
             ParamType::ArrayAny => postgres_types::Type::ANYARRAY.oid(),
-            ParamType::DecimalAny => postgres_types::Type::NUMERIC.oid(),
             ParamType::ListAny => pgrepr::LIST.oid(),
             ParamType::ListElementAny => postgres_types::Type::ANYELEMENT.oid(),
             ParamType::MapAny => pgrepr::MAP.oid(),
@@ -826,9 +737,7 @@ impl PartialEq<ScalarType> for ParamType {
     fn eq(&self, other: &ScalarType) -> bool {
         match self {
             ParamType::Plain(s) => s == other,
-            ParamType::DecimalAny => matches!(other, ScalarType::Decimal(_, _)),
-            // All other types are pseudotypes, which do not equal concrete
-            // types.
+            // Pseudotypes never equal concrete types
             _ => false,
         }
     }
@@ -1173,17 +1082,6 @@ fn coerce_args_to_types(
                 assert!(!ty.is_vec());
                 do_convert(arg, &ty)?
             }
-
-            // Arbitrary decimal parameter. Converts to decimal but suppresses
-            // decimal -> decimal casts, to avoid casting to the default scale
-            // of 0.
-            ParamType::DecimalAny => match (arg, &types[i]) {
-                (CoercibleScalarExpr::Coerced(arg), Some(ScalarType::Decimal(_, _))) => arg,
-                (arg, _) => {
-                    let ty = ScalarType::Decimal(0, 0);
-                    do_convert(arg, &ty)?
-                }
-            },
 
             // Special "any" psuedotype. Per PostgreSQL, uncoerced literals
             // are accepted, but uncoerced parameters are rejected.
@@ -2035,7 +1933,7 @@ lazy_static! {
                 params!(Int32) => Operation::unary(|ecx, e| {
                       typeconv::plan_cast(
                           "internal.avg_promotion", ecx, CastContext::Explicit,
-                          e, &ScalarType::Decimal(10, 0),
+                          e, &ScalarType::APD{scale: None},
                       )
                 }), oid::FUNC_MZ_AVG_PROMOTION_I32_OID;
             },
@@ -2388,8 +2286,6 @@ lazy_static! {
                 params!(MapAny, Plain(Array(Box::new(String)))) => MapContainsAnyKeys, oid::OP_CONTAINS_ANY_KEYS_MAP_OID;
             },
             // COMPARISON OPS
-            // n.b. Decimal impls are separated from other types because they
-            // require a function pointer, which you cannot dynamically generate.
             "<" => Scalar {
                 params!(APD{scale:None}, APD{scale:None}) => BinaryFunc::Lt, 17540;
                 params!(Bool, Bool) => BinaryFunc::Lt, 58;
