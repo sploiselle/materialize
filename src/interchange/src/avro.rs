@@ -52,7 +52,7 @@ mod tests {
     use std::fs::File;
 
     use mz_avro::types::{DecimalValue, Value};
-    use repr::adt::apd;
+    use repr::adt::numeric;
     use repr::{ColumnName, ColumnType, Datum, RelationDesc, ScalarType};
 
     use super::*;
@@ -127,8 +127,8 @@ mod tests {
                 Value::Timestamp(date_time),
             ),
             (
-                ScalarType::APD { scale: Some(1) },
-                Datum::from(apd::Apd::from(1)),
+                ScalarType::Numeric { scale: Some(1) },
+                Datum::from(numeric::Numeric::from(1)),
                 Value::Apd(DecimalValue {
                     unscaled: bytes.clone(),
                     precision: 39,
@@ -137,7 +137,7 @@ mod tests {
             ),
             (
                 ScalarType::APD { scale: None },
-                Datum::from(apd::Apd::from(1)),
+                Datum::from(numeric::Numeric::from(1)),
                 Value::Apd(DecimalValue {
                     // equivalent to 1E39
                     unscaled: vec![

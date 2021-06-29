@@ -176,7 +176,7 @@ impl AvroDecode for Decoder {
         }
     }
     define_unexpected! {
-        record, array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        record, array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 

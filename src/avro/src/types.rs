@@ -133,7 +133,7 @@ pub enum Value {
     ///
     /// The value of the decimal can be computed as follows:
     /// <em>unscaled</em> × 10<sup>-<em>scale</em></sup>.
-    Apd(DecimalValue),
+    Numeric(DecimalValue),
     /// A `bytes` Avro value.
     Bytes(Vec<u8>),
     /// A `string` Avro value.
@@ -381,7 +381,7 @@ impl Value {
             (&Value::Timestamp(_), SchemaPiece::TimestampMicro) => true,
             (&Value::Timestamp(_), SchemaPiece::TimestampMilli) => true,
             (
-                &Value::Apd(DecimalValue {
+                &Value::Numeric(DecimalValue {
                     precision: vp,
                     scale: vs,
                     ..
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn validate_decimal() {
-        assert!(Value::Apd(DecimalValue {
+        assert!(Value::Numeric(DecimalValue {
             unscaled: vec![7],
             precision: 12,
             scale: 5
@@ -644,7 +644,7 @@ mod tests {
             .top_node()
         ));
 
-        assert!(!Value::Apd(DecimalValue {
+        assert!(!Value::Numeric(DecimalValue {
             unscaled: vec![7],
             precision: 13,
             scale: 5

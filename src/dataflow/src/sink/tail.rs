@@ -18,7 +18,7 @@ use timely::dataflow::{Scope, Stream};
 
 use dataflow_types::{SinkAsOf, TailSinkConnector};
 use expr::GlobalId;
-use repr::adt::apd;
+use repr::adt::numeric;
 use repr::{Datum, Diff, Row, Timestamp};
 
 pub fn tail<G>(
@@ -77,7 +77,7 @@ pub fn tail<G>(
                     // batch. All of the batches might have zero rows, so we do not depend on
                     // results at all. Another benefit of using upper (instead of the largest row
                     // time) is that the batch's upper may be larger than the row time.
-                    packer.push(Datum::from(apd::Apd::from(upper)));
+                    packer.push(Datum::from(numeric::Numeric::from(upper)));
                     packer.push(Datum::True);
                     // Fill in the diff column and all table columns with NULL.
                     for _ in 0..(connector.object_columns + 1) {

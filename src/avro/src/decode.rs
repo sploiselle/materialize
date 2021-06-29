@@ -586,18 +586,8 @@ macro_rules! define_unexpected {
             Err($crate::error::Error::Decode($crate::error::DecodeError::UnexpectedScalar))
         }
     };
-    (decimal) => {
-        fn decimal<'avro_macro_lifetime, R: AvroRead>(
-            self,
-            _precision: usize,
-            _scale: usize,
-            _r: $crate::ValueOrReader<'avro_macro_lifetime, &'avro_macro_lifetime [u8], R>,
-        ) -> Result<Self::Out, $crate::error::Error> {
-            Err($crate::error::Error::Decode($crate::error::DecodeError::UnexpectedDecimal))
-        }
-    };
-    (apd) => {
-        fn apd<'avro_macro_lifetime, R: AvroRead>(
+    (numeric) => {
+        fn numeric<'avro_macro_lifetime, R: AvroRead>(
             self,
             _precision: usize,
             _scale: usize,
@@ -675,7 +665,7 @@ pub trait AvroDecode: Sized {
 
     fn scalar(self, _scalar: Scalar) -> Result<Self::Out, AvroError>;
 
-    fn apd<'a, R: AvroRead>(
+    fn numeric<'a, R: AvroRead>(
         self,
         _precision: usize,
         _scale: usize,
@@ -736,7 +726,7 @@ pub mod public_decoders {
                     Ok(out)
                 }
                 define_unexpected! {
-                    array, record, union_branch, map, enum_variant, apd, bytes, string, json, uuid, fixed
+                    array, record, union_branch, map, enum_variant, numeric, bytes, string, json, uuid, fixed
                 }
             }
 
@@ -827,13 +817,13 @@ pub mod public_decoders {
             Ok((self.conv)(self.inner.scalar(scalar)?)?)
         }
 
-        fn apd<'a, R: AvroRead>(
+        fn numeric<'a, R: AvroRead>(
             mut self,
             precision: usize,
             scale: usize,
             r: ValueOrReader<'a, &'a [u8], R>,
         ) -> Result<Self::Out, AvroError> {
-            Ok((self.conv)(self.inner.apd(precision, scale, r)?)?)
+            Ok((self.conv)(self.inner.numeric(precision, scale, r)?)?)
         }
 
         fn bytes<'a, R: AvroRead>(
@@ -898,7 +888,7 @@ pub mod public_decoders {
             Ok(self.buf)
         }
         define_unexpected! {
-            record, union_branch, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+            record, union_branch, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
         }
     }
 
@@ -922,7 +912,7 @@ pub mod public_decoders {
             Ok(self.buf)
         }
         define_unexpected! {
-            record, union_branch, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+            record, union_branch, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
         }
     }
     impl<T: AvroDecodable> StatefulAvroDecodable for Vec<T> {
@@ -973,7 +963,7 @@ pub mod public_decoders {
         fn scalar(self, _scalar: Scalar) -> Result<(), AvroError> {
             Ok(())
         }
-        fn apd<'a, R: AvroRead>(
+        fn numeric<'a, R: AvroRead>(
             self,
             _precision: usize,
             _scale: usize,
@@ -1078,7 +1068,7 @@ pub mod public_decoders {
         fn scalar(self, scalar: Scalar) -> Result<Value, AvroError> {
             Ok(scalar.into())
         }
-        fn apd<'a, R: AvroRead>(
+        fn numeric<'a, R: AvroRead>(
             self,
             precision: usize,
             scale: usize,
@@ -1093,7 +1083,7 @@ pub mod public_decoders {
                     buf
                 }
             };
-            Ok(Value::Apd(DecimalValue {
+            Ok(Value::Numeric(DecimalValue {
                 unscaled,
                 precision,
                 scale,
@@ -1215,7 +1205,7 @@ pub fn give_value<D: AvroDecode>(d: D, v: &Value) -> Result<D::Out, AvroError> {
         Value::Timestamp(val) => d.scalar(Scalar::Timestamp(*val)),
         // The &[u8] parameter here (and elsewhere in this function) is arbitrary, but we have to put in something in order for the function
         // to type-check
-        Value::Apd(val) => d.apd::<&[u8]>(val.precision, val.scale, V(&val.unscaled)),
+        Value::Numeric(val) => d.numeric::<&[u8]>(val.precision, val.scale, V(&val.unscaled)),
         Value::Bytes(val) => d.bytes::<&[u8]>(V(val)),
         Value::String(val) => d.string::<&[u8]>(V(val)),
         Value::Fixed(_len, val) => d.fixed::<&[u8]>(V(val)),
@@ -1322,7 +1312,7 @@ impl<'a> AvroDeserializer for GeneralDeserializer<'a> {
                 fixed_size,
             } => {
                 let len = fixed_size.map(Ok).unwrap_or_else(|| decode_len(r))?;
-                d.apd(*precision, *scale, Reader { len, r })
+                d.numeric(*precision, *scale, Reader { len, r })
             }
             SchemaPiece::Bytes => {
                 let len = decode_len(r)?;

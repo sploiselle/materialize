@@ -103,7 +103,7 @@ impl<'a> AvroDecode for AvroDebeziumDecoder<'a> {
         Ok(coords)
     }
     define_unexpected! {
-        union_branch, array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        union_branch, array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 
@@ -214,7 +214,7 @@ impl AvroDecode for AvroDbzSnapshotDecoder {
         }))
     }
     define_unexpected! {
-        record, array, map, enum_variant, apd, bytes, json, uuid, fixed
+        record, array, map, enum_variant, numeric, bytes, json, uuid, fixed
     }
 }
 
@@ -274,7 +274,7 @@ impl AvroDecode for DebeziumTransactionDecoder {
         }
     }
     define_unexpected! {
-        array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 
@@ -435,7 +435,7 @@ impl<'a> AvroDecode for DebeziumSourceDecoder<'a> {
         Ok(DebeziumSourceCoordinates { snapshot, row })
     }
     define_unexpected! {
-        union_branch, array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        union_branch, array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 

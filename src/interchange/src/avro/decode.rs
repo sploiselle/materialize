@@ -24,8 +24,8 @@ use mz_avro::{
     AvroRead, AvroRecordAccess, GeneralDeserializer, StatefulAvroDecodable, ValueDecoder,
     ValueOrReader,
 };
-use repr::adt::apd;
 use repr::adt::jsonb::JsonbPacker;
+use repr::adt::numeric;
 use repr::{Datum, Row};
 
 use super::envelope_debezium::DebeziumSourceCoordinates;
@@ -245,7 +245,7 @@ impl<'a> AvroDecode for AvroStringDecoder<'a> {
         Ok(())
     }
     define_unexpected! {
-        record, union_branch, array, map, enum_variant, scalar, apd, bytes, json, uuid, fixed
+        record, union_branch, array, map, enum_variant, scalar, numeric, bytes, json, uuid, fixed
     }
 }
 
@@ -278,7 +278,7 @@ impl<'a> AvroDecode for OptionalRecordDecoder<'a> {
         }
     }
     define_unexpected! {
-        record, array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        record, array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 
@@ -304,7 +304,7 @@ impl AvroDecode for RowDecoder {
         Ok(RowWrapper(row))
     }
     define_unexpected! {
-        union_branch, array, map, enum_variant, scalar, apd, bytes, string, json, uuid, fixed
+        union_branch, array, map, enum_variant, scalar, numeric, bytes, string, json, uuid, fixed
     }
 }
 
@@ -450,7 +450,7 @@ impl<'a> AvroDecode for AvroFlatDecoder<'a> {
     }
 
     #[inline]
-    fn apd<'b, R: AvroRead>(
+    fn numeric<'b, R: AvroRead>(
         self,
         _precision: usize,
         scale: usize,
@@ -468,18 +468,20 @@ impl<'a> AvroDecode for AvroFlatDecoder<'a> {
 
         let scale = u8::try_from(scale).map_err(|_| {
             DecodeError::Custom(format!(
-                "Error decoding apd: scale must fit within u8, but got scale {}",
+                "Error decoding numeric: scale must fit within u8, but got scale {}",
                 scale,
             ))
         })?;
 
-        let n = apd::twos_complement_be_to_apd(&mut buf, scale)
+        let n = numeric::twos_complement_be_to_numeric(&mut buf, scale)
             .map_err(|e| DecodeError::Custom(e.to_string()))?;
 
-        if n.is_special() || apd::get_precision(&n) > apd::APD_DATUM_MAX_PRECISION as u32 {
+        if n.is_special()
+            || numeric::get_precision(&n) > numeric::NUMERIC_DATUM_MAX_PRECISION as u32
+        {
             return Err(AvroError::Decode(DecodeError::Custom(format!(
-                "Error decoding apd: exceeds maximum precision {}",
-                apd::APD_DATUM_MAX_PRECISION
+                "Error decoding numeric: exceeds maximum precision {}",
+                numeric::NUMERIC_DATUM_MAX_PRECISION
             ))));
         }
 

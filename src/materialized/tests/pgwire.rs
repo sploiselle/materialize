@@ -29,7 +29,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use ore::collections::CollectionExt;
-use pgrepr::{Apd, Record};
+use pgrepr::{Numeric, Record};
 
 use crate::util::PostgresErrorExt;
 
@@ -71,10 +71,10 @@ fn test_bind_params() -> Result<(), Box<dyn Error>> {
 
     // Ensure that the fractional component of a decimal is not lost.
     {
-        let mut num = Apd::from(adt::apd::Apd::from(123));
+        let mut num = Numeric::from(adt::numeric::Numeric::from(123));
         num.0 .0.set_exponent(-2);
         let stmt = client.prepare_typed("SELECT $1 + 1.23", &[Type::NUMERIC])?;
-        let val: Apd = client.query_one(&stmt, &[&num])?.get(0);
+        let val: Numeric = client.query_one(&stmt, &[&num])?.get(0);
         assert_eq!(val.to_string(), "2.46");
     }
 

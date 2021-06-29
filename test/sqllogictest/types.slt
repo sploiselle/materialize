@@ -673,42 +673,42 @@ SELECT format_type(6000, -100);
 query T
 SELECT format_type(1700, 0);
 ----
-numeric
+numeric(65535,65532)
 
 query T
 SELECT format_type(1700, 3);
 ----
-numeric
+numeric(65535,65535)
 
 query T
 SELECT format_type(1700, 4);
 ----
-numeric
+numeric(0,0)
 
 query T
 SELECT format_type(1700, 65540);
 ----
-numeric
+numeric(1,0)
 
 query T
 SELECT format_type(1700, 65541);
 ----
-numeric
+numeric(1,1)
 
 query T
 SELECT format_type(1700, 2490372);
 ----
-numeric
+numeric(38,0)
 
 query T
 SELECT format_type(1700, 2490371);
 ----
-numeric
+numeric(37,65535)
 
 query T
 SELECT format_type(1700, 2490373);
 ----
-numeric
+numeric(38,1)
 
 query T
 SELECT format_type(1700, -2490373);
