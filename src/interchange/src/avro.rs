@@ -92,6 +92,7 @@ mod tests {
     /// documentation:
     /// https://avro.apache.org/docs/current/spec.html#schemas
     fn test_diff_pair_to_avro_primitive_types() -> anyhow::Result<()> {
+        use numeric::Numeric;
         // Data to be used later in assertions.
         let date = NaiveDate::from_ymd(2020, 1, 8);
         let date_time = NaiveDateTime::new(date, NaiveTime::from_hms(1, 1, 1));
@@ -128,17 +129,17 @@ mod tests {
             ),
             (
                 ScalarType::Numeric { scale: Some(1) },
-                Datum::from(numeric::Numeric::from(1)),
-                Value::Apd(DecimalValue {
+                Datum::from(Numeric::from(1)),
+                Value::Numeric(DecimalValue {
                     unscaled: bytes.clone(),
                     precision: 39,
                     scale: 1,
                 }),
             ),
             (
-                ScalarType::APD { scale: None },
-                Datum::from(numeric::Numeric::from(1)),
-                Value::Apd(DecimalValue {
+                ScalarType::Numeric { scale: None },
+                Datum::from(Numeric::from(1)),
+                Value::Numeric(DecimalValue {
                     // equivalent to 1E39
                     unscaled: vec![
                         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 240, 80, 254, 147, 137,
