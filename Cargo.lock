@@ -146,7 +146,7 @@ checksum = "f2475b58cd94eb4f70159f4fd8844ba3b807532fe3131b3373fae060bbe30396"
 dependencies = [
  "bstr",
  "doc-comment",
- "predicates",
+ "predicates 1.0.8",
  "predicates-core",
  "predicates-tree",
  "wait-timeout",
@@ -544,7 +544,7 @@ dependencies = [
  "expr",
  "futures",
  "interchange",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "mz-avro",
@@ -636,7 +636,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "csv",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "num-traits",
  "oorandom",
@@ -658,7 +658,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e022feadec601fba1649cfa83586381a4ad31c6bf3a9ab7d408118b05dd9889d"
 dependencies = [
  "cast",
- "itertools",
+ "itertools 0.9.0",
 ]
 
 [[package]]
@@ -805,7 +805,7 @@ dependencies = [
  "globset",
  "inotify",
  "interchange",
- "itertools",
+ "itertools 0.9.0",
  "kafka-util",
  "lazy_static",
  "log",
@@ -965,6 +965,12 @@ dependencies = [
  "serde_derive",
  "timely",
 ]
+
+[[package]]
+name = "difflib"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "digest"
@@ -1181,7 +1187,7 @@ dependencies = [
  "enum-iterator",
  "hex",
  "hmac",
- "itertools",
+ "itertools 0.9.0",
  "md-5",
  "num_enum",
  "ordered-float",
@@ -1871,7 +1877,7 @@ dependencies = [
  "differential-dataflow",
  "futures",
  "hex",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "mz-avro",
@@ -1903,6 +1909,15 @@ name = "itertools"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "284f18f85651fe11e8a991b2adb42cb078325c996ed026d994719efcfca1d54b"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69ddb889f9d0d08a67338271fa9b62996bc788c7796a5c18cf057420aaed5eaf"
 dependencies = [
  "either",
 ]
@@ -2152,7 +2167,7 @@ dependencies = [
  "hyper",
  "hyper-openssl",
  "include_dir",
- "itertools",
+ "itertools 0.9.0",
  "jemallocator",
  "kafka-util",
  "krb5-src",
@@ -2174,7 +2189,7 @@ dependencies = [
  "postgres-openssl",
  "postgres-protocol",
  "postgres_array",
- "predicates",
+ "predicates 2.0.0",
  "prof",
  "prometheus",
  "rand 0.8.3",
@@ -2274,7 +2289,7 @@ name = "metabase-smoketest"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "itertools",
+ "itertools 0.9.0",
  "log",
  "metabase",
  "ore",
@@ -2389,7 +2404,7 @@ dependencies = [
  "digest",
  "enum-kinds",
  "flate2",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "md-5",
@@ -2920,7 +2935,7 @@ dependencies = [
  "dataflow-types",
  "expr",
  "futures",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "openssl",
@@ -3128,12 +3143,23 @@ checksum = "ac74c624d6b2d21f425f752262f42188365d7b8ff1aff74c82e45136510a4857"
 
 [[package]]
 name = "predicates"
-version = "1.0.7"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeb433456c1a57cc93554dea3ce40b4c19c4057e41c55d4a0f3d84ea71c325aa"
+checksum = "f49cfaf7fdaa3bfacc6fa3e7054e65148878354a5cfddcf661df4c851f8021df"
 dependencies = [
  "difference",
+ "predicates-core",
+]
+
+[[package]]
+name = "predicates"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6e46ca79eb4e21e2ec14430340c71250ab69332abf85521c95d3a8bc336aa76"
+dependencies = [
+ "difflib",
  "float-cmp",
+ "itertools 0.10.1",
  "normalize-line-endings",
  "predicates-core",
  "regex",
@@ -3633,7 +3659,7 @@ dependencies = [
  "enum-kinds",
  "fast-float",
  "hex",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "num-traits",
  "ordered-float",
@@ -4212,7 +4238,7 @@ dependencies = [
  "futures",
  "globset",
  "interchange",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "mz-avro",
@@ -4243,7 +4269,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "datadriven",
- "itertools",
+ "itertools 0.9.0",
  "lazy_static",
  "log",
  "matches",
@@ -4649,7 +4675,7 @@ dependencies = [
  "flate2",
  "futures",
  "interchange",
- "itertools",
+ "itertools 0.9.0",
  "kafka-util",
  "krb5-src",
  "lazy_static",
@@ -4659,7 +4685,7 @@ dependencies = [
  "parse_duration",
  "pgrepr",
  "postgres_array",
- "predicates",
+ "predicates 2.0.0",
  "protobuf",
  "protoc",
  "rand 0.8.3",
@@ -5027,7 +5053,7 @@ dependencies = [
  "datadriven",
  "dataflow-types",
  "expr",
- "itertools",
+ "itertools 0.9.0",
  "repr",
 ]
 
@@ -5177,7 +5203,7 @@ dependencies = [
  "anyhow",
  "datadriven",
  "fstrings",
- "itertools",
+ "itertools 0.9.0",
  "ore",
  "quote",
  "syn",
@@ -5380,6 +5406,6 @@ checksum = "ec24a9273d24437afb8e71b16f3d9a5d569193cccdb7896213b59f552f387674"
 dependencies = [
  "cc",
  "glob",
- "itertools",
+ "itertools 0.9.0",
  "libc",
 ]
