@@ -237,7 +237,9 @@ fn build_row_schema_field<F: FnMut() -> String>(
             "logicalType": "duration"
         }),
         ScalarType::Bytes => json!("bytes"),
-        ScalarType::String => json!("string"),
+        ScalarType::String | ScalarType::Char { .. } | ScalarType::VarChar { .. } => {
+            json!("string")
+        }
         ScalarType::Jsonb => json!({
             "type": "string",
             "connect.name": "io.debezium.data.Json",
