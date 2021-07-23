@@ -205,26 +205,26 @@ lazy_static! {
             (Bytes, String) => Assignment: CastBytesToString,
 
             // STRING
-            (String, Bool) => Explicit: CastStringToBool,
-            (String, Int16) => Explicit: CastStringToInt16,
-            (String, Int32) => Explicit: CastStringToInt32,
-            (String, Int64) => Explicit: CastStringToInt64,
-            (String, Oid) => Explicit: CastStringToInt32,
-            (String, Float32) => Explicit: CastStringToFloat32,
-            (String, Float64) => Explicit: CastStringToFloat64,
-            (String, Numeric) => Explicit: CastTemplate::new(|_ecx, _ccx, _from_type, to_type| {
+            (String, Bool) => Assignment: CastStringToBool,
+            (String, Int16) => Assignment: CastStringToInt16,
+            (String, Int32) => Assignment: CastStringToInt32,
+            (String, Int64) => Assignment: CastStringToInt64,
+            (String, Oid) => Assignment: CastStringToInt32,
+            (String, Float32) => Assignment: CastStringToFloat32,
+            (String, Float64) => Assignment: CastStringToFloat64,
+            (String, Numeric) => Assignment: CastTemplate::new(|_ecx, _ccx, _from_type, to_type| {
                 let s = to_type.unwrap_numeric_scale();
                 Some(move |e: HirScalarExpr| e.call_unary(CastStringToNumeric(s)))
             }),
-            (String, Date) => Explicit: CastStringToDate,
-            (String, Time) => Explicit: CastStringToTime,
-            (String, Timestamp) => Explicit: CastStringToTimestamp,
-            (String, TimestampTz) => Explicit: CastStringToTimestampTz,
-            (String, Interval) => Explicit: CastStringToInterval,
-            (String, Bytes) => Explicit: CastStringToBytes,
-            (String, Jsonb) => Explicit: CastStringToJsonb,
-            (String, Uuid) => Explicit: CastStringToUuid,
-            (String, Array) => Explicit: CastTemplate::new(|ecx, ccx, from_type, to_type| {
+            (String, Date) => Assignment: CastStringToDate,
+            (String, Time) => Assignment: CastStringToTime,
+            (String, Timestamp) => Assignment: CastStringToTimestamp,
+            (String, TimestampTz) => Assignment: CastStringToTimestampTz,
+            (String, Interval) => Assignment: CastStringToInterval,
+            (String, Bytes) => Assignment: CastStringToBytes,
+            (String, Jsonb) => Assignment: CastStringToJsonb,
+            (String, Uuid) => Assignment: CastStringToUuid,
+            (String, Array) => Assignment: CastTemplate::new(|ecx, ccx, from_type, to_type| {
                 let return_ty = to_type.clone();
                 let to_el_type = to_type.unwrap_array_element_type();
                 let cast_expr = plan_hypothetical_cast(ecx, ccx, from_type, to_el_type)?;
@@ -233,7 +233,7 @@ lazy_static! {
                     cast_expr: Box::new(cast_expr),
                 }))
             }),
-            (String, List) => Explicit: CastTemplate::new(|ecx, ccx, from_type, to_type| {
+            (String, List) => Assignment: CastTemplate::new(|ecx, ccx, from_type, to_type| {
                 let return_ty = to_type.clone();
                 let to_el_type = to_type.unwrap_list_element_type();
                 let cast_expr = plan_hypothetical_cast(ecx, ccx, from_type, to_el_type)?;
@@ -242,7 +242,7 @@ lazy_static! {
                     cast_expr: Box::new(cast_expr),
                 }))
             }),
-            (String, Map) => Explicit: CastTemplate::new(|ecx, ccx, from_type, to_type| {
+            (String, Map) => Assignment: CastTemplate::new(|ecx, ccx, from_type, to_type| {
                 let return_ty = to_type.clone();
                 let to_val_type = to_type.unwrap_map_value_type();
                 let cast_expr = plan_hypothetical_cast(ecx, ccx, from_type, to_val_type)?;
@@ -556,7 +556,13 @@ pub fn plan_coerce<'a>(
 
         LiteralString(s) => {
             let lit = HirScalarExpr::literal(Datum::String(&s), ScalarType::String);
-            plan_cast("string literal", ecx, CastContext::Explicit, lit, coerce_to)?
+            plan_cast(
+                "string literal",
+                ecx,
+                CastContext::Assignment,
+                lit,
+                coerce_to,
+            )?
         }
 
         LiteralRecord(exprs) => {
