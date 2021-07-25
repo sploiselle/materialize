@@ -138,7 +138,8 @@ impl<'a> ToJson for TypedDatum<'_> {
                     serde_json::value::Value::String(format!("{}", datum.unwrap_interval()))
                 }
                 ScalarType::Bytes => json!(datum.unwrap_bytes()),
-                ScalarType::String => json!(datum.unwrap_str()),
+                ScalarType::String | ScalarType::VarChar { .. } => json!(datum.unwrap_str()),
+                ScalarType::Char { .. } => json!(datum.unwrap_char()),
                 ScalarType::Jsonb => JsonbRef::from_datum(datum).to_serde_json(),
                 ScalarType::Uuid => json!(datum.unwrap_uuid()),
                 ScalarType::Array(element_type) | ScalarType::List { element_type, .. } => {
