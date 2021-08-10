@@ -126,6 +126,8 @@ pub struct Config {
     pub symbiosis_url: Option<String>,
     /// Whether to permit usage of experimental features.
     pub experimental_mode: bool,
+    /// Whether to enable catalog-only mode.
+    pub catalog_only_mode: bool,
     /// Whether to run in safe mode.
     pub safe_mode: bool,
     /// Telemetry configuration.
@@ -333,6 +335,7 @@ pub async fn serve(config: Config) -> Result<Server, anyhow::Error> {
         timestamp_frequency: config.timestamp_frequency,
         logical_compaction_window: config.logical_compaction_window,
         experimental_mode: config.experimental_mode,
+        catalog_only_mode: config.catalog_only_mode,
         safe_mode: config.safe_mode,
         build_info: &BUILD_INFO,
         metrics_registry: metrics_registry.clone(),

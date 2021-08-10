@@ -41,6 +41,7 @@ pub struct Config {
     tls: Option<materialized::TlsConfig>,
     experimental_mode: bool,
     safe_mode: bool,
+    catalog_only_mode: bool,
     workers: usize,
     logical_compaction_window: Option<Duration>,
 }
@@ -53,6 +54,7 @@ impl Default for Config {
             tls: None,
             experimental_mode: false,
             safe_mode: false,
+            catalog_only_mode: false,
             workers: 1,
             logical_compaction_window: None,
         }
@@ -91,6 +93,11 @@ impl Config {
 
     pub fn safe_mode(mut self) -> Self {
         self.safe_mode = true;
+        self
+    }
+
+    pub fn catalog_only_mode(mut self) -> Self {
+        self.catalog_only_mode = true;
         self
     }
 
@@ -137,6 +144,7 @@ pub fn start_server(config: Config) -> Result<Server, Box<dyn Error>> {
         tls: config.tls,
         experimental_mode: config.experimental_mode,
         safe_mode: config.safe_mode,
+        catalog_only_mode: config.catalog_only_mode,
         telemetry: None,
         introspection_frequency: Duration::from_secs(1),
         metrics_registry: metrics_registry.clone(),

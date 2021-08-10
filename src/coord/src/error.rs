@@ -48,6 +48,8 @@ pub enum CoordError {
     },
     /// The specified feature is not permitted in safe mode.
     SafeModeViolation(String),
+    /// The specified feature is not permitted in catalog-only mode.
+    CatalogOnlyModeViolation(&'static str),
     /// An error occurred in a SQL catalog operation.
     SqlCatalog(sql::catalog::CatalogError),
     /// The transaction is in single-tail mode.
@@ -77,6 +79,12 @@ impl CoordError {
             CoordError::SafeModeViolation(_) => Some(
                 "The Materialize server you are connected to is running in \
                  safe mode, which limits the features that are available."
+                    .into(),
+            ),
+            CoordError::CatalogOnlyModeViolation(_) => Some(
+                "The Materialize server you are connected to is running in \
+                 catalog-only mode, which prevents access to the dataflow \
+                 layer for user-created objects such as views and tables."
                     .into(),
             ),
             _ => None,
@@ -154,6 +162,13 @@ impl fmt::Display for CoordError {
             }
             CoordError::SafeModeViolation(feature) => {
                 write!(f, "cannot create {} in safe mode", feature)
+            }
+            CoordError::CatalogOnlyModeViolation(feature) => {
+                write!(
+                    f,
+                    "cannot {} user-created objects in catalog-only mode",
+                    feature
+                )
             }
             CoordError::SqlCatalog(e) => e.fmt(f),
             CoordError::TailOnlyTransaction => {

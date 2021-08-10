@@ -186,6 +186,7 @@ pub struct Config<'a> {
     pub timestamp_frequency: Duration,
     pub logical_compaction_window: Option<Duration>,
     pub experimental_mode: bool,
+    pub catalog_only_mode: bool,
     pub safe_mode: bool,
     pub build_info: &'static BuildInfo,
     pub metrics_registry: MetricsRegistry,
@@ -251,6 +252,9 @@ pub struct Coordinator {
     ///
     /// The responses have the form `Vec<Row>` but should perhaps become `TailResponse`.
     pending_tails: HashMap<GlobalId, mpsc::UnboundedSender<Vec<Row>>>,
+
+    /// `true` prevents user-created resources from accessing dataflows
+    catalog_only_mode: bool,
 }
 
 /// Metadata about an active connection.
@@ -387,7 +391,7 @@ impl Coordinator {
                         // that everything else uses?
                         let frontiers = self.new_frontiers(entry.id(), Some(0), Some(1_000));
                         self.indexes.insert(entry.id(), frontiers);
-                    } else {
+                    } else if !self.enforce_catalog_only_mode(&entry.id()) {
                         let df = self.dataflow_builder().build_index_dataflow(entry.id());
                         self.ship_dataflow(df);
                     }
@@ -1653,6 +1657,9 @@ impl Coordinator {
             None
         };
         let table_id = self.catalog.allocate_id()?;
+
+        let enforce_catalog_only_mode = self.enforce_catalog_only_mode(&table_id);
+
         let mut index_depends_on = depends_on.clone();
         index_depends_on.push(table_id);
         let persist = self
@@ -1699,8 +1706,10 @@ impl Coordinator {
             },
         ]) {
             Ok(_) => {
-                let df = self.dataflow_builder().build_index_dataflow(index_id);
-                self.ship_dataflow(df);
+                if !enforce_catalog_only_mode {
+                    let df = self.dataflow_builder().build_index_dataflow(index_id);
+                    self.ship_dataflow(df);
+                }
                 Ok(ExecuteResponse::CreatedTable { existed: false })
             }
             Err(CoordError::Catalog(catalog::Error {
@@ -1751,6 +1760,9 @@ impl Coordinator {
 
     fn ship_sources(&mut self, metadata: Vec<(GlobalId, Option<GlobalId>)>) {
         for (source_id, idx_id) in metadata {
+            if self.enforce_catalog_only_mode(&source_id) {
+                continue;
+            }
             // Do everything to instantiate the source at the coordinator and
             // inform the timestamper and dataflow workers of its existence before
             // shipping any dataflows that depend on its existence.
@@ -1996,8 +2008,10 @@ impl Coordinator {
         match self.catalog_transact(ops) {
             Ok(()) => {
                 if let Some(index_id) = index_id {
-                    let df = self.dataflow_builder().build_index_dataflow(index_id);
-                    self.ship_dataflow(df);
+                    if !self.enforce_catalog_only_mode(&index_id) {
+                        let df = self.dataflow_builder().build_index_dataflow(index_id);
+                        self.ship_dataflow(df);
+                    }
                 }
                 Ok(ExecuteResponse::CreatedView { existed: false })
             }
@@ -2029,8 +2043,10 @@ impl Coordinator {
             Ok(()) => {
                 let mut dfs = vec![];
                 for index_id in index_ids {
-                    let df = self.dataflow_builder().build_index_dataflow(index_id);
-                    dfs.push(df);
+                    if !self.enforce_catalog_only_mode(&index_id) {
+                        let df = self.dataflow_builder().build_index_dataflow(index_id);
+                        dfs.push(df);
+                    }
                 }
                 self.ship_dataflows(dfs);
                 Ok(ExecuteResponse::CreatedView { existed: false })
@@ -2053,6 +2069,8 @@ impl Coordinator {
             depends_on,
         } = plan;
 
+        let enforce_catalog_only_mode = self.enforce_catalog_only_mode(&index.on);
+
         for key in &mut index.keys {
             Self::prep_scalar_expr(key, ExprPrepStyle::Static)?;
         }
@@ -2073,9 +2091,11 @@ impl Coordinator {
         };
         match self.catalog_transact(vec![op]) {
             Ok(()) => {
-                let df = self.dataflow_builder().build_index_dataflow(id);
-                self.ship_dataflow(df);
-                self.set_index_options(id, options);
+                if !enforce_catalog_only_mode {
+                    let df = self.dataflow_builder().build_index_dataflow(id);
+                    self.ship_dataflow(df);
+                    self.set_index_options(id, options);
+                }
                 Ok(ExecuteResponse::CreatedIndex { existed: false })
             }
             Err(CoordError::Catalog(catalog::Error {
@@ -2381,6 +2401,12 @@ impl Coordinator {
         } = plan;
 
         let source_ids = source.global_uses();
+
+        // Cannot peek user-created resources in catalog-only mode
+        if self.catalog_only_mode && source_ids.iter().any(|id| matches!(id, GlobalId::User(..))) {
+            return Err(CoordError::CatalogOnlyModeViolation("SELECT from"));
+        }
+
         let timeline = self.validate_timeline(source_ids.clone())?;
         let conn_id = session.conn_id();
         let in_transaction = matches!(
@@ -2623,6 +2649,10 @@ impl Coordinator {
             object_columns,
             desc,
         } = plan;
+        // Cannot tail user-created resources in catalog only mode.
+        if self.enforce_catalog_only_mode(&source_id) {
+            return Err(CoordError::CatalogOnlyModeViolation("TAIL"));
+        }
         // TAIL AS OF, similar to peeks, doesn't need to worry about transaction
         // timestamp semantics.
         if ts.is_none() {
@@ -2948,6 +2978,11 @@ impl Coordinator {
         session: &mut Session,
         plan: InsertPlan,
     ) -> Result<ExecuteResponse, CoordError> {
+        // Cannot insert into tables in catalog-only mode.
+        if self.enforce_catalog_only_mode(&plan.id) {
+            return Err(CoordError::CatalogOnlyModeViolation("INSERT INTO"));
+        }
+
         match self
             .prep_relation_expr(plan.values, ExprPrepStyle::Write)?
             .into_inner()
@@ -3357,6 +3392,12 @@ impl Coordinator {
         self.broadcast(dataflow::Command::CreateDataflows(dataflow_plans));
     }
 
+    /// Expresses whether an item with the given ID should be given access to
+    /// dataflows as a function of catalog-only mode.
+    fn enforce_catalog_only_mode(&self, id: &GlobalId) -> bool {
+        self.catalog_only_mode && matches!(id, GlobalId::User(..))
+    }
+
     fn broadcast(&self, cmd: dataflow::Command) {
         for tx in &self.worker_txs {
             tx.send(cmd.clone())
@@ -3482,6 +3523,7 @@ pub async fn serve(
         timestamp_frequency,
         logical_compaction_window,
         experimental_mode,
+        catalog_only_mode,
         safe_mode,
         build_info,
         metrics_registry,
@@ -3612,6 +3654,7 @@ pub async fn serve(
                 now,
                 pending_peeks: HashMap::new(),
                 pending_tails: HashMap::new(),
+                catalog_only_mode,
             };
             if let Some(config) = &logging {
                 coord.broadcast(dataflow::Command::EnableLogging(DataflowLoggingConfig {
@@ -3773,6 +3816,7 @@ pub fn serve_debug(
             now: get_debug_timestamp,
             pending_peeks: HashMap::new(),
             pending_tails: HashMap::new(),
+            catalog_only_mode: false,
         };
         let bootstrap = handle.block_on(coord.bootstrap(builtin_table_updates));
         bootstrap_tx.send(bootstrap).unwrap();

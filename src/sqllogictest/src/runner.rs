@@ -542,6 +542,7 @@ impl Runner {
             listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             tls: None,
             experimental_mode: true,
+            catalog_only_mode: false,
             safe_mode: false,
             telemetry: None,
             introspection_frequency: Duration::from_secs(1),

@@ -11,7 +11,9 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::Write;
 
+use postgres::error::DbError;
 use reqwest::{blocking::Client, StatusCode, Url};
 use tempfile::NamedTempFile;
 
@@ -220,6 +222,115 @@ fn test_safe_mode() -> Result<(), Box<dyn Error>> {
         &*KAFKA_ADDRS,
     ))?;
 
+    Ok(())
+}
+
+#[test]
+fn test_catalog_only_mode() -> Result<(), Box<dyn Error>> {
+    let data_dir = tempfile::tempdir()?;
+    let config = util::Config::default().data_directory(data_dir.path());
+
+    let mut source_file = NamedTempFile::new()?;
+    writeln!(source_file, "lorem ipsum")?;
+
+    {
+        let server = util::start_server(config.clone())?;
+        let mut client = server.connect(postgres::NoTls)?;
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // System views are selectable
+        let _ = client.query("SELECT * FROM mz_catalog.mz_arrangement_sizes LIMIT 1", &[])?;
+
+        // Views are selectable
+        client.batch_execute("CREATE VIEW constant AS SELECT 1")?;
+        let _ = client.query("SELECT * FROM constant", &[])?;
+
+        // Views on top of system views are selectable
+        client.batch_execute(
+            "CREATE VIEW logging_derived AS SELECT * FROM mz_catalog.mz_arrangement_sizes",
+        )?;
+        let _ = client.query("SELECT * FROM logging_derived", &[])?;
+
+        client.batch_execute(&format!(
+            "CREATE SOURCE src FROM FILE '{}' FORMAT BYTES",
+            source_file.path().display()
+        ))?;
+        client.batch_execute("CREATE MATERIALIZED VIEW mat AS SELECT data FROM src")?;
+
+        // Materialized views from sources are theoretically selectable.
+        let err = client.query("SELECT * FROM mat", &[]).unwrap_db_error();
+        assert!(err
+            .message()
+            .contains("At least one input has no complete timestamps yet"));
+
+        // Materialized views can be tailed.
+        let _ = client.query("TAIL mat", &[])?;
+
+        // Tables can be inserted into and selected from.
+        client.batch_execute("CREATE TABLE t (a text)")?;
+        client.batch_execute("INSERT INTO t VALUES ('a')")?;
+        let _ = client.query("SELECT a FROM t", &[])?;
+    }
+
+    {
+        let validate_is_err = |err: DbError, action| {
+            assert_eq!(
+                err.message(),
+                format!(
+                    "cannot {} user-created objects in catalog-only mode",
+                    action
+                )
+            );
+        };
+
+        // Start server in catalog only mode
+        let server = util::start_server(config.catalog_only_mode())?;
+        let mut client = server.connect(postgres::NoTls)?;
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // System views are theoretically selectable
+        let _ = client.query("SELECT * FROM mz_catalog.mz_arrangement_sizes LIMIT 1", &[]);
+
+        // Views are not selectable
+        let err = client
+            .query("SELECT * FROM constant", &[])
+            .unwrap_db_error();
+        validate_is_err(err, "SELECT from");
+
+        // Views on top of system views are not selectable
+        let err = client
+            .query("SELECT * FROM logging_derived", &[])
+            .unwrap_db_error();
+        validate_is_err(err, "SELECT from");
+
+        // Materialized views from sources are theoretically selectable.
+        let err = client.query("SELECT * FROM mat", &[]).unwrap_db_error();
+        validate_is_err(err, "SELECT from");
+
+        // Materialized views can be tailed.
+        let err = client.query("TAIL mat", &[]).unwrap_db_error();
+        validate_is_err(err, "TAIL");
+
+        // Tables can be inserted into and selected from.
+        let err = client
+            .batch_execute("INSERT INTO t VALUES ('a')")
+            .unwrap_db_error();
+        validate_is_err(err, "INSERT INTO");
+
+        let err = client.query("SELECT a FROM t", &[]).unwrap_db_error();
+        validate_is_err(err, "SELECT from");
+
+        client.batch_execute("CREATE TABLE s (a text)")?;
+        let err = client
+            .batch_execute("INSERT INTO s VALUES ('a')")
+            .unwrap_db_error();
+        validate_is_err(err, "INSERT INTO");
+
+        let err = client.query("SELECT a FROM s", &[]).unwrap_db_error();
+        validate_is_err(err, "SELECT from");
+    }
     Ok(())
 }
 

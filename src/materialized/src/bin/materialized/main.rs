@@ -95,6 +95,9 @@ struct Args {
     #[structopt(long, hidden = true)]
     safe: bool,
 
+    #[structopt(long)]
+    catalog_only: bool,
+
     /// The address on which metrics visible to "third parties" get exposed.
     ///
     /// These metrics are structured to allow an infrastructure provider to monitor an installation
@@ -656,6 +659,7 @@ swap: {swap_total}KB total, {swap_used}KB used{swap_limit}",
         data_directory,
         symbiosis_url: args.symbiosis,
         experimental_mode: args.experimental,
+        catalog_only_mode: args.catalog_only,
         safe_mode: args.safe,
         telemetry,
         introspection_frequency: args
@@ -679,6 +683,10 @@ to improve both our software and your queries! Please reach out at:
 =======================================================================
 "
     );
+
+    if args.catalog_only {
+        eprintln!("Booting in catalog-only mode; you cannot query materialized views");
+    }
 
     if args.experimental {
         eprintln!(
