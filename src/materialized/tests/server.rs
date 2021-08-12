@@ -290,46 +290,53 @@ fn test_catalog_only_mode() -> Result<(), Box<dyn Error>> {
 
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        // System views are theoretically selectable
+        // Literals are selectable
+        let _ = client.query("SELECT 1 + 2 * 3", &[]);
+
+        // System views are selectable
         let _ = client.query("SELECT * FROM mz_catalog.mz_arrangement_sizes LIMIT 1", &[]);
 
         // Views are not selectable
         let err = client
             .query("SELECT * FROM constant", &[])
             .unwrap_db_error();
-        validate_is_err(err, "SELECT from");
+        validate_is_err(err, "SELECT FROM");
 
         // Views on top of system views are not selectable
         let err = client
             .query("SELECT * FROM logging_derived", &[])
             .unwrap_db_error();
-        validate_is_err(err, "SELECT from");
+        validate_is_err(err, "SELECT FROM");
 
-        // Materialized views from sources are theoretically selectable.
+        // Materialized views from sources are not selectable
         let err = client.query("SELECT * FROM mat", &[]).unwrap_db_error();
-        validate_is_err(err, "SELECT from");
+        validate_is_err(err, "SELECT FROM");
 
-        // Materialized views can be tailed.
+        // Materialized views cannot be tailed.
         let err = client.query("TAIL mat", &[]).unwrap_db_error();
         validate_is_err(err, "TAIL");
 
-        // Tables can be inserted into and selected from.
+        // Tables cannnot be inserted into or selected from.
         let err = client
             .batch_execute("INSERT INTO t VALUES ('a')")
             .unwrap_db_error();
         validate_is_err(err, "INSERT INTO");
 
         let err = client.query("SELECT a FROM t", &[]).unwrap_db_error();
-        validate_is_err(err, "SELECT from");
+        validate_is_err(err, "SELECT FROM");
 
-        client.batch_execute("CREATE TABLE s (a text)")?;
+        // New tables can be created
+        client.batch_execute("CREATE TABLE s (a text, b text)")?;
         let err = client
-            .batch_execute("INSERT INTO s VALUES ('a')")
+            .batch_execute("INSERT INTO s VALUES ('a', 'b')")
             .unwrap_db_error();
         validate_is_err(err, "INSERT INTO");
 
+        // New indexes can be created
+        client.batch_execute("CREATE INDEX s_b_idx ON s (b)")?;
+
         let err = client.query("SELECT a FROM s", &[]).unwrap_db_error();
-        validate_is_err(err, "SELECT from");
+        validate_is_err(err, "SELECT FROM");
     }
     Ok(())
 }

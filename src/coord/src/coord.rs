@@ -253,8 +253,9 @@ pub struct Coordinator {
     /// The responses have the form `Vec<Row>` but should perhaps become `TailResponse`.
     pending_tails: HashMap<GlobalId, mpsc::UnboundedSender<Vec<Row>>>,
 
-    /// `true` prevents user-created resources from accessing dataflows
-    catalog_only_mode: bool,
+    /// When `None`, all user objects can create/access dataflows; when `Some`, only the objects
+    /// with an ID in the hashmap are allowed.
+    catalog_only_mode_allow: Option<HashSet<GlobalId>>,
 }
 
 /// Metadata about an active connection.
@@ -2069,8 +2070,6 @@ impl Coordinator {
             depends_on,
         } = plan;
 
-        let enforce_catalog_only_mode = self.enforce_catalog_only_mode(&index.on);
-
         for key in &mut index.keys {
             Self::prep_scalar_expr(key, ExprPrepStyle::Static)?;
         }
@@ -2091,7 +2090,7 @@ impl Coordinator {
         };
         match self.catalog_transact(vec![op]) {
             Ok(()) => {
-                if !enforce_catalog_only_mode {
+                if !self.catalog_only_mode_allow.is_none() {
                     let df = self.dataflow_builder().build_index_dataflow(id);
                     self.ship_dataflow(df);
                     self.set_index_options(id, options);
@@ -2402,11 +2401,6 @@ impl Coordinator {
 
         let source_ids = source.global_uses();
 
-        // Cannot peek user-created resources in catalog-only mode
-        if self.catalog_only_mode && source_ids.iter().any(|id| matches!(id, GlobalId::User(..))) {
-            return Err(CoordError::CatalogOnlyModeViolation("SELECT from"));
-        }
-
         let timeline = self.validate_timeline(source_ids.clone())?;
         let conn_id = session.conn_id();
         let in_transaction = matches!(
@@ -2552,6 +2546,10 @@ impl Coordinator {
             let (fast_path, index_id, literal_row) = if let Some((id, row)) = fast_path {
                 (true, id, row)
             } else {
+                // Reads in catalog only mode require the fast path.
+                if self.is_in_catalog_only_mode() {
+                    return Err(CoordError::CatalogOnlyModeViolation("SELECT FROM"));
+                }
                 (false, self.allocate_transient_id()?, None)
             };
 
@@ -2653,6 +2651,7 @@ impl Coordinator {
         if self.enforce_catalog_only_mode(&source_id) {
             return Err(CoordError::CatalogOnlyModeViolation("TAIL"));
         }
+
         // TAIL AS OF, similar to peeks, doesn't need to worry about transaction
         // timestamp semantics.
         if ts.is_none() {
@@ -2734,7 +2733,16 @@ impl Coordinator {
         // the compacted arrangements we have at hand. It remains unresolved
         // what to do if it cannot be satisfied (perhaps the query should use
         // a larger timestamp and block, perhaps the user should intervene).
-        let (index_ids, unmaterialized_source_ids) = self.catalog.nearest_indexes(uses_ids);
+        let (mut index_ids, unmaterialized_source_ids) = self.catalog.nearest_indexes(uses_ids);
+
+        if self.is_in_catalog_only_mode() {
+            // Catalog-only mode requires reading from indexes/arrangements, so
+            // if none are valid, you cannot complete reads.
+            index_ids.retain(|id| !self.enforce_catalog_only_mode(id));
+            if index_ids.is_empty() {
+                return Err(CoordError::CatalogOnlyModeViolation("SELECT FROM"));
+            }
+        }
 
         if !unmaterialized_source_ids.is_empty() {
             coord_bail!(
@@ -3392,10 +3400,18 @@ impl Coordinator {
         self.broadcast(dataflow::Command::CreateDataflows(dataflow_plans));
     }
 
+    fn is_in_catalog_only_mode(&self) -> bool {
+        self.catalog_only_mode_allow.is_some()
+    }
+
     /// Expresses whether an item with the given ID should be given access to
     /// dataflows as a function of catalog-only mode.
     fn enforce_catalog_only_mode(&self, id: &GlobalId) -> bool {
-        self.catalog_only_mode && matches!(id, GlobalId::User(..))
+        match &self.catalog_only_mode_allow {
+            None => false,
+            Some(_) if !matches!(id, GlobalId::User(..)) => false,
+            Some(allowed) => !allowed.contains(id),
+        }
     }
 
     fn broadcast(&self, cmd: dataflow::Command) {
@@ -3654,7 +3670,11 @@ pub async fn serve(
                 now,
                 pending_peeks: HashMap::new(),
                 pending_tails: HashMap::new(),
-                catalog_only_mode,
+                catalog_only_mode_allow: if catalog_only_mode {
+                    Some(HashSet::new())
+                } else {
+                    None
+                },
             };
             if let Some(config) = &logging {
                 coord.broadcast(dataflow::Command::EnableLogging(DataflowLoggingConfig {
@@ -3816,7 +3836,7 @@ pub fn serve_debug(
             now: get_debug_timestamp,
             pending_peeks: HashMap::new(),
             pending_tails: HashMap::new(),
-            catalog_only_mode: false,
+            catalog_only_mode_allow: None,
         };
         let bootstrap = handle.block_on(coord.bootstrap(builtin_table_updates));
         bootstrap_tx.send(bootstrap).unwrap();
