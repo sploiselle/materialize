@@ -134,7 +134,7 @@ pub enum Message {
     SinkConnectorReady(SinkConnectorReady),
     ScrapeMetrics,
     SendDiffs(SendDiffs),
-    PlanReady(PlanReady),
+    WriteLockGrant(tokio::sync::OwnedMutexGuard<()>),
     Shutdown,
 }
 
@@ -165,9 +165,11 @@ pub struct StatementReady {
     pub params: Params,
 }
 
+/// This is the struct meant to be paired with [`Message::WriteLockGrant`], but
+/// could theoretically be used to queue any deferred plan.
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct PlanReady {
+pub struct DeferredPlan {
     #[derivative(Debug = "ignore")]
     pub tx: ClientTransmitter<ExecuteResponse>,
     pub session: Session,
@@ -277,12 +279,10 @@ pub struct Coordinator {
     /// The responses have the form `Vec<Row>` but should perhaps become `TailResponse`.
     pending_tails: HashMap<GlobalId, mpsc::UnboundedSender<Vec<Row>>>,
 
-    // The connection id of a transaction that has started a write.
-    write_inprogress: Option<u32>,
-    // Queued writes that must be processed as soon as any in progress write is
-    // completed. Any plan that may write (INSERT, DELETE, UPDATE) must be
-    // processed in order by the coordinator to provide serializability.
-    serialized_writes: VecDeque<PlanReady>,
+    /// Serializes accesses to write critical sections.
+    write_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Holds plans deferred due to write lock.
+    write_lock_wait_group: VecDeque<DeferredPlan>,
 }
 
 /// Metadata about an active connection.
@@ -304,6 +304,34 @@ struct ConnMeta {
 struct TxnReads {
     timedomain_ids: HashSet<GlobalId>,
     _handles: Vec<AntichainToken<Timestamp>>,
+}
+
+/// Enforces critical section invariants for functions that perform writes to
+/// tables, e.g. `INSERT`, `UPDATE`.
+///
+/// If the provided session doesn't currently hold the write lock, attempts to
+/// grant it. If the coord cannot immediately grant the write lock, defers
+/// executing the provided plan until the write lock is available, and exits the
+/// function.
+///
+/// # Parameters
+/// - `$coord: &mut Coord`
+/// - `$tx: ClientTransmitter<ExecuteResponse>`
+/// - `mut $session: Session`
+/// - `$plan_to_defer: Plan`
+///
+/// Note that making this a macro rather than a function lets us avoid taking
+/// ownership of e.g. session and lets us unilaterally enforce the return when
+/// deferring work.
+macro_rules! guard_write_critical_section {
+    ($coord:expr, $tx:expr, $session:expr, $plan_to_defer: expr) => {
+        if !$session.has_write_lock() {
+            if $coord.try_grant_session_write_lock(&mut $session).is_err() {
+                $coord.defer_write($tx, $session, $plan_to_defer);
+                return;
+            }
+        }
+    };
 }
 
 impl Coordinator {
@@ -554,8 +582,15 @@ impl Coordinator {
                 Message::Worker(worker) => self.message_worker(worker),
                 Message::StatementReady(ready) => self.message_statement_ready(ready).await,
                 Message::SinkConnectorReady(ready) => self.message_sink_connector_ready(ready),
-                Message::PlanReady(ready) => {
-                    self.sequence_plan(ready.tx, ready.session, ready.plan)
+                Message::WriteLockGrant(write_lock_guard) => {
+                    // It's possible to have more incoming write lock grants
+                    // than pending writes because of cancellations.
+                    self.write_lock_wait_group.pop_front().map(|mut ready| {
+                        ready.session.grant_write_lock(write_lock_guard);
+                        self.sequence_plan(ready.tx, ready.session, ready.plan);
+                    });
+                    // N.B. if no deferred plans, write lock is released by drop
+                    // here.
                 }
                 Message::SendDiffs(diffs) => self.message_send_diffs(diffs),
                 Message::AdvanceSourceTimestamp(advance) => {
@@ -1459,13 +1494,13 @@ impl Coordinator {
             // Allow dataflow to cancel any pending peeks.
             self.broadcast(dataflow::Command::CancelPeek { conn_id });
 
-            // Cancel pending writes. There is at most one pending write per session.
+            // Cancel deferred writes. There is at most one pending write per session.
             if let Some(idx) = self
-                .serialized_writes
+                .write_lock_wait_group
                 .iter()
                 .position(|ready| ready.session.conn_id() == conn_id)
             {
-                let ready = self.serialized_writes.remove(idx).unwrap();
+                let ready = self.write_lock_wait_group.remove(idx).unwrap();
                 ready.tx.send(Ok(ExecuteResponse::Cancelled), ready.session);
             }
 
@@ -2374,12 +2409,7 @@ impl Coordinator {
         mut session: Session,
         mut action: EndTransactionAction,
     ) {
-        // If we are trying to commit a write transaction but another connection has a
-        // write in progress, queue ourselves.
-        if EndTransactionAction::Commit == action
-            && self.write_inprogress != None
-            && self.write_inprogress != Some(session.conn_id())
-        {
+        if EndTransactionAction::Commit == action {
             let txn = session
                 .transaction()
                 .inner()
@@ -2389,28 +2419,12 @@ impl Coordinator {
                 ..
             } = txn
             {
-                self.serialized_writes.push_back(PlanReady {
-                    tx,
-                    session,
-                    plan: Plan::CommitTransaction,
-                });
-                return;
+                guard_write_critical_section!(self, tx, session, Plan::CommitTransaction);
             }
         }
 
-        // If this transaction blocked other writes, allow them to proceed.
-        // TODO: This might need to go somewhere else due to the tokio spawn below.
-        if self.write_inprogress == Some(session.conn_id()) {
-            self.write_inprogress = None;
-            if let Some(ready) = self.serialized_writes.pop_front() {
-                let internal_cmd_tx = self.internal_cmd_tx.clone();
-                tokio::spawn(async move {
-                    internal_cmd_tx
-                        .send(Message::PlanReady(ready))
-                        .expect("sending to internal_cmd_tx cannot fail");
-                });
-            }
-        }
+        // Take write lock so it will be released on function exit.
+        let write_lock = session.take_write_lock();
 
         // If the transaction has failed, we can only rollback.
         if let (EndTransactionAction::Commit, TransactionStatus::Failed(_)) =
@@ -2426,6 +2440,10 @@ impl Coordinator {
         match rx {
             Ok(Some(rx)) => {
                 tokio::spawn(async move {
+                    // Move write lock into tokio spawn because we don't want to
+                    // release the lock until we've received results from
+                    // `sequence_end_transaction_inner`.
+                    let _write_lock = write_lock;
                     // The rx returns a Result<(), CoordError>, so we can map the Ok(()) output to
                     // `response`, which will also pass through whatever error we see to tx.
                     let result = rx.await.map(|_| response);
@@ -3293,25 +3311,7 @@ impl Coordinator {
         mut session: Session,
         plan: ReadThenWritePlan,
     ) {
-        // Serialize writes by queueing write plans if there's one in progress. This is
-        // needed because ReadThenWrite needs to ensure that no writes happen between
-        // its read and write phases which happen at different timestamps. They happen
-        // at different timestamps because tables use system time writes, so we are not
-        // able to hold on to a specific time at which we will write.
-        match self.write_inprogress {
-            None => self.write_inprogress = Some(session.conn_id()),
-            Some(conn_id) => {
-                // ReadThenWrite is not allowed in transactions, so we should never encounter
-                // ourselves.
-                assert!(conn_id != session.conn_id());
-                self.serialized_writes.push_back(PlanReady {
-                    tx,
-                    session,
-                    plan: Plan::ReadThenWrite(plan),
-                });
-                return;
-            }
-        };
+        guard_write_critical_section!(self, tx, session, Plan::ReadThenWrite(plan));
 
         let ReadThenWritePlan {
             id,
@@ -3923,6 +3923,37 @@ impl Coordinator {
         }
         Ok(timelines.into_iter().next())
     }
+
+    /// Attempts to immediately grant `session` access to the write lock or
+    /// errors if the lock is currently held.
+    fn try_grant_session_write_lock(
+        &self,
+        session: &mut Session,
+    ) -> Result<(), tokio::sync::TryLockError> {
+        self.write_lock.clone().try_lock_owned().map(|p| {
+            session.grant_write_lock(p);
+        })
+    }
+
+    /// Defers executing `plan` until the write lock becomes available.
+    fn defer_write(
+        &mut self,
+        tx: ClientTransmitter<ExecuteResponse>,
+        session: Session,
+        plan: Plan,
+    ) {
+        let plan = DeferredPlan { tx, session, plan };
+        self.write_lock_wait_group.push_back(plan);
+
+        let internal_cmd_tx = self.internal_cmd_tx.clone();
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::spawn(async move {
+            let guard = write_lock.lock_owned().await;
+            internal_cmd_tx
+                .send(Message::WriteLockGrant(guard))
+                .expect("sending to internal_cmd_tx cannot fail");
+        });
+    }
 }
 
 /// Serves the coordinator based on the provided configuration.
@@ -4048,8 +4079,8 @@ pub async fn serve(
                 now,
                 pending_peeks: HashMap::new(),
                 pending_tails: HashMap::new(),
-                write_inprogress: None,
-                serialized_writes: VecDeque::new(),
+                write_lock: Arc::new(tokio::sync::Mutex::new(())),
+                write_lock_wait_group: VecDeque::new(),
             };
             if let Some(config) = &logging {
                 coord.broadcast(dataflow::Command::EnableLogging(DataflowLoggingConfig {
@@ -4210,8 +4241,8 @@ pub fn serve_debug(
             now: get_debug_timestamp,
             pending_peeks: HashMap::new(),
             pending_tails: HashMap::new(),
-            serialized_writes: VecDeque::new(),
-            write_inprogress: None,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            write_lock_wait_group: VecDeque::new(),
         };
         let bootstrap = handle.block_on(coord.bootstrap(builtin_table_updates));
         bootstrap_tx.send(bootstrap).unwrap();

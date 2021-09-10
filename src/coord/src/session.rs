@@ -17,6 +17,7 @@ use std::mem;
 use chrono::{DateTime, Utc};
 use derivative::Derivative;
 use futures::Stream;
+use tokio::sync::OwnedMutexGuard;
 
 use expr::GlobalId;
 use repr::{Datum, Diff, Row, ScalarType, Timestamp};
@@ -42,6 +43,10 @@ pub struct Session {
     user: String,
     vars: Vars,
     drop_sinks: Vec<GlobalId>,
+    // Holds the coordinator's write lock in this session. Note that you must
+    // call `Session::take_write_lock()` to release the lock because sessions are
+    // long-lived and will not naturally drop the guard themselves.
+    write_lock_guard: Option<OwnedMutexGuard<()>>,
 }
 
 impl Session {
@@ -69,6 +74,7 @@ impl Session {
             user,
             vars: Vars::default(),
             drop_sinks: vec![],
+            write_lock_guard: None,
         }
     }
 
@@ -312,6 +318,23 @@ impl Session {
     /// Returns a mutable reference to the variables in this session.
     pub fn vars_mut(&mut self) -> &mut Vars {
         &mut self.vars
+    }
+
+    /// Assigns the coordinator's write lock guard to `self`.
+    pub fn grant_write_lock(&mut self, guard: OwnedMutexGuard<()>) {
+        self.write_lock_guard = Some(guard);
+    }
+
+    /// Returns whether or not this session currently holds the write lock.
+    pub fn has_write_lock(&self) -> bool {
+        self.write_lock_guard.is_some()
+    }
+
+    /// Takes the write lock from this session. Note that this _must_ be called
+    /// manually before exiting a write critical section to release the
+    /// coordinator's write lock.
+    pub fn take_write_lock(&mut self) -> Option<OwnedMutexGuard<()>> {
+        self.write_lock_guard.take()
     }
 }
 
