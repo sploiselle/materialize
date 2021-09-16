@@ -52,6 +52,9 @@ Wrap your release notes at the 80 character mark.
 
 - Add support for [bitwise operators on integers](/sql/functions/#numbers).
 
+- Return control of canceled sessions (`ctrl + c`) while `SELECT` statements
+  await results. Previously, this could cause the session to never terminate.
+
 {{% version-header v0.9.4 %}}
 
 - Improve the performance of
