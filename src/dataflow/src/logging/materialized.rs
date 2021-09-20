@@ -25,6 +25,7 @@ use super::{LogVariant, MaterializedLog};
 use crate::arrangement::manager::RowSpine;
 use crate::arrangement::KeysValsHandle;
 use crate::render::datum_vec::DatumVec;
+use crate::server::PeekId;
 use expr::{GlobalId, SourceInstanceId};
 use repr::{Datum, Row, Timestamp};
 
@@ -139,12 +140,19 @@ pub struct Peek {
     time: Timestamp,
     /// The connection ID of the peek.
     conn_id: u32,
+    /// A revolving ID meant to semi-uniquely identify pending peeks.
+    peek_id: u8,
 }
 
 impl Peek {
     /// Create a new peek from its arguments.
-    pub fn new(id: GlobalId, time: Timestamp, conn_id: u32) -> Self {
-        Self { id, time, conn_id }
+    pub fn new(id: GlobalId, time: Timestamp, peek_id: PeekId) -> Self {
+        Self {
+            id,
+            time,
+            conn_id: peek_id.conn_id(),
+            peek_id: peek_id.peek_id(),
+        }
     }
 }
 

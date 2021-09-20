@@ -64,7 +64,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use build_info::{BuildInfo, DUMMY_BUILD_INFO};
-use dataflow::{TimestampBindingFeedback, WorkerFeedback};
+use dataflow::{PeekId, PeekIdGen, TimestampBindingFeedback, WorkerFeedback};
 use dataflow_types::logging::LoggingConfig as DataflowLoggingConfig;
 use dataflow_types::{
     DataflowDesc, ExternalSourceConnector, IndexDesc, PeekResponse, PostgresSourceConnector,
@@ -248,7 +248,8 @@ pub struct Coordinator {
 
     /// A map from pending peeks to the queue into which responses are sent, and the
     /// pending response count (initialized to the number of dataflow workers).
-    pending_peeks: HashMap<u32, (mpsc::UnboundedSender<PeekResponse>, usize)>,
+    pending_peeks: HashMap<u32, (PeekId, mpsc::UnboundedSender<PeekResponse>, usize)>,
+    peek_id_gen: PeekIdGen,
     /// A map from pending tails to the queue into which responses are sent.
     ///
     /// The responses have the form `Vec<Row>` but should perhaps become `TailResponse`.
@@ -596,15 +597,22 @@ impl Coordinator {
         }: dataflow::Response,
     ) {
         match message {
-            WorkerFeedback::PeekResponse(conn_id, response) => {
+            WorkerFeedback::PeekResponse(peek_id, response) => {
                 // We use an `if let` here because the peek could have been cancelled already.
-                if let Some((channel, countdown)) = self.pending_peeks.get_mut(&conn_id) {
+                if let Some((pending_peek_id, channel, countdown)) =
+                    self.pending_peeks.get_mut(&peek_id.conn_id())
+                {
+                    // Stale peek response from dataflow; discard.
+                    if peek_id != *pending_peek_id {
+                        return;
+                    }
+
                     channel
                         .send(response)
                         .expect("Peek endpoint terminated prematurely");
                     *countdown -= 1;
                     if *countdown == 0 {
-                        self.pending_peeks.remove(&conn_id);
+                        self.pending_peeks.remove(&peek_id.conn_id());
                     }
                 }
             }
@@ -1380,7 +1388,7 @@ impl Coordinator {
             }
             // Cancel the peek. We use an `if let` because the peek could be completed
             // and removed before the cancellation is received.
-            if let Some((channel, _)) = self.pending_peeks.remove(&conn_id) {
+            if let Some((_, channel, _)) = self.pending_peeks.remove(&conn_id) {
                 channel
                     .send(PeekResponse::Canceled)
                     .expect("Peek channel closed prematurely");
@@ -2666,12 +2674,14 @@ impl Coordinator {
                 })?;
 
             // Insert the pending peek, and initialize to expect the number of workers.
+            let conn_id = session.conn_id();
+            let peek_id = self.peek_id_gen.gen_id(conn_id);
             self.pending_peeks
-                .insert(session.conn_id(), (rows_tx, self.num_workers()));
+                .insert(conn_id, (peek_id, rows_tx, self.num_workers()));
             self.broadcast(dataflow::Command::Peek {
-                id: index_id,
+                id: peek_id,
+                on_id: index_id,
                 key: literal_row,
-                conn_id: session.conn_id(),
                 timestamp,
                 finishing: finishing.clone(),
                 map_filter_project: mfp_plan,
@@ -3794,6 +3804,7 @@ pub async fn serve(
                 sink_writes: HashMap::new(),
                 now,
                 pending_peeks: HashMap::new(),
+                peek_id_gen: PeekIdGen::new(),
                 pending_tails: HashMap::new(),
             };
             if let Some(config) = &logging {
@@ -3954,6 +3965,7 @@ pub fn serve_debug(
             sink_writes: HashMap::new(),
             now: get_debug_timestamp,
             pending_peeks: HashMap::new(),
+            peek_id_gen: PeekIdGen::new(),
             pending_tails: HashMap::new(),
         };
         let bootstrap = handle.block_on(coord.bootstrap(builtin_table_updates));

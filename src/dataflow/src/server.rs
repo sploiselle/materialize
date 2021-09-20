@@ -101,14 +101,14 @@ pub enum Command {
     /// the dataflow runners are responsible for ensuring that they can
     /// correctly answer the `Peek`.
     Peek {
-        /// The identifier of the arrangement.
-        id: GlobalId,
-        /// An optional key that should be used for the arrangement.
-        key: Option<Row>,
         /// The identifier of this peek request.
         ///
-        /// Used in responses and cancelation requests.
-        conn_id: u32,
+        /// Used in responses and cancellation requests.
+        id: PeekId,
+        /// The identifier of the arrangement.
+        on_id: GlobalId,
+        /// An optional key that should be used for the arrangement.
+        key: Option<Row>,
         /// The logical timestamp at which the arrangement is queried.
         timestamp: Timestamp,
         /// Actions to apply to the result set before returning them.
@@ -223,7 +223,7 @@ pub enum WorkerFeedback {
     /// sources
     TimestampBindings(TimestampBindingFeedback),
     /// The worker's response to a specified (by connection id) peek.
-    PeekResponse(u32, PeekResponse),
+    PeekResponse(PeekId, PeekResponse),
     /// The worker's next response to a specified tail.
     TailResponse(GlobalId, TailResponse),
 }
@@ -839,14 +839,14 @@ where
 
             Command::Peek {
                 id,
+                on_id,
                 key,
                 timestamp,
-                conn_id,
                 finishing,
                 map_filter_project,
             } => {
                 // Acquire a copy of the trace suitable for fulfilling the peek.
-                let mut trace_bundle = self.render_state.traces.get(&id).unwrap().clone();
+                let mut trace_bundle = self.render_state.traces.get(&on_id).unwrap().clone();
                 let timestamp_frontier = Antichain::from_elem(timestamp);
                 let empty_frontier = Antichain::new();
                 trace_bundle
@@ -864,31 +864,22 @@ where
                 // Prepare a description of the peek work to do.
                 let mut peek = PendingPeek {
                     id,
+                    on_id,
                     key,
-                    conn_id,
                     timestamp,
                     finishing,
                     trace_bundle,
                     map_filter_project,
                 };
+
                 // Log the receipt of the peek.
                 if let Some(logger) = self.materialized_logger.as_mut() {
                     logger.log(MaterializedEvent::Peek(peek.as_log_event(), true));
                 }
+
                 // Attempt to fulfill the peek.
                 if let Some(response) = peek.seek_fulfillment(&mut Antichain::new()) {
-                    // Respond with the response.
-                    self.feedback_tx
-                        .send(Response {
-                            worker_id: self.timely_worker.index(),
-                            message: WorkerFeedback::PeekResponse(peek.conn_id, response),
-                        })
-                        .expect("feedback receiver should not drop first");
-
-                    // Log the fulfillment of the peek.
-                    if let Some(logger) = self.materialized_logger.as_mut() {
-                        logger.log(MaterializedEvent::Peek(peek.as_log_event(), false));
-                    }
+                    self.send_peek_response(peek, response);
                 } else {
                     self.pending_peeks.push(peek);
                 }
@@ -896,11 +887,12 @@ where
             }
 
             Command::CancelPeek { conn_id } => {
-                // Note that executing this command does not require responding
-                // to the coordinator, which will cancel its copy of the peek itself.
+                // Canceling a peek does not require communicating with the
+                // coordinator, which is responsible for its own cleanup of
+                // canceled peeks.
                 let logger = &mut self.materialized_logger;
                 self.pending_peeks.retain(|peek| {
-                    if peek.conn_id == conn_id {
+                    if peek.id.conn_id() == conn_id {
                         if let Some(logger) = logger {
                             logger.log(MaterializedEvent::Peek(peek.as_log_event(), false));
                         }
@@ -1118,22 +1110,34 @@ where
         );
         for mut peek in pending_peeks.drain(..) {
             if let Some(response) = peek.seek_fulfillment(&mut upper) {
-                // Respond with the response.
-                self.feedback_tx
-                    .send(Response {
-                        worker_id: self.timely_worker.index(),
-                        message: WorkerFeedback::PeekResponse(peek.conn_id, response),
-                    })
-                    .expect("feedback receiver should not drop first");
-
-                // Log the fulfillment of the peek.
-                if let Some(logger) = self.materialized_logger.as_mut() {
-                    logger.log(MaterializedEvent::Peek(peek.as_log_event(), false));
-                }
+                self.send_peek_response(peek, response);
             } else {
                 self.pending_peeks.push(peek);
             }
         }
+    }
+
+    /// Sends a response for this peek's resolution to the coordinator.
+    ///
+    /// Note that:
+    /// - This function takes ownership of the `PendingPeek`, which is meant to
+    ///   prevent multiple responses to the same peek.
+    /// - This code could be used for canceling peeks, but is not as a matter of
+    ///   efficiency because the coordinator does not await dataflow responses
+    ///   for canceled peeks and, in fact, ignores them.
+    fn send_peek_response(&mut self, peek: PendingPeek, response: PeekResponse) {
+        // Log the fulfillment of the peek.
+        if let Some(logger) = self.materialized_logger.as_mut() {
+            logger.log(MaterializedEvent::Peek(peek.as_log_event(), false));
+        }
+
+        // Respond with the response.
+        self.feedback_tx
+            .send(Response {
+                worker_id: self.timely_worker.index(),
+                message: WorkerFeedback::PeekResponse(peek.id, response),
+            })
+            .expect("feedback receiver should not drop first");
     }
 
     /// Scan the shared tail response buffer, and forward results along.
@@ -1156,14 +1160,16 @@ pub struct LocalInput {
 }
 
 /// An in-progress peek, and data to eventually fulfill it.
-#[derive(Clone)]
+///
+/// Note that `PendingPeek` intentionally does not implement or derive `Clone`,
+/// as each `PendingPeek` is meant to be dropped after it's responded to.
 struct PendingPeek {
+    /// An identifier for this peek.
+    id: PeekId,
     /// The identifier of the dataflow to peek.
-    id: GlobalId,
+    on_id: GlobalId,
     /// An optional key to use for the arrangement.
     key: Option<Row>,
-    /// The ID of the connection that submitted the peek. For logging only.
-    conn_id: u32,
     /// Time at which the collection should be materialized.
     timestamp: Timestamp,
     /// Finishing operations to perform on the peek, like an ordering and a
@@ -1178,7 +1184,7 @@ struct PendingPeek {
 impl PendingPeek {
     /// Produces a corresponding log event.
     pub fn as_log_event(&self) -> crate::logging::materialized::Peek {
-        crate::logging::materialized::Peek::new(self.id, self.timestamp, self.conn_id)
+        crate::logging::materialized::Peek::new(self.on_id, self.timestamp, self.id)
     }
 
     /// Attempts to fulfill the peek and reports success.
@@ -1339,5 +1345,51 @@ impl PendingPeek {
         }
 
         Ok(results)
+    }
+}
+
+/// Identifies a peek request originating from a connection.
+///
+/// The primary purpose of `PeekId` is to let the coordinator discard results of
+/// canceled peeks if those results come in after the peek's cancellation. This
+/// means that `peek_id` doesn't need to support any larger range of identifiers
+/// than we could possibly have outstanding peeks originating from a connection.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeekId {
+    conn_id: u32,
+    peek_id: u8,
+}
+
+impl PeekId {
+    /// Returns the ID of the connection that requested the peek.
+    pub fn conn_id(&self) -> u32 {
+        self.conn_id
+    }
+
+    /// Returns the ID of the peek itself.
+    pub fn peek_id(&self) -> u8 {
+        self.peek_id
+    }
+}
+
+/// Generates instances of [`PeekId`] as a function of connections' IDs.
+pub struct PeekIdGen(HashMap<u32, u8>);
+
+impl PeekIdGen {
+    /// Returns a new `PeekIdGen`.
+    pub fn new() -> PeekIdGen {
+        PeekIdGen(HashMap::new())
+    }
+
+    /// Generates a new [`PeekId`] as a function of a connection's ID.
+    pub fn gen_id(&mut self, conn_id: u32) -> PeekId {
+        let curr_id = self.0.entry(conn_id).or_insert(0);
+        let peek_id = *curr_id;
+        if curr_id == &u8::MAX {
+            *curr_id = 0;
+        } else {
+            *curr_id += 1;
+        }
+        PeekId { conn_id, peek_id }
     }
 }
