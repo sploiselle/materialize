@@ -1,0 +1,12 @@
+send
+Query {"query": "CREATE TABLE t (i int)"}
+Cancel
+----
+
+until
+ReadyForQuery
+ReadyForQuery
+----
+CommandComplete {"tag":"CREATE TABLE"}
+ReadyForQuery {"status":"I"}
+

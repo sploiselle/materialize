@@ -77,6 +77,8 @@ pub struct PgTest {
     send_buf: BytesMut,
     timeout: Duration,
     verbose: bool,
+    process_id: i32,
+    secret_key: i32,
 }
 
 impl PgTest {
@@ -87,6 +89,8 @@ impl PgTest {
             send_buf: BytesMut::new(),
             timeout,
             verbose: std::env::var_os("PGTEST_VERBOSE").is_some(),
+            process_id: 0,
+            secret_key: 0,
         };
         pgtest.stream.set_read_timeout(Some(timeout))?;
         pgtest.send(|buf| frontend::startup_message(vec![("user", user)], buf).unwrap())?;
@@ -94,7 +98,11 @@ impl PgTest {
             Message::AuthenticationOk => {}
             _ => bail!("expected AuthenticationOk"),
         };
-        pgtest.until(vec!["ReadyForQuery"], vec![], HashSet::new())?;
+        pgtest.until(
+            vec!["BackendKeyData", "ReadyForQuery"],
+            vec![],
+            HashSet::new(),
+        )?;
         Ok(pgtest)
     }
     pub fn send<F: Fn(&mut BytesMut)>(&mut self, f: F) -> anyhow::Result<()> {
@@ -117,6 +125,11 @@ impl PgTest {
                     Err(err) => bail!("{}: waiting for {}, saw {:#?}", err, expect, msgs),
                 };
                 let (typ, args) = match msg {
+                    Message::BackendKeyData(body) => {
+                        self.process_id = body.process_id();
+                        self.secret_key = body.secret_key();
+                        ("BackendKeyData", "".to_string())
+                    }
                     Message::ReadyForQuery(body) => (
                         "ReadyForQuery",
                         serde_json::to_string(&ReadyForQuery {
@@ -368,7 +381,10 @@ pub fn walk(addr: &str, user: &str, timeout: Duration, dir: &str) {
 }
 
 pub fn run_test(tf: &mut datadriven::TestFile, addr: &str, user: &str, timeout: Duration) {
+    println!("run_test");
     let mut pgt = PgTest::new(addr, user, timeout).unwrap();
+    let process_id = pgt.process_id;
+    let secret_key = pgt.secret_key;
     tf.run(|tc| -> String {
         let lines = tc.input.lines();
         match tc.directive.as_str() {
@@ -377,10 +393,17 @@ pub fn run_test(tf: &mut datadriven::TestFile, addr: &str, user: &str, timeout: 
                     if pgt.verbose {
                         println!("SEND {}", line);
                     }
+                    println!("line {:?}", line);
                     let mut line = line.splitn(2, ' ');
-                    let typ = line.next().unwrap_or("");
+                    let typ = line.next().unwrap_or("<empty>");
                     let args = line.next().unwrap_or("{}");
                     pgt.send(|buf| match typ {
+                        "Cancel" => {
+                            let mut pgt_inner = PgTest::new(addr, user, timeout).unwrap();
+                            pgt_inner
+                                .send(|buf| frontend::cancel_request(process_id, secret_key, buf))
+                                .unwrap();
+                        }
                         "Query" => {
                             let v: Query = serde_json::from_str(args).unwrap();
                             frontend::query(&v.query, buf).unwrap();
