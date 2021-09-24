@@ -7,6 +7,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(unused_imports)]
+
 /// This macro generates a definition of a UnaryFunc variant and automatically implements
 /// `UnaryFuncTrait` for it based on the provided function.
 ///
@@ -82,6 +84,7 @@ macro_rules! sqlfunc {
                 use std::fmt;
 
                 use repr::{ColumnType, Datum, FromTy, RowArena, ScalarType, WithArena};
+                use repr::adt::numeric::Numeric;
                 use serde::{Deserialize, Serialize};
                 use lowertest::MzStructReflect;
 

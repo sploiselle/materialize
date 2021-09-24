@@ -233,6 +233,27 @@ impl TryFrom<Datum<'_>> for Option<i64> {
     }
 }
 
+impl TryFrom<Datum<'_>> for Numeric {
+    type Error = ();
+    fn try_from(from: Datum<'_>) -> Result<Self, Self::Error> {
+        match from {
+            Datum::Numeric(i) => Ok(i.0),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<Datum<'_>> for Option<Numeric> {
+    type Error = ();
+    fn try_from(from: Datum<'_>) -> Result<Self, Self::Error> {
+        match from {
+            Datum::Null => Ok(None),
+            Datum::Numeric(i) => Ok(Some(i.0)),
+            _ => Err(()),
+        }
+    }
+}
+
 impl<'a> Datum<'a> {
     /// Reports whether this datum is null (i.e., is [`Datum::Null`]).
     pub fn is_null(&self) -> bool {
@@ -1030,6 +1051,12 @@ impl FromTy<i64> for ScalarType {
 impl FromTy<DateTime<Utc>> for ScalarType {
     fn from_ty() -> Self {
         Self::TimestampTz
+    }
+}
+
+impl FromTy<Numeric> for ScalarType {
+    fn from_ty() -> Self {
+        Self::Numeric { scale: None }
     }
 }
 

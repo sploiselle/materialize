@@ -7,6 +7,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(unused_imports)]
+
 mod datum;
 mod float32;
 mod float64;
@@ -14,6 +16,7 @@ mod int16;
 mod int32;
 mod int64;
 mod not;
+mod numeric;
 
 pub use datum::*;
 pub use float32::*;
@@ -22,3 +25,4 @@ pub use int16::*;
 pub use int32::*;
 pub use int64::*;
 pub use not::Not;
+pub use numeric::*;
