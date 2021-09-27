@@ -24,7 +24,7 @@ use crate::ast::display::{self, AstDisplay, AstFormatter};
 use crate::ast::{
     AstInfo, ColumnDef, CreateSinkConnector, CreateSourceConnector, CreateSourceFormat,
     CreateSourceKeyEnvelope, DataType, Envelope, Expr, Format, Ident, KeyConstraint, Query,
-    TableConstraint, TableFactor, UnresolvedObjectName, Value,
+    TableConstraint, TableFactor, TableWithJoins, UnresolvedObjectName, Value,
 };
 
 /// A top-level statement (SELECT, INSERT, CREATE, etc.)
@@ -304,6 +304,8 @@ impl_display_t!(UpdateStatement);
 pub struct DeleteStatement<T: AstInfo> {
     /// `FROM`
     pub table: TableFactor<T>,
+    /// `USING`
+    pub using: Vec<TableWithJoins<T>>,
     /// `WHERE`
     pub selection: Option<Expr<T>>,
 }
@@ -312,6 +314,10 @@ impl<T: AstInfo> AstDisplay for DeleteStatement<T> {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str("DELETE FROM ");
         f.write_node(&self.table);
+        if !self.using.is_empty() {
+            f.write_str(" USING ");
+            f.write_node(&display::comma_separated(&self.using));
+        }
         if let Some(selection) = &self.selection {
             f.write_str(" WHERE ");
             f.write_node(selection);

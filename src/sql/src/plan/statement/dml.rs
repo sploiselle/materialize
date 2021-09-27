@@ -22,9 +22,10 @@ use ore::collections::CollectionExt;
 use repr::{RelationDesc, ScalarType};
 
 use crate::ast::{
-    CopyDirection, CopyRelation, CopyStatement, CopyTarget, CreateViewStatement, DeleteStatement,
-    ExplainStage, ExplainStatement, Explainee, Ident, InsertStatement, Query, Raw, SelectStatement,
-    Statement, TailStatement, UnresolvedObjectName, UpdateStatement, ViewDefinition,
+    Assignment, CopyDirection, CopyRelation, CopyStatement, CopyTarget, CreateViewStatement,
+    DeleteStatement, ExplainStage, ExplainStatement, Explainee, Expr, Ident, InsertStatement,
+    Query, Raw, SelectStatement, Statement, TableWithJoins, TailStatement, UnresolvedObjectName,
+    UpdateStatement, ViewDefinition,
 };
 use crate::catalog::CatalogItemType;
 use crate::plan::query;

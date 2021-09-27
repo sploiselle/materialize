@@ -52,6 +52,7 @@ Put breaking changes before other release notes.
 - Throw errors on floating point arithmetic overflow and underflow.
 
 {{% version-header v0.9.7 %}}
+
 - Support the `IS TRUE`, `IS FALSE`, `IS UNKNOWN` operators (and their `NOT`
   variations). {{% gh 8455 %}}
 - Add support for retention settings on Kafka sinks.
@@ -61,6 +62,8 @@ Put breaking changes before other release notes.
 
 - Fix a bug that prevented some users from creating Protobuf-formatted
   sources. {{% gh 8528 %}}
+
+- Let users express `JOIN`-like `DELETE`s with `DELETE...USING`.
 
 {{% version-header v0.9.6 %}}
 

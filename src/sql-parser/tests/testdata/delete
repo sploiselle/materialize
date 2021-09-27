@@ -28,7 +28,7 @@ DELETE FROM table
 ----
 DELETE FROM table
 =>
-Delete(DeleteStatement { table: Table { name: Name(UnresolvedObjectName([Ident("table")])), alias: None }, selection: None })
+Delete(DeleteStatement { table: Table { name: Name(UnresolvedObjectName([Ident("table")])), alias: None }, using: [] selection: None })
 
 parse-statement roundtrip
 DELETE FROM foo WHERE name = 5
@@ -40,4 +40,11 @@ DELETE FROM foo WHERE name = 5
 ----
 DELETE FROM foo WHERE name = 5
 =>
-Delete(DeleteStatement { table: Table { name: Name(UnresolvedObjectName([Ident("foo")])), alias: None }, selection: Some(Op { op: "=", expr1: Identifier([Ident("name")]), expr2: Some(Value(Number("5"))) }) })
+Delete(DeleteStatement { table: Table { name: Name(UnresolvedObjectName([Ident("foo")])), alias: None }, using: [], selection: Some(Op { op: "=", expr1: Identifier([Ident("name")]), expr2: Some(Value(Number("5"))) }) })
+
+parse-statement
+DELETE FROM table USING foo JOIN bar baz USING (qux) WHERE name = 5
+----
+DELETE FROM table USING foo JOIN bar AS baz USING (qux) WHERE name = 5
+=>
+Delete(DeleteStatement { table_name: UnresolvedObjectName([Ident("table")]), using: [TableWithJoins { relation: Table { name: Name(UnresolvedObjectName([Ident("foo")])), alias: None }, joins: [Join { relation: Table { name: Name(UnresolvedObjectName([Ident("bar")])), alias: Some(TableAlias { name: Ident("baz"), columns: [], strict: false }) }, join_operator: Inner(Using([Ident("qux")])) }] }], selection: Some(Op { op: "=", expr1: Identifier([Ident("name")]), expr2: Some(Value(Number("5"))) }) })

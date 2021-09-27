@@ -700,12 +700,15 @@ pub fn plan_delete_query(
     )?;
 
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
-    let DeleteStatement { table, selection } =
-        resolve_names_extend_qcx_ids(&mut qcx, move |n: &mut NameResolver| {
-            n.fold_delete_statement(delete_stmt)
-        })?;
+    let DeleteStatement {
+        table,
+        using,
+        selection,
+    } = resolve_names_extend_qcx_ids(&mut qcx, move |n: &mut NameResolver| {
+        n.fold_delete_statement(delete_stmt)
+    })?;
 
-    plan_mutation_query_inner(qcx, table, vec![], selection)
+    plan_mutation_query_inner(qcx, table, using, vec![], selection)
 }
 
 pub fn plan_update_query(
@@ -727,16 +730,17 @@ pub fn plan_update_query(
         n.fold_update_statement(update_stmt)
     })?;
 
-    plan_mutation_query_inner(qcx, table, assignments, selection)
+    plan_mutation_query_inner(qcx, table, vec![], assignments, selection)
 }
 
 pub fn plan_mutation_query_inner(
-    qcx: QueryContext,
+    mut qcx: QueryContext,
     table: TableFactor<Aug>,
+    using: Vec<TableWithJoins<Aug>>,
     assignments: Vec<Assignment<Aug>>,
     selection: Option<Expr<Aug>>,
 ) -> Result<ReadThenWritePlan, anyhow::Error> {
-    let (id, desc, get, scope) = match table {
+    let (id, desc, mut get, scope) = match table {
         TableFactor::Table { name, alias } => {
             let id = match name.id {
                 Id::Global(id) => id,
@@ -758,8 +762,8 @@ pub fn plan_mutation_query_inner(
 
     let relation_type = qcx.relation_type(&get);
 
-    let selection: HirRelationExpr = match selection {
-        Some(expr) => {
+    if using.is_empty() {
+        if let Some(expr) = selection {
             let ecx = &ExprContext {
                 qcx: &qcx,
                 name: "WHERE clause",
@@ -769,13 +773,11 @@ pub fn plan_mutation_query_inner(
                 allow_subqueries: true,
             };
             let expr = plan_expr(&ecx, &expr)?.type_as(&ecx, &ScalarType::Bool)?;
-            HirRelationExpr::Filter {
-                input: Box::new(get),
-                predicates: vec![expr],
-            }
+            get = get.filter(vec![expr]);
         }
-        None => get,
-    };
+    } else {
+        get = handle_mutation_using_clause(&mut qcx, selection, using, get, scope.clone())?;
+    }
 
     let mut sets = HashMap::new();
     for Assignment { id, value } in assignments {
@@ -815,10 +817,105 @@ pub fn plan_mutation_query_inner(
 
     Ok(ReadThenWritePlan {
         id,
-        selection,
+        selection: get,
         finishing,
         assignments: sets,
     })
+}
+
+// Adjust `get` to perform an existential subquery on `using` accounting for
+// `selection`.
+//
+// If `USING`, we essentially want to rewrite the query as a correlated
+// existential subquery, i.e.
+// ```
+// ...WHERE EXISTS (SELECT 1 FROM <using> WHERE <selection>)
+// ```
+// However, we can't do that directly because of esoteric rules w/r/t `lateral`
+// subqueries.
+// https://github.com/postgres/postgres/commit/158b7fa6a34006bdc70b515e14e120d3e896589b
+
+fn handle_mutation_using_clause(
+    qcx: &mut QueryContext,
+    selection: Option<Expr<Aug>>,
+    mut using: Vec<TableWithJoins<Aug>>,
+    get: HirRelationExpr,
+    outer_scope: Scope,
+) -> Result<HirRelationExpr, anyhow::Error> {
+    // Plan `USING` as a cross-joined `FROM` without knowledge of the
+    // statement's `FROM` target. This prevents `lateral` subqueries from
+    // "seeing" the `FROM` target.
+    let (mut using_rel_expr, using_scope) =
+        using
+            .drain(..)
+            .fold(Ok(plan_join_identity(&qcx)), |l, twj| {
+                let (left, left_scope) = l?;
+                plan_table_with_joins(&qcx, left, left_scope, &twj)
+            })?;
+
+    if let Some(expr) = selection {
+        // Join `FROM` with `USING` tables, like `FROM, USING...`. This gives us
+        // PG-like semantics e.g. expressing ambiguous column references. We put
+        // `FROM` first for no real reason, but making a different decision
+        // would require adjusting the column references on this relation
+        // differently.
+        let (joined, joined_scope) = plan_join_operator(
+            &JoinOperator::CrossJoin,
+            qcx,
+            get.clone(),
+            outer_scope,
+            &qcx,
+            using_rel_expr.clone(),
+            using_scope,
+            false,
+        )?;
+
+        // Treat any `WHERE` clause as being executed in a subquery.
+        let joined_relation_type = qcx.relation_type(&joined);
+        let subquery_qcx = qcx.derived_context(qcx.outer_scope.clone(), &joined_relation_type);
+
+        let ecx = &ExprContext {
+            qcx: &subquery_qcx,
+            name: "WHERE clause",
+            scope: &joined_scope,
+            relation_type: &joined_relation_type,
+            allow_aggregates: false,
+            allow_subqueries: true,
+        };
+
+        // Plan the filter expression on `FROM, USING...`.
+        let mut expr = plan_expr(&ecx, &expr)?.type_as(&ecx, &ScalarType::Bool)?;
+
+        // Rewrite all column referring to `FROM` to instead be correlated to
+        // the outer relation. This also means shifting all references to the
+        // `USING` tables left by the number of columns in `FROM`.
+        let get_arity = qcx.relation_type(&get).arity();
+        expr.visit_mut(&mut |e| {
+            if let HirScalarExpr::Column(c) = e {
+                if c.column < get_arity {
+                    c.level += 1;
+                } else {
+                    c.column -= get_arity;
+                };
+            }
+        });
+
+        // Filter `USING` tables like `<using_rel_expr> WHERE <expr>`. Note that
+        // this filters the `USING` tables, _not_ the joined `FROM, USING...`
+        // relation.
+        using_rel_expr = using_rel_expr.filter(vec![expr]);
+    }
+    // From pg: Since the result [of EXISTS (<subquery>)] depends only on
+    // whether any rows are returned, and not on the contents of those rows,
+    // the output list of the subquery is normally unimportant.
+    //
+    // This means we don't need to worry about projecting/mapping any
+    // additional expressions here.
+    //
+    // https://www.postgresql.org/docs/14/functions-subquery.html
+
+    // Filter `get` like `...WHERE EXISTS (<using_rel_expr>)`.
+    Ok(get.filter(vec![using_rel_expr.exists()]))
 }
 
 struct CastRelationError {
@@ -1063,8 +1160,8 @@ fn plan_query(
     qcx: &mut QueryContext,
     q: &Query<Aug>,
 ) -> Result<(HirRelationExpr, Scope, RowSetFinishing), anyhow::Error> {
-    // Retain the old values of various CTE names so that we can restore them after we're done
-    // planning this SELECT.
+    // Retain the old values of various CTE names so that we can restore them
+    // after we're done planning this SELECT.
     let mut old_cte_values = Vec::new();
     // A single WITH block cannot use the same name multiple times.
     let mut used_names = HashSet::new();
@@ -2117,6 +2214,7 @@ fn invent_column_name(ecx: &ExprContext, expr: &Expr<Aug>) -> Option<ScopeItemNa
     })
 }
 
+#[derive(Debug)]
 enum ExpandedSelectItem<'a> {
     InputOrdinal(usize),
     Expr(Cow<'a, Expr<Aug>>),

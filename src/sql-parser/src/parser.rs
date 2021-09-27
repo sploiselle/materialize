@@ -3092,13 +3092,24 @@ impl<'a> Parser<'a> {
             name: RawName::Name(self.parse_object_name()?),
             alias: self.parse_optional_table_alias()?,
         };
+
+        let using = if self.parse_keyword(USING) {
+            self.parse_comma_separated(Parser::parse_table_and_joins)?
+        } else {
+            vec![]
+        };
+
         let selection = if self.parse_keyword(WHERE) {
             Some(self.parse_expr()?)
         } else {
             None
         };
 
-        Ok(Statement::Delete(DeleteStatement { table, selection }))
+        Ok(Statement::Delete(DeleteStatement {
+            table,
+            using,
+            selection,
+        }))
     }
 
     /// Parse a query expression, i.e. a `SELECT` statement optionally
