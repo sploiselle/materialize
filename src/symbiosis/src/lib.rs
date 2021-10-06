@@ -39,8 +39,8 @@ use repr::adt::numeric;
 use repr::{Datum, RelationDesc, RelationType, Row};
 use sql::ast::{
     ColumnOption, CreateSchemaStatement, CreateTableStatement, DataType, DeleteStatement,
-    DropObjectsStatement, Expr, InsertStatement, ObjectType, Raw, Statement, TableConstraint,
-    UpdateStatement,
+    DropObjectsStatement, Expr, InsertStatement, ObjectType, Raw, RawName, Statement,
+    TableConstraint, TableFactor, UpdateStatement,
 };
 use sql::catalog::SessionCatalog;
 use sql::names::{DatabaseSpecifier, FullName};
@@ -290,9 +290,16 @@ END $$;
                     ty: ObjectType::Table,
                 })
             }
-            Statement::Delete(DeleteStatement { table_name, .. }) => {
+            Statement::Delete(DeleteStatement { table, .. }) => {
+                let name = match table {
+                    TableFactor::Table { name, .. } => match name {
+                        RawName::Name(name) => name,
+                        _ => bail!("delete must be on name"),
+                    },
+                    _ => bail!("delete only supports tables"),
+                };
                 let mut updates = vec![];
-                let table = scx.resolve_item(table_name.clone())?;
+                let table = scx.resolve_item(name.clone())?;
                 let sql = format!("{} RETURNING *", stmt.to_string());
                 for row in self.run_query(table.name(), sql, 0).await? {
                     updates.push((row, -1));
@@ -321,13 +328,19 @@ END $$;
                 })
             }
             Statement::Update(UpdateStatement {
-                table_name,
-                selection,
-                ..
+                table, selection, ..
             }) => {
+                let name = match table {
+                    TableFactor::Table { name, .. } => match name {
+                        RawName::Name(name) => name,
+                        _ => bail!("update must be on name"),
+                    },
+                    _ => bail!("update only supports tables"),
+                };
+
                 let mut updates = vec![];
-                let mut sql = format!("SELECT * FROM {}", table_name);
-                let table = scx.resolve_item(table_name.clone())?;
+                let mut sql = format!("SELECT * FROM {}", name);
+                let table = scx.resolve_item(name.clone())?;
                 if let Some(selection) = selection {
                     sql += &format!(" WHERE {}", selection);
                 }

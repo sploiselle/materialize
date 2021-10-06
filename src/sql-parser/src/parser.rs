@@ -3088,17 +3088,17 @@ impl<'a> Parser<'a> {
 
     fn parse_delete(&mut self) -> Result<Statement<Raw>, ParserError> {
         self.expect_keyword(FROM)?;
-        let table_name = self.parse_object_name()?;
+        let table = TableFactor::Table {
+            name: RawName::Name(self.parse_object_name()?),
+            alias: self.parse_optional_table_alias()?,
+        };
         let selection = if self.parse_keyword(WHERE) {
             Some(self.parse_expr()?)
         } else {
             None
         };
 
-        Ok(Statement::Delete(DeleteStatement {
-            table_name,
-            selection,
-        }))
+        Ok(Statement::Delete(DeleteStatement { table, selection }))
     }
 
     /// Parse a query expression, i.e. a `SELECT` statement optionally
@@ -3830,7 +3830,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_update(&mut self) -> Result<Statement<Raw>, ParserError> {
-        let table_name = self.parse_object_name()?;
+        let table = TableFactor::Table {
+            name: RawName::Name(self.parse_object_name()?),
+            // TODO(sploiselle): permit aliases with `USING`.
+            alias: None,
+        };
+
         self.expect_keyword(SET)?;
         let assignments = self.parse_comma_separated(Parser::parse_assignment)?;
         let selection = if self.parse_keyword(WHERE) {
@@ -3838,8 +3843,9 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+
         Ok(Statement::Update(UpdateStatement {
-            table_name,
+            table,
             assignments,
             selection,
         }))

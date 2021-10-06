@@ -24,7 +24,7 @@ use crate::ast::display::{self, AstDisplay, AstFormatter};
 use crate::ast::{
     AstInfo, ColumnDef, CreateSinkConnector, CreateSourceConnector, CreateSourceFormat,
     CreateSourceKeyEnvelope, DataType, Envelope, Expr, Format, Ident, KeyConstraint, Query,
-    TableConstraint, UnresolvedObjectName, Value,
+    TableConstraint, TableFactor, UnresolvedObjectName, Value,
 };
 
 /// A top-level statement (SELECT, INSERT, CREATE, etc.)
@@ -276,7 +276,7 @@ impl_display_t!(CopyStatement);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UpdateStatement<T: AstInfo> {
     /// TABLE
-    pub table_name: UnresolvedObjectName,
+    pub table: TableFactor<T>,
     /// Column assignments
     pub assignments: Vec<Assignment<T>>,
     /// WHERE
@@ -286,7 +286,7 @@ pub struct UpdateStatement<T: AstInfo> {
 impl<T: AstInfo> AstDisplay for UpdateStatement<T> {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str("UPDATE ");
-        f.write_node(&self.table_name);
+        f.write_node(&self.table);
         if !self.assignments.is_empty() {
             f.write_str(" SET ");
             f.write_node(&display::comma_separated(&self.assignments));
@@ -303,7 +303,7 @@ impl_display_t!(UpdateStatement);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeleteStatement<T: AstInfo> {
     /// `FROM`
-    pub table_name: UnresolvedObjectName,
+    pub table: TableFactor<T>,
     /// `WHERE`
     pub selection: Option<Expr<T>>,
 }
@@ -311,7 +311,7 @@ pub struct DeleteStatement<T: AstInfo> {
 impl<T: AstInfo> AstDisplay for DeleteStatement<T> {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str("DELETE FROM ");
-        f.write_node(&self.table_name);
+        f.write_node(&self.table);
         if let Some(selection) = &self.selection {
             f.write_str(" WHERE ");
             f.write_node(selection);
