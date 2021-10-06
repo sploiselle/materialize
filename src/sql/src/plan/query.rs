@@ -48,7 +48,7 @@ use repr::{
     Timestamp,
 };
 
-use crate::catalog::{CatalogItemType, SessionCatalog};
+use crate::catalog::{CatalogItem, CatalogItemType, SessionCatalog};
 use crate::func::{self, Func, FuncSpec};
 use crate::names::PartialName;
 use crate::normalize;
@@ -724,7 +724,7 @@ pub fn plan_delete_query(
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
     let DeleteStatement { table, selection } = resolve_names_delete(&mut qcx, delete_stmt)?;
 
-    plan_mutation_query_inner(scx, qcx, table, vec![], selection)
+    plan_mutation_query_inner(qcx, table, vec![], selection)
 }
 
 pub fn plan_update_query(
@@ -744,11 +744,10 @@ pub fn plan_update_query(
         selection,
     } = resolve_names_update(&mut qcx, update_stmt)?;
 
-    plan_mutation_query_inner(scx, qcx, table, assignments, selection)
+    plan_mutation_query_inner(qcx, table, assignments, selection)
 }
 
 pub fn plan_mutation_query_inner(
-    scx: &StatementContext,
     qcx: QueryContext,
     table: TableFactor<Aug>,
     assignments: Vec<Assignment<Aug>>,
@@ -757,29 +756,17 @@ pub fn plan_mutation_query_inner(
     let (id, desc, get, scope) = match table {
         TableFactor::Table { name, alias } => {
             let id = match name.id {
-                Id::LocalBareSource | Id::Local(..) => {
-                    bail!("cannot mutate non-user table")
-                }
-                Id::Global(id) => {
-                    if id.is_system() {
-                        bail!("cannot mutate system table '{}'", name);
-                    }
-                    id
-                }
+                Id::Global(id) => id,
+                _ => bail!("cannot mutate non-user table"),
             };
-
-            let item = scx.get_item_by_id(&id);
-            let desc = item.desc()?.clone();
-            let expr = HirRelationExpr::Get {
-                id: Id::Global(item.id()),
-                typ: desc.typ().clone(),
-            };
-
-            let scope = Scope::from_source(
-                Some(name.raw_name),
-                desc.iter_names().map(|n| n.cloned()),
-                Some(qcx.outer_scope.clone()),
-            );
+            let (item, desc, expr, scope) = qcx.resolve_table_name(name)?;
+            let item = item.expect("verified id is global so item.is_some()");
+            if item.item_type() != CatalogItemType::Table {
+                bail!("cannot mutate {} '{}'", item.item_type(), item.name());
+            }
+            if id.is_system() {
+                bail!("cannot mutate system table '{}'", item.name());
+            }
             let scope = plan_table_alias(scope, alias.as_ref())?;
             (id, desc, expr, scope)
         }
@@ -1957,7 +1944,7 @@ fn plan_table_factor(
 
     let (expr, scope) = match table_factor {
         TableFactor::Table { name, alias } => {
-            let (expr, scope) = qcx.resolve_table_name(name.clone())?;
+            let (_item, _desc, expr, scope) = qcx.resolve_table_name(name.clone())?;
             let scope = plan_table_alias(scope, alias.as_ref())?;
             (expr, scope)
         }
@@ -3682,7 +3669,15 @@ impl<'a> QueryContext<'a> {
     pub fn resolve_table_name(
         &self,
         object: ResolvedObjectName,
-    ) -> Result<(HirRelationExpr, Scope), PlanError> {
+    ) -> Result<
+        (
+            Option<&dyn CatalogItem>,
+            RelationDesc,
+            HirRelationExpr,
+            Scope,
+        ),
+        PlanError,
+    > {
         match object.id {
             Id::Local(id) => {
                 let name = object.raw_name;
@@ -3703,7 +3698,7 @@ impl<'a> QueryContext<'a> {
                 // Inline `val` where its name was referenced. In an ideal
                 // world, multiple instances of this expression would be
                 // de-duplicated.
-                Ok((val, scope))
+                Ok((None, cte.val_desc.clone(), val, scope))
             }
             Id::Global(id) => {
                 let item = self.scx.get_item_by_id(&id);
@@ -3719,7 +3714,7 @@ impl<'a> QueryContext<'a> {
                     Some(self.outer_scope.clone()),
                 );
 
-                Ok((expr, scope))
+                Ok((Some(item), desc, expr, scope))
             }
             Id::LocalBareSource => {
                 // This is never introduced except when planning source transformations.
