@@ -192,6 +192,8 @@ pub fn plan(
         param_types: Rc::new(RefCell::new(param_types)),
     };
 
+    let stmt = query::resolve_names_stmt(catalog, stmt)?;
+
     match stmt {
         // DDL statements.
         Statement::CreateDatabase(stmt) => ddl::plan_create_database(scx, stmt),
