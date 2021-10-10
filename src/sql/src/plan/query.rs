@@ -308,41 +308,24 @@ pub fn resolve_names_data_type(
     Ok((result, n.ids))
 }
 
-// pub fn transform_expr(scx: &StatementContext, expr: &mut Expr<Raw>) -> Result<(), anyhow::Error> {
-//     run_transforms(scx, |t, expr| t.visit_expr_mut(expr), expr)
-// }
-
-// pub(crate) fn run_transforms<F, A>(
-//     scx: &StatementContext,
-//     mut f: F,
-//     ast: &mut A,
-// ) -> Result<(), anyhow::Error>
-// where
-//     F: for<'ast> FnMut(&mut dyn VisitMut<'ast, Raw>, &'ast mut A),
-// {
-//     let mut func_rewriter = FuncRewriter::new(scx);
-//     f(&mut func_rewriter, ast);
-//     func_rewriter.status?;
-
-//     let mut desugarer = Desugarer::new();
-//     f(&mut desugarer, ast);
-//     desugarer.status
-// }
-
 /// A general implementation for name resolution on AST elements.
 ///
 /// This implementation is appropriate Whenever:
 /// - You don't need to export the name resolution outside the `sql` crate and
 ///   the extra typing isn't too onerous.
 /// - Discovered dependencies should extend `qcx.ids`.
-fn resolve_names_extend_qcx_ids<'s, S, T, F>(
+fn transform_resolve_stmt<'s, S, T, F, G>(
     qcx: &mut QueryContext<'s>,
-    stmt: T,
+    mut stmt: T,
+    transform: G,
     fold: F,
 ) -> Result<S, anyhow::Error>
 where
+    G: for<'ast> FnMut(&mut dyn VisitMut<'ast, Raw>, &'ast mut T),
     F: Fn(&mut NameResolver<'s>, T) -> S,
 {
+    transform_ast::run_transforms(qcx.scx, transform, &mut stmt)?;
+
     let mut n = NameResolver::new(qcx.scx.catalog);
     let result = fold(&mut n, stmt);
     n.status?;
@@ -437,21 +420,20 @@ fn try_push_projection_order_by(
 
 pub fn plan_insert_query(
     scx: &StatementContext,
-    mut insert_stmt: InsertStatement<Raw>,
+    insert_stmt: InsertStatement<Raw>,
 ) -> Result<(GlobalId, HirRelationExpr), anyhow::Error> {
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
-
-    transform_ast::run_transforms(
-        scx,
-        |t, insert_stmt| t.visit_insert_statement_mut(insert_stmt),
-        &mut insert_stmt,
-    )?;
 
     let InsertStatement {
         table_name,
         columns,
         source,
-    } = resolve_names_extend_qcx_ids(&mut qcx, insert_stmt, NameResolver::fold_insert_statement)?;
+    } = transform_resolve_stmt(
+        &mut qcx,
+        insert_stmt,
+        |t, insert_stmt| t.visit_insert_statement_mut(insert_stmt),
+        NameResolver::fold_insert_statement,
+    )?;
 
     // Get global ID.
     let id = match table_name.id {
@@ -732,41 +714,40 @@ pub struct ReadThenWritePlan {
 
 pub fn plan_delete_query(
     scx: &StatementContext,
-    mut delete_stmt: DeleteStatement<Raw>,
+    delete_stmt: DeleteStatement<Raw>,
 ) -> Result<ReadThenWritePlan, anyhow::Error> {
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
-    transform_ast::run_transforms(
-        scx,
-        |t, delete_stmt| t.visit_delete_statement_mut(delete_stmt),
-        &mut delete_stmt,
-    )?;
 
     let DeleteStatement {
         table_name,
         alias,
         selection,
-    } = resolve_names_extend_qcx_ids(&mut qcx, delete_stmt, NameResolver::fold_delete_statement)?;
+    } = transform_resolve_stmt(
+        &mut qcx,
+        delete_stmt,
+        |t, delete_stmt| t.visit_delete_statement_mut(delete_stmt),
+        NameResolver::fold_delete_statement,
+    )?;
 
     plan_mutation_query_inner(qcx, table_name, alias, vec![], selection)
 }
 
 pub fn plan_update_query(
     scx: &StatementContext,
-    mut update_stmt: UpdateStatement<Raw>,
+    update_stmt: UpdateStatement<Raw>,
 ) -> Result<ReadThenWritePlan, anyhow::Error> {
-    transform_ast::run_transforms(
-        scx,
-        |t, update_stmt| t.visit_update_statement_mut(update_stmt),
-        &mut update_stmt,
-    )?;
-
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
+
     let UpdateStatement {
         table_name,
         assignments,
         selection,
-    } = resolve_names_extend_qcx_ids(&mut qcx, update_stmt, NameResolver::fold_update_statement)?;
-
+    } = transform_resolve_stmt(
+        &mut qcx,
+        update_stmt,
+        |t, update_stmt| t.visit_update_statement_mut(update_stmt),
+        NameResolver::fold_update_statement,
+    )?;
     plan_mutation_query_inner(qcx, table_name, None, assignments, selection)
 }
 
