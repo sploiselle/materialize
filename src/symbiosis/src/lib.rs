@@ -305,7 +305,7 @@ END $$;
             }
             Statement::Insert(InsertStatement { table_name, .. }) => {
                 let mut updates = vec![];
-                let table = scx.resolve_item(table_name.clone())?;
+                let table = scx.resolve_item(table_name.name().clone())?;
                 // RETURNING cannot return zero columns, but we might be
                 // executing INSERT INTO t DEFAULT VALUES where t is a zero
                 // arity table. So use a time-honored trick of always including

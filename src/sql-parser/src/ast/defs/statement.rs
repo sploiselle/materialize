@@ -159,7 +159,7 @@ impl_display_t!(SelectStatement);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InsertStatement<T: AstInfo> {
     /// TABLE
-    pub table_name: UnresolvedObjectName,
+    pub table_name: T::ObjectName,
     /// COLUMNS
     pub columns: Vec<Ident>,
     /// A SQL query that specifies what to insert.

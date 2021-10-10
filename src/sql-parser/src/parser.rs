@@ -3817,7 +3817,7 @@ impl<'a> Parser<'a> {
     /// Parse an INSERT statement
     fn parse_insert(&mut self) -> Result<Statement<Raw>, ParserError> {
         self.expect_keyword(INTO)?;
-        let table_name = self.parse_object_name()?;
+        let table_name = RawName::Name(self.parse_object_name()?);
         let columns = self.parse_parenthesized_column_list(Optional)?;
         let source = if self.parse_keywords(&[DEFAULT, VALUES]) {
             InsertSource::DefaultValues

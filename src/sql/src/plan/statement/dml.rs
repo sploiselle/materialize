@@ -43,27 +43,18 @@ use crate::plan::{
 
 pub fn describe_insert(
     scx: &StatementContext,
-    InsertStatement {
-        table_name,
-        columns,
-        source,
-        ..
-    }: InsertStatement<Raw>,
+    insert_stmt: InsertStatement<Raw>,
 ) -> Result<StatementDesc, anyhow::Error> {
-    query::plan_insert_query(scx, table_name, columns, source)?;
+    query::plan_insert_query(scx, insert_stmt)?;
     Ok(StatementDesc::new(None))
 }
 
 pub fn plan_insert(
     scx: &StatementContext,
-    InsertStatement {
-        table_name,
-        columns,
-        source,
-    }: InsertStatement<Raw>,
+    insert_stmt: InsertStatement<Raw>,
     params: &Params,
 ) -> Result<Plan, anyhow::Error> {
-    let (id, mut expr) = query::plan_insert_query(scx, table_name, columns, source)?;
+    let (id, mut expr) = query::plan_insert_query(scx, insert_stmt)?;
     expr.bind_parameters(&params)?;
     let expr = expr.lower();
 

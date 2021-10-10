@@ -36,9 +36,9 @@ use sql_parser::ast::fold::Fold;
 use sql_parser::ast::visit::{self, Visit};
 use sql_parser::ast::{
     Assignment, AstInfo, Cte, DataType, DeleteStatement, Distinct, Expr, Function, FunctionArgs,
-    Ident, InsertSource, IsExprConstruct, JoinConstraint, JoinOperator, Limit, OrderByExpr, Query,
-    Raw, RawName, Select, SelectItem, SetExpr, SetOperator, Statement, TableAlias, TableFactor,
-    TableWithJoins, UnresolvedObjectName, UpdateStatement, Value, Values,
+    Ident, InsertSource, InsertStatement, IsExprConstruct, JoinConstraint, JoinOperator, Limit,
+    OrderByExpr, Query, Raw, RawName, Select, SelectItem, SetExpr, SetOperator, Statement,
+    TableAlias, TableFactor, TableWithJoins, UnresolvedObjectName, UpdateStatement, Value, Values,
 };
 
 use ::expr::{GlobalId, Id, RowSetFinishing};
@@ -410,12 +410,31 @@ fn try_push_projection_order_by(
 
 pub fn plan_insert_query(
     scx: &StatementContext,
-    table_name: UnresolvedObjectName,
-    columns: Vec<Ident>,
-    source: InsertSource<Raw>,
+    mut insert_stmt: InsertStatement<Raw>,
 ) -> Result<(GlobalId, HirRelationExpr), anyhow::Error> {
+    transform_ast::run_transforms(
+        scx,
+        |t, insert_stmt| t.visit_insert_statement_mut(insert_stmt),
+        &mut insert_stmt,
+    )?;
+
     let mut qcx = QueryContext::root(scx, QueryLifetime::OneShot(scx.pcx()?));
-    let table = scx.resolve_item(table_name)?;
+
+    let InsertStatement {
+        table_name,
+        columns,
+        source,
+    } = resolve_names_extend_qcx_ids(&mut qcx, move |n: &mut NameResolver| {
+        n.fold_insert_statement(insert_stmt)
+    })?;
+
+    // Get global ID.
+    let id = match table_name.id {
+        Id::Global(id) => id,
+        _ => bail!("cannot insert into non-user table"),
+    };
+
+    let table = scx.get_item_by_id(&id);
 
     // Validate the target of the insert.
     if table.item_type() != CatalogItemType::Table {
@@ -472,10 +491,7 @@ pub fn plan_insert_query(
 
     // Plan the source.
     let expr = match source {
-        InsertSource::Query(mut query) => {
-            transform_ast::transform_query(scx, &mut query)?;
-            let query = resolve_names(&mut qcx, query)?;
-
+        InsertSource::Query(query) => {
             match query {
                 // Special-case simple VALUES clauses, as PostgreSQL does, so
                 // we can pass in a type hint for literal coercions.
