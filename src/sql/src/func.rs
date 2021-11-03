@@ -1384,6 +1384,9 @@ lazy_static! {
                     Ok(HirScalarExpr::literal(datum, ScalarType::String))
                 }), 746;
             },
+            "window_tumbling" => Scalar {
+                params!(Timestamp, Interval) => BinaryFunc::WindowTumbling, 1;
+            },
             "date_bin" => Scalar {
                 params!(Interval, Timestamp) => Operation::binary(|ecx, stride, source| {
                     ecx.require_experimental_mode("binary date_bin")?;
