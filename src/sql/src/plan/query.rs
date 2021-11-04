@@ -1186,7 +1186,7 @@ fn plan_query(
         used_names.insert(cte_name.clone());
 
         // Plan CTE.
-        let (val, scope) = plan_subquery(qcx, &cte.query)?;
+        let (val, scope) = dbg!(plan_subquery(qcx, &cte.query)?);
         let typ = qcx.relation_type(&val);
         let mut val_desc = RelationDesc::new(typ, scope.column_names());
         val_desc = plan_utils::maybe_rename_columns(
@@ -1263,7 +1263,7 @@ fn plan_query(
         }
     };
 
-    result
+    dbg!(result)
 }
 
 fn plan_subquery(
