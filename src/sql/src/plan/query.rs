@@ -23,9 +23,9 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::fmt;
 use std::iter;
 use std::mem;
+use std::{any, fmt};
 
 use anyhow::{anyhow, bail, ensure, Context};
 use expr::{func as expr_func, LocalId};
@@ -767,9 +767,15 @@ pub fn plan_mutation_query_inner(
         bail!("cannot mutate system table '{}'", item.name());
     }
 
+    let mut dnc = DuplicateNameChecker(HashSet::new());
+
     // Derive structs for operation from validated table
-    let (mut get, scope) = qcx.resolve_table_name(table_name)?;
-    let scope = plan_table_alias(scope, alias.as_ref())?;
+    let (mut get, mut scope) = qcx.resolve_table_name(table_name)?;
+    if alias.is_some() {
+        scope = plan_table_alias(scope, alias.as_ref(), &mut dnc)?;
+    } else {
+        dnc.insert(item.name().item.clone())?;
+    }
     let desc = item.desc()?;
     let relation_type = qcx.relation_type(&get);
 
@@ -787,7 +793,7 @@ pub fn plan_mutation_query_inner(
             get = get.filter(vec![expr]);
         }
     } else {
-        get = handle_mutation_using_clause(&qcx, selection, using, get, scope.clone())?;
+        get = handle_mutation_using_clause(&qcx, selection, using, get, scope.clone(), &mut dnc)?;
     }
 
     let mut sets = HashMap::new();
@@ -851,6 +857,7 @@ fn handle_mutation_using_clause(
     mut using: Vec<TableWithJoins<Aug>>,
     get: HirRelationExpr,
     outer_scope: Scope,
+    dnc: &mut DuplicateNameChecker,
 ) -> Result<HirRelationExpr, anyhow::Error> {
     // Plan `USING` as a cross-joined `FROM` without knowledge of the
     // statement's `FROM` target. This prevents `lateral` subqueries from
@@ -860,7 +867,7 @@ fn handle_mutation_using_clause(
             .drain(..)
             .fold(Ok(plan_join_identity(&qcx)), |l, twj| {
                 let (left, left_scope) = l?;
-                plan_table_with_joins(&qcx, left, left_scope, &twj)
+                plan_table_with_joins(&qcx, left, left_scope, &twj, dnc)
             })?;
 
     if let Some(expr) = selection {
@@ -1482,6 +1489,16 @@ struct SelectPlan {
     project: Vec<usize>,
 }
 
+struct DuplicateNameChecker(HashSet<String>);
+impl DuplicateNameChecker {
+    fn insert(&mut self, name: String) -> Result<(), anyhow::Error> {
+        if !self.0.insert(name.clone()) {
+            bail!("table_name \"{}\" specified more than once", name);
+        }
+        Ok(())
+    }
+}
+
 /// Plans a SELECT query with an intrusive ORDER BY clause.
 ///
 /// Normally, the ORDER BY clause occurs after the columns specified in the
@@ -1528,11 +1545,13 @@ fn plan_view_select(
         None => None,
     };
 
+    let mut dnc = DuplicateNameChecker(HashSet::new());
+
     // Step 1. Handle FROM clause, including joins.
     let (mut relation_expr, from_scope) =
         from.iter().fold(Ok(plan_join_identity(qcx)), |l, twj| {
             let (left, left_scope) = l?;
-            plan_table_with_joins(qcx, left, left_scope, twj)
+            plan_table_with_joins(qcx, left, left_scope, twj, &mut dnc)
         })?;
 
     // Step 2. Handle WHERE clause.
@@ -1987,6 +2006,7 @@ fn plan_table_with_joins<'a>(
     left: HirRelationExpr,
     left_scope: Scope,
     table_with_joins: &'a TableWithJoins<Aug>,
+    dnc: &mut DuplicateNameChecker,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
     let pushed_left_was_join_identity = left.is_join_identity();
     let (mut left, mut left_scope) = plan_table_factor(
@@ -1995,6 +2015,7 @@ fn plan_table_with_joins<'a>(
         left_scope,
         &JoinOperator::CrossJoin,
         &table_with_joins.relation,
+        dnc,
     )?;
     for join in &table_with_joins.joins {
         if !pushed_left_was_join_identity
@@ -2005,8 +2026,14 @@ fn plan_table_with_joins<'a>(
         {
             bail_unsupported!(6875, "full/right outer joins in comma join");
         }
-        let (new_left, new_left_scope) =
-            plan_table_factor(qcx, left, left_scope, &join.join_operator, &join.relation)?;
+        let (new_left, new_left_scope) = plan_table_factor(
+            qcx,
+            left,
+            left_scope,
+            &join.join_operator,
+            &join.relation,
+            dnc,
+        )?;
         left = new_left;
         left_scope = new_left_scope;
     }
@@ -2019,6 +2046,7 @@ fn plan_table_factor(
     left_scope: Scope,
     join_operator: &JoinOperator<Aug>,
     table_factor: &TableFactor<Aug>,
+    dnc: &mut DuplicateNameChecker,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
     let lateral = matches!(
         table_factor,
@@ -2033,8 +2061,12 @@ fn plan_table_factor(
 
     let (expr, scope) = match table_factor {
         TableFactor::Table { name, alias } => {
-            let (expr, scope) = qcx.resolve_table_name(name.clone())?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
+            let (expr, mut scope) = qcx.resolve_table_name(name.clone())?;
+            if alias.is_some() {
+                scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
+            } else {
+                dnc.insert(name.raw_name().item)?;
+            }
             (expr, scope)
         }
 
@@ -2047,7 +2079,7 @@ fn plan_table_factor(
                 allow_aggregates: false,
                 allow_subqueries: true,
             };
-            plan_table_function(ecx, &name, alias.as_ref(), args)?
+            plan_table_function(ecx, &name, alias.as_ref(), args, dnc)?
         }
 
         TableFactor::Derived {
@@ -2057,14 +2089,22 @@ fn plan_table_factor(
         } => {
             let mut qcx = (*qcx).clone();
             let (expr, scope) = plan_subquery(&mut qcx, &subquery)?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
+            let scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
             (expr, scope)
         }
 
         TableFactor::NestedJoin { join, alias } => {
             let (identity, identity_scope) = plan_join_identity(&qcx);
-            let (expr, scope) = plan_table_with_joins(&qcx, identity, identity_scope, join)?;
-            let scope = plan_table_alias(scope, alias.as_ref())?;
+            let mut nested_dnc = DuplicateNameChecker(HashSet::new());
+            let (expr, mut scope) =
+                plan_table_with_joins(&qcx, identity, identity_scope, join, &mut nested_dnc)?;
+            if alias.is_some() {
+                scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
+            } else {
+                for n in nested_dnc.0 {
+                    dnc.insert(n)?;
+                }
+            }
             (expr, scope)
         }
     };
@@ -2086,6 +2126,7 @@ fn plan_table_function(
     name: &UnresolvedObjectName,
     alias: Option<&TableAlias>,
     args: &FunctionArgs<Aug>,
+    dnc: &mut DuplicateNameChecker,
 ) -> Result<(HirRelationExpr, Scope), anyhow::Error> {
     if *name == UnresolvedObjectName::unqualified("values") {
         // Produce a nice error message for the common typo
@@ -2115,16 +2156,21 @@ fn plan_table_function(
         func: tf.func,
         exprs: tf.exprs,
     };
-    let scope = Scope::from_source(
+    let mut scope = Scope::from_source(
         Some(PartialName {
             database: None,
             schema: None,
-            item: name.item,
+            item: name.item.clone(),
         }),
         tf.column_names,
         Some(ecx.qcx.outer_scope.clone()),
     );
-    let mut scope = plan_table_alias(scope, alias)?;
+    if alias.is_some() {
+        scope = plan_table_alias(scope, alias, dnc)?;
+    } else {
+        dnc.insert(name.item)?;
+    }
+
     if let Some(alias) = alias {
         if let [item] = &mut *scope.items {
             // Strange special case for table functions that ouput one column.
@@ -2149,7 +2195,11 @@ fn plan_table_function(
     Ok((call, scope))
 }
 
-fn plan_table_alias(mut scope: Scope, alias: Option<&TableAlias>) -> Result<Scope, anyhow::Error> {
+fn plan_table_alias(
+    mut scope: Scope,
+    alias: Option<&TableAlias>,
+    dnc: &mut DuplicateNameChecker,
+) -> Result<Scope, anyhow::Error> {
     if let Some(TableAlias {
         name,
         columns,
@@ -2166,6 +2216,7 @@ fn plan_table_alias(mut scope: Scope, alias: Option<&TableAlias>) -> Result<Scop
         }
 
         let table_name = normalize::ident(name.to_owned());
+        dnc.insert(table_name.clone())?;
         for (i, item) in scope.items.iter_mut().enumerate() {
             let column_name = columns
                 .get(i)
