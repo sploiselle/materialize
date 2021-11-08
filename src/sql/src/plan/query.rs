@@ -745,7 +745,7 @@ pub fn plan_update_query(
 }
 
 pub fn plan_mutation_query_inner(
-    qcx: QueryContext,
+    mut qcx: QueryContext,
     table_name: ResolvedObjectName,
     alias: Option<TableAlias>,
     using: Vec<TableWithJoins<Aug>>,
@@ -767,15 +767,17 @@ pub fn plan_mutation_query_inner(
         bail!("cannot mutate system table '{}'", item.name());
     }
 
+    qcx.track_table_name(&item.name().item, &alias)?;
+
     let mut dnc = DuplicateNameChecker(HashSet::new());
 
     // Derive structs for operation from validated table
     let (mut get, mut scope) = qcx.resolve_table_name(table_name)?;
+    scope = plan_table_alias(scope, alias.as_ref(), &mut dnc)?;
     if alias.is_some() {
         scope = plan_table_alias(scope, alias.as_ref(), &mut dnc)?;
-    } else {
-        dnc.insert(item.name().item.clone())?;
     }
+
     let desc = item.desc()?;
     let relation_type = qcx.relation_type(&get);
 
@@ -793,7 +795,8 @@ pub fn plan_mutation_query_inner(
             get = get.filter(vec![expr]);
         }
     } else {
-        get = handle_mutation_using_clause(&qcx, selection, using, get, scope.clone(), &mut dnc)?;
+        get =
+            handle_mutation_using_clause(&mut qcx, selection, using, get, scope.clone(), &mut dnc)?;
     }
 
     let mut sets = HashMap::new();
@@ -852,7 +855,7 @@ pub fn plan_mutation_query_inner(
 // subqueries.
 // https://github.com/postgres/postgres/commit/158b7fa6a34006bdc70b515e14e120d3e896589b
 fn handle_mutation_using_clause(
-    qcx: &QueryContext,
+    qcx: &mut QueryContext,
     selection: Option<Expr<Aug>>,
     mut using: Vec<TableWithJoins<Aug>>,
     get: HirRelationExpr,
@@ -867,7 +870,7 @@ fn handle_mutation_using_clause(
             .drain(..)
             .fold(Ok(plan_join_identity(&qcx)), |l, twj| {
                 let (left, left_scope) = l?;
-                plan_table_with_joins(&qcx, left, left_scope, &twj, dnc)
+                plan_table_with_joins(qcx, left, left_scope, &twj, dnc)
             })?;
 
     if let Some(expr) = selection {
@@ -1520,7 +1523,7 @@ impl DuplicateNameChecker {
 /// This function handles queries of the latter class. For queries of the
 /// former class, see `plan_view_select`.
 fn plan_view_select(
-    qcx: &QueryContext,
+    qcx: &mut QueryContext,
     s: &Select<Aug>,
     order_by_exprs: &[OrderByExpr<Aug>],
 ) -> Result<SelectPlan, anyhow::Error> {
@@ -2002,7 +2005,7 @@ fn plan_order_by_or_distinct_expr(
 }
 
 fn plan_table_with_joins<'a>(
-    qcx: &QueryContext,
+    qcx: &mut QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
     table_with_joins: &'a TableWithJoins<Aug>,
@@ -2041,7 +2044,7 @@ fn plan_table_with_joins<'a>(
 }
 
 fn plan_table_factor(
-    left_qcx: &QueryContext,
+    left_qcx: &mut QueryContext,
     left: HirRelationExpr,
     left_scope: Scope,
     join_operator: &JoinOperator<Aug>,
@@ -2053,7 +2056,7 @@ fn plan_table_factor(
         TableFactor::Function { .. } | TableFactor::Derived { lateral: true, .. }
     );
 
-    let qcx = if lateral {
+    let mut qcx = if lateral {
         Cow::Owned(left_qcx.derived_context(left_scope.clone(), &left_qcx.relation_type(&left)))
     } else {
         Cow::Borrowed(left_qcx)
@@ -2062,16 +2065,14 @@ fn plan_table_factor(
     let (expr, scope) = match table_factor {
         TableFactor::Table { name, alias } => {
             let (expr, mut scope) = qcx.resolve_table_name(name.clone())?;
-            if alias.is_some() {
-                scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
-            } else {
-                dnc.insert(name.raw_name().item)?;
-            }
+            qcx.to_mut()
+                .track_table_name(&name.raw_name().item, alias)?;
+            scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
             (expr, scope)
         }
 
         TableFactor::Function { name, args, alias } => {
-            let ecx = &ExprContext {
+            let ecx = &mut ExprContext {
                 qcx: &qcx,
                 name: "FROM table function",
                 scope: &Scope::empty(Some(qcx.outer_scope.clone())),
@@ -2087,8 +2088,7 @@ fn plan_table_factor(
             subquery,
             alias,
         } => {
-            let mut qcx = (*qcx).clone();
-            let (expr, scope) = plan_subquery(&mut qcx, &subquery)?;
+            let (expr, scope) = plan_subquery(qcx.to_mut(), &subquery)?;
             let scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
             (expr, scope)
         }
@@ -2096,13 +2096,16 @@ fn plan_table_factor(
         TableFactor::NestedJoin { join, alias } => {
             let (identity, identity_scope) = plan_join_identity(&qcx);
             let mut nested_dnc = DuplicateNameChecker(HashSet::new());
+            let qcx = qcx.to_mut();
+            let seen_table_names = qcx.nest_table_names();
             let (expr, mut scope) =
-                plan_table_with_joins(&qcx, identity, identity_scope, join, &mut nested_dnc)?;
+                plan_table_with_joins(qcx, identity, identity_scope, join, &mut nested_dnc)?;
             if alias.is_some() {
+                qcx.track_table_name("", alias)?;
                 scope = plan_table_alias(scope, alias.as_ref(), dnc)?;
             } else {
-                for n in nested_dnc.0 {
-                    dnc.insert(n)?;
+                for n in seen_table_names {
+                    qcx.track_table_name(&n, &None)?;
                 }
             }
             (expr, scope)
@@ -2122,7 +2125,7 @@ fn plan_table_factor(
 }
 
 fn plan_table_function(
-    ecx: &ExprContext,
+    ecx: &mut ExprContext,
     name: &UnresolvedObjectName,
     alias: Option<&TableAlias>,
     args: &FunctionArgs<Aug>,
@@ -2165,11 +2168,9 @@ fn plan_table_function(
         tf.column_names,
         Some(ecx.qcx.outer_scope.clone()),
     );
-    if alias.is_some() {
-        scope = plan_table_alias(scope, alias, dnc)?;
-    } else {
-        dnc.insert(name.item)?;
-    }
+
+    ecx.qcx.track_table_name(&name.item, alias)?;
+    scope = plan_table_alias(scope, alias, dnc)?;
 
     if let Some(alias) = alias {
         if let [item] = &mut *scope.items {
@@ -3778,6 +3779,7 @@ pub struct QueryContext<'a> {
     pub ctes: HashMap<LocalId, CteDesc>,
     /// The GlobalIds of the items the `Query` is dependent upon.
     pub ids: HashSet<GlobalId>,
+    pub seen_table_names: HashSet<String>,
 }
 
 impl<'a> QueryContext<'a> {
@@ -3789,6 +3791,7 @@ impl<'a> QueryContext<'a> {
             outer_relation_types: vec![],
             ctes: HashMap::new(),
             ids: HashSet::new(),
+            seen_table_names: HashSet::new(),
         }
     }
 
@@ -3816,6 +3819,7 @@ impl<'a> QueryContext<'a> {
                 .collect(),
             ctes,
             ids: HashSet::new(),
+            seen_table_names: HashSet::new(),
         }
     }
 
@@ -3872,6 +3876,29 @@ impl<'a> QueryContext<'a> {
 
     pub fn humanize_scalar_type(&self, typ: &ScalarType) -> String {
         self.scx.humanize_scalar_type(typ)
+    }
+
+    pub fn track_table_name(
+        &mut self,
+        name: &str,
+        alias: &Option<TableAlias>,
+    ) -> Result<(), anyhow::Error> {
+        let table_name = match alias {
+            Some(TableAlias { name, .. }) => normalize::ident(name.to_owned()),
+            None => name.to_string(),
+        };
+        if self.seen_table_names.contains(&table_name) {
+            bail!("table_name \"{}\" specified more than once", table_name)
+        } else {
+            self.seen_table_names.insert(table_name);
+            Ok(())
+        }
+    }
+
+    pub fn nest_table_names(&mut self) -> HashSet<String> {
+        let mut swap = HashSet::new();
+        std::mem::swap(&mut swap, &mut self.seen_table_names);
+        swap
     }
 }
 
