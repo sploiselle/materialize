@@ -3,7 +3,7 @@ name = "sql-parser"
 description = "The lexer and parser for Materialize's SQL dialect."
 version = "0.0.0"
 exclude = ["tests/testdata"]
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
@@ -18,11 +18,10 @@ uncased = "0.9.6"
 
 [dev-dependencies]
 datadriven = "0.6.0"
-matches = "0.1.9"
 unicode-width = "0.1.9"
 
 [build-dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 ore = { path = "../ore", default-features = false }
 phf = { version = "0.10.0", features = ["uncased"] }
 phf_codegen = { version = "0.10.0" }

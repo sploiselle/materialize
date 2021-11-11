@@ -2,7 +2,7 @@
 name = "protoc"
 description = "A pure Rust protobuf compiler."
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [[bin]]
@@ -10,10 +10,10 @@ name = "protoc"
 path = "bin/protoc.rs"
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 ore = { path = "../ore" }
 protobuf = "2.23.0"
 protobuf-codegen = "2.23.0"
 protobuf-codegen-pure = "2.23.0"
-structopt = "0.3.23"
+structopt = "0.3.25"
 tempfile = "3.2.0"

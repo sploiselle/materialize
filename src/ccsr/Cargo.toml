@@ -2,22 +2,22 @@
 name = "ccsr"
 description = "Confluent-compatible schema registry API client."
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 futures = "0.3.17"
 mz-http-proxy = { path = "../http-proxy", features = ["reqwest"] }
 native-tls = "0.2.8"
-openssl = { version = "0.10.36", features = ["vendored"] }
-reqwest = { version = "0.11.4", features = ["blocking", "json", "native-tls-vendored"] }
+openssl = { version = "0.10.38", features = ["vendored"] }
+reqwest = { version = "0.11.6", features = ["blocking", "json", "native-tls-vendored"] }
 serde = { version = "1.0.130", features = ["derive"] }
 serde_json = "1.0.68"
 url = { version = "2.2.2", features = ["serde"] }
 
 [dev-dependencies]
-hyper = { version = "0.14.13", features = ["server"] }
+hyper = { version = "0.14.14", features = ["server"] }
 lazy_static = "1.4.0"
-tokio = { version = "1.11.0", features = ["macros"] }
-tracing = { version = "0.1.28", features = ["log"] }
+tokio = { version = "1.13.0", features = ["macros"] }
+tracing = { version = "0.1.29", features = ["log"] }

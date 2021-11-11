@@ -2,11 +2,11 @@
 name = "dataflow"
 description = "Materialized's Timely and Differential Dataflow server."
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 async-trait = "0.1.51"
 async-compression = { version = "0.3.8", features = ["tokio", "gzip"] }
 aws-util = { path = "../aws-util" }
@@ -26,7 +26,7 @@ expr = { path = "../expr" }
 flate2 = "1.0.22"
 futures = "0.3.17"
 globset = "0.4.8"
-inotify = "0.9.3"
+inotify = "0.9.5"
 interchange = { path = "../interchange" }
 itertools = "0.10.1"
 kafka-util = { path = "../kafka-util" }
@@ -37,6 +37,7 @@ num_enum = "0.5.4"
 ore = { path = "../ore" }
 pdqselect = "0.1.0"
 persist = { path = "../persist" }
+persist-types = { path = "../persist-types" }
 postgres-protocol = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
 postgres-util = { path = "../postgres-util" }
 prometheus = { git = "https://github.com/MaterializeInc/rust-prometheus.git", default-features = false }
@@ -54,8 +55,8 @@ serde = { version = "1.0.130", features = ["derive"] }
 serde_json = "1.0.68"
 tempfile = "3.2.0"
 timely = { git = "https://github.com/TimelyDataflow/timely-dataflow", default-features = false, features = ["bincode"] }
-tokio = { version = "1.11.0", features = ["fs", "rt", "sync"] }
+tokio = { version = "1.13.0", features = ["fs", "rt", "sync"] }
 tokio-postgres = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
-tokio-util = { version = "0.6.8", features = ["codec", "io"] }
+tokio-util = { version = "0.6.9", features = ["codec", "io"] }
 url = { version = "2.2.2", features = ["serde"] }
 uuid = { version = "0.8.2", features = ["serde", "v4"] }

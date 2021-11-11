@@ -2,11 +2,11 @@
 name = "aws-util"
 description = "Internal AWS utility library for Materialize."
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 log = "0.4.13"
 mz-http-proxy = { path = "../http-proxy", features = ["hyper"] }
 rusoto_core = "0.47.0"
@@ -16,4 +16,4 @@ rusoto_s3 = "0.47.0"
 rusoto_sqs = "0.47.0"
 rusoto_sts = "0.47.0"
 serde = { version = "1.0.130", features = ["derive"] }
-tokio = "1.11.0"
+tokio = "1.13.0"

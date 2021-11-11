@@ -8,12 +8,11 @@ authors = [
 ]
 license = "Apache-2.0"
 repository = "https://github.com/MaterializeInc/materialize"
-edition = "2018"
+edition = "2021"
 autobenches = false
 
 [dependencies]
-anyhow = "1.0.44"
-avro-derive = { path = "../avro-derive" }
+anyhow = "1.0.45"
 byteorder = { version = "1.4.3", optional = true }
 chrono = { version = "0.4.0", default-features = false, features = ["std"] }
 crc32fast = { version = "1.2.1", optional = true }

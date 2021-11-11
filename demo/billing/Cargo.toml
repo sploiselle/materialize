@@ -2,11 +2,11 @@
 name = "billing-demo"
 description = "Microservice demo using Materialize to power a real-time billing usecase"
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
-anyhow = "1.0.44"
+anyhow = "1.0.45"
 bytes = "1.1.0"
 chrono = { version = "0.4.0", default-features = false, features = ["clock", "std"] }
 csv = "1.1.6"
@@ -19,11 +19,10 @@ ore = { path = "../../src/ore" }
 postgres-types = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
 protobuf = "2.23.0"
 rand = "0.8.4"
-rand_distr = "0.4.1"
-repr = { path = "../../src/repr" }
-structopt = "0.3.23"
+rand_distr = "0.4.2"
+structopt = "0.3.25"
 test-util = { path = "../../test/test-util" }
-tokio = "1.11.0"
+tokio = "1.13.0"
 tokio-postgres = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
 uuid = { version = "0.8.2", features = ["v4"] }
 
