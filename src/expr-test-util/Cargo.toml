@@ -2,7 +2,7 @@
 name = "expr_test_util"
 description = "Utilities for creating objects in the expr crate for testing"
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
@@ -10,11 +10,11 @@ expr = {path = "../expr"}
 lazy_static = "1.4.0"
 lowertest = {path = "../lowertest"}
 ore = { path = "../ore" }
-proc-macro2 = "1.0.29"
+proc-macro2 = "1.0.30"
 repr = {path = "../repr"}
 repr_test_util = {path = "../repr-test-util"}
 serde = { version = "1.0.130", features = ["derive"] }
-serde_json = "1.0.68"
+serde_json = "1.0.69"
 
 [dev-dependencies]
 datadriven = "0.6.0"

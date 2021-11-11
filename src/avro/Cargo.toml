@@ -8,12 +8,11 @@ authors = [
 ]
 license = "Apache-2.0"
 repository = "https://github.com/MaterializeInc/materialize"
-edition = "2018"
+edition = "2021"
 autobenches = false
 
 [dependencies]
 anyhow = "1.0.44"
-avro-derive = { path = "../avro-derive" }
 byteorder = { version = "1.4.3", optional = true }
 chrono = { version = "0.4.0", default-features = false, features = ["std"] }
 crc32fast = { version = "1.2.1", optional = true }
@@ -25,7 +24,7 @@ log = "0.4.13"
 rand = "0.8.4"
 regex = "1.5.4"
 serde = { version = "1.0.130", features = ["derive"] }
-serde_json = "1.0.68"
+serde_json = "1.0.69"
 sha2 = "0.9.8"
 snap = { version = "1.0.5", optional = true }
 uuid = "0.8.2"

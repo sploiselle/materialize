@@ -1,10 +1,10 @@
 [package]
 name = "materialized"
 description = "Streaming SQL materialized views."
-version = "0.9.6-dev"
+version = "0.9.13-dev"
 authors = ["Materialize, Inc."]
 license = "proprietary"
-edition = "2018"
+edition = "2021"
 publish = false
 default-run = "materialized"
 build = "build/main.rs"
@@ -31,7 +31,7 @@ anyhow = "1.0.44"
 askama = { version = "0.10.5", features = ["serde-json"] }
 async-trait = "0.1.51"
 atty = "0.2.14"
-backtrace = "0.3.61"
+backtrace = "0.3.62"
 build-info = { path = "../build-info" }
 cfg-if = "1.0.0"
 chrono = { version = "0.4.0", default-features = false, features = ["std"] }
@@ -40,24 +40,26 @@ compile-time-run = "0.2.12"
 coord = { path = "../coord" }
 crossbeam-channel = "0.5.1"
 dataflow = { path = "../dataflow" }
+dataflowd = { path = "../dataflowd" }
 dataflow-types = { path = "../dataflow-types" }
 differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow.git" }
+fail = { git = "https://github.com/tikv/fail-rs", features = ["failpoints"] }
 futures = "0.3.17"
 hex = "0.4.3"
-hyper = { version = "0.14.13", features = ["http1", "server"] }
+hyper = { version = "0.14.14", features = ["http1", "server"] }
 hyper-openssl = "0.9.1"
 include_dir = "0.6.2"
 itertools = "0.10.1"
 krb5-src = { version = "0.2.3", features = ["binaries"] }
 lazy_static = "1.4.0"
-libc = "0.2.102"
+libc = "0.2.106"
 log = "0.4.13"
 mz-http-proxy = { path = "../http-proxy", features = ["reqwest"] }
 mz-process-collector = { path = "../mz-process-collector" }
-nix = "0.20.0"
+nix = "0.23.0"
 num_cpus = "1.0.0"
-openssl = { version = "0.10.36", features = ["vendored"] }
-openssl-sys = { version = "0.9.65", features = ["vendored"] }
+openssl = { version = "0.10.38", features = ["vendored"] }
+openssl-sys = { version = "0.9.68", features = ["vendored"] }
 ore = { path = "../ore" }
 os_info = "3.0.7"
 pid-file = { path = "../pid-file" }
@@ -66,25 +68,23 @@ prof = { path = "../prof" }
 prometheus = { git = "https://github.com/MaterializeInc/rust-prometheus.git", default-features = false }
 rdkafka-sys = { git = "https://github.com/fede1024/rust-rdkafka.git", features = ["cmake-build", "libz-static"] }
 repr = { path = "../repr" }
-reqwest = { version = "0.11.4", features = ["json"] }
+reqwest = { version = "0.11.6", features = ["json"] }
 rlimit = "0.6.2"
 semver = "1.0.4"
 serde = { version = "1.0.130", features = ["derive"] }
-serde_json = "1.0.68"
+serde_json = "1.0.69"
 shell-words = "1.0.0"
 sql = { path = "../sql" }
-structopt = "0.3.23"
+structopt = "0.3.25"
 sysctl = "0.4.2"
-sysinfo = "0.20.3"
+sysinfo = "0.20.5"
 tempfile = "3.2.0"
 timely = { git = "https://github.com/TimelyDataflow/timely-dataflow", default-features = false, features = ["bincode"] }
-tokio = { version = "1.11.0", features = ["sync"] }
-tokio-openssl = "0.6.2"
-tokio-stream = { version = "0.1.7", features = ["net"] }
-tracing = "0.1.28"
-# TODO(benesch): we can use the default features here once tracing-subscriber
-# does not enable chrono's "oldtime" feature.
-tracing-subscriber = { version = "0.2.23", default-features = false, features = ["ansi", "env-filter", "fmt", "tracing-log"] }
+tokio = { version = "1.13.0", features = ["sync"] }
+tokio-openssl = "0.6.3"
+tokio-stream = { version = "0.1.8", features = ["net"] }
+tracing = "0.1.29"
+tracing-subscriber = "0.3.1"
 url = "2.2.2"
 uuid = "0.8.2"
 
@@ -98,7 +98,7 @@ prof = { path = "../prof", features = ["jemalloc"] }
 tikv-jemallocator = { version = "0.4.1", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms", "background_threads"] }
 
 [dev-dependencies]
-assert_cmd = "2.0.1"
+assert_cmd = "2.0.2"
 bytes = "1.1.0"
 coordtest = { path = "../coordtest" }
 datadriven = "0.6.0"
@@ -111,21 +111,21 @@ postgres = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "
 postgres-openssl = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
 postgres-protocol = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2" }
 postgres_array = { git = "https://github.com/MaterializeInc/rust-postgres-array", branch = "mz-0.7.2" }
-predicates = "2.0.2"
+predicates = "2.0.3"
 rand = "0.8.4"
 repr = { path = "../repr" }
-reqwest = { version = "0.11.4", features = ["blocking"] }
-serde_json = "1.0.68"
+reqwest = { version = "0.11.6", features = ["blocking"] }
+serde_json = "1.0.69"
 tokio-postgres = { git = "https://github.com/MaterializeInc/rust-postgres", branch = "mz-0.7.2", features = ["with-chrono-0_4"] }
 
 [build-dependencies]
 anyhow = "1.0.44"
 askama_shared = { version = "0.11.1", features = ["config"] }
-cc = "1.0.70"
+cc = "1.0.71"
 flate2 = "1.0.22"
 hex = "0.4.3"
 hex-literal = "0.3.3"
-reqwest = { version = "0.11.4", features = ["blocking"] }
+reqwest = { version = "0.11.6", features = ["blocking"] }
 sha2 = "0.9.8"
 tar = "0.4.37"
 walkdir = "2.3.2"

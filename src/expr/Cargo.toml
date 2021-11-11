@@ -2,7 +2,7 @@
 name = "expr"
 description = "The core expression language for Materialize."
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 publish = false
 
 [dependencies]
@@ -29,7 +29,7 @@ regex = "1.5.4"
 regex-syntax = "0.6.25"
 repr = { path = "../repr" }
 serde = { version = "1.0.130", features = ["derive"] }
-serde_json = "1.0.68"
+serde_json = "1.0.69"
 sha-1 = "0.9.8"
 sha2 = "0.9.8"
 uncased = "0.9.6"
@@ -39,4 +39,4 @@ paste = "1"
 datadriven = "0.6.0"
 expr_test_util = { path = "../expr-test-util"}
 ore = { path = "../ore" }
-proc-macro2 = "1.0.29"
+proc-macro2 = "1.0.30"
