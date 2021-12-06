@@ -493,7 +493,7 @@ pub struct CatalogEntry {
     name: FullName,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub enum CatalogItem {
     Table(Table),
     Source(Source),
