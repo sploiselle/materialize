@@ -115,6 +115,9 @@ for SQL statements.
 - Ensure `pg_get_constraintdef` [compatibility function] parses, though it
   remains unimplemented.
 
+- Fixes a bug that returned incorrect results when filtering on _NULL_ values
+  from columns joined with `USING` constraints. {{% gh 7618 %}}
+
 {{% version-header v0.11.0 %}}
 
 - **Breaking change.** Remove the `mz_workers` function {{% gh 9363 %}}.
