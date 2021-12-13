@@ -18,8 +18,9 @@ use uuid::Uuid;
 use ore::stack::{CheckedRecursion, RecursionGuard};
 use sql_parser::ast::visit_mut::{self, VisitMut};
 use sql_parser::ast::{
-    Expr, Function, FunctionArgs, Ident, Op, OrderByExpr, Query, Raw, Select, SelectItem,
-    TableAlias, TableFactor, TableFunction, TableWithJoins, UnresolvedObjectName, Value,
+    Expr, Function, FunctionArgs, Ident, Join, JoinOperator, Op, OrderByExpr, Query, Raw, Select,
+    SelectItem, TableAlias, TableFactor, TableFunction, TableWithJoins, UnresolvedObjectName,
+    Value,
 };
 
 use crate::func::Func;
@@ -380,6 +381,72 @@ impl<'a> Desugarer<'a> {
                 joins: vec![],
             });
         }
+
+        // `SELECT * FROM a, b...`
+        // =>
+        // `SELECT * FROM a CROSS JOIN (b)...
+        //
+        // "Comma-joined" tables should be rewritten as nested cross joins to
+        // properly handle join precedence. This effect is perhaps most
+        // noticeable when interspersing `NATURAL`/`USING`-constrained joins and
+        // comma joins, e.g. the schema of...
+        // ```sql
+        // CREATE TABLE t1 (f1 int, f2 int);
+        // CREATE TABLE t2 (f1 int, f2 int);
+        // SELECT *
+        //      FROM t2,
+        //      t2 AS x
+        //      JOIN t1
+        //      USING (f2);
+        // ```
+        // is very confounding until you realize it's equivalent to the query...
+        // ```sql
+        // SELECT *
+        //      FROM t2
+        //      CROSS JOIN (
+        //      t2 AS x
+        //          JOIN t1
+        //          USING (f2)
+        //      );
+        // ```
+        // i.e. the `USING` constraint applies to `x` and `t1`, which is then
+        // cross-joined with `t2`.
+        let mut nested_join_candidate = None;
+        // The new `from` value will get filled in backward and reversed before
+        // placing it back in the AST.
+        let mut from = Vec::with_capacity(node.from.len());
+
+        // Note this process is done R to L.
+        for mut twj in node.from.drain(..).rev() {
+            // Nested joins are only applicable for adjacently listed tables.
+            if matches!(twj.relation, TableFactor::Table { .. }) {
+                nested_join_candidate.map(|njc: TableWithJoins<Raw>| {
+                    // Place the last-seen table in this table's joins as a
+                    // nested cross join.
+                    twj.joins.push(Join {
+                        relation: TableFactor::NestedJoin {
+                            join: Box::new(njc.clone()),
+                            alias: None,
+                        },
+                        join_operator: JoinOperator::CrossJoin,
+                    })
+                });
+                // This table is now eligible to be cross-joined with the its
+                // predecessor.
+                nested_join_candidate = Some(twj);
+            } else {
+                // Place `nested_join_candidate` back into `from` because it is
+                // not cross-joined with any non-table objects.
+                nested_join_candidate.take().map(|njc| from.push(njc));
+                from.push(twj);
+            }
+        }
+        // If the last element we looked at was a table, we need to place it
+        // back at the "beginning" of the list.
+        nested_join_candidate.take().map(|njc| from.push(njc));
+        // We looked at everything R to L, so reverse it.
+        from.reverse();
+        node.from = from;
 
         visit_mut::visit_select_mut(self, node);
         Ok(())
