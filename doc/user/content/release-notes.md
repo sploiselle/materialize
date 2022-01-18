@@ -177,6 +177,15 @@ boundary don't silently merge their release notes into the wrong place.
   an error if the configured publication does not exist {{% gh 9933 %}}.
   Previously, Materialize would silently import zero tables.
 
+- Add the `proargtypes`, `prorettype`, and `proretset` columns to `pg_proc`.
+
+{{< comment >}}
+Only add new release notes above this line.
+
+The presence of this comment ensures that PRs that are alive across a release
+boundary don't silently merge their release notes into the wrong place.
+{{</ comment >}}
+
 {{% version-header v0.16.0 %}}
 
 - **Breaking change.** Return an error when [`extract`](/sql/functions/extract/)

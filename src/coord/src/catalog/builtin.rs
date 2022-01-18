@@ -1366,13 +1366,46 @@ JOIN pg_catalog.pg_type ON pg_type.oid = mz_columns.type_oid",
 pub const PG_PROC: BuiltinView = BuiltinView {
     name: "pg_proc",
     schema: PG_CATALOG_SCHEMA,
-    sql: "CREATE VIEW pg_proc AS SELECT
-    mz_functions.oid,
-    mz_functions.name AS proname,
-    mz_schemas.oid AS pronamespace,
-    NULL::pg_catalog.text AS proargdefaults
-FROM mz_catalog.mz_functions
-JOIN mz_catalog.mz_schemas ON mz_functions.schema_id = mz_schemas.id",
+    sql: "CREATE VIEW pg_proc AS
+    WITH
+        func_args
+            AS (
+                SELECT
+                    func_oid, pg_catalog.array_agg(func_arg_oid) AS proargtypes
+                FROM
+                    (
+                        SELECT
+                            mz_functions.oid AS func_oid, mz_types.oid AS func_arg_oid
+                        FROM
+                            mz_catalog.mz_functions
+                            CROSS JOIN ROWS FROM (mz_catalog.unnest(arg_ids)) AS arg_id
+                            JOIN mz_catalog.mz_types ON arg_id = mz_types.id
+                    )
+                GROUP BY
+                    func_oid
+            ),
+        func_rettype
+            AS (
+                SELECT
+                    mz_functions.oid AS func_oid,
+                    mz_types.oid AS prorettype
+                FROM mz_catalog.mz_functions
+                JOIN mz_catalog.mz_types
+                ON mz_functions.ret_id = mz_types.id
+            )
+    SELECT
+        mz_functions.oid,
+        mz_functions.name AS proname,
+        mz_schemas.oid AS pronamespace,
+        NULL::pg_catalog.text AS proargdefaults,
+        func_args.proargtypes,
+        func_rettype.prorettype,
+        mz_functions.ret_set AS proretset
+    FROM
+        mz_catalog.mz_functions
+        JOIN mz_catalog.mz_schemas ON mz_functions.schema_id = mz_schemas.id
+        JOIN func_args ON func_args.func_oid = mz_functions.oid
+        JOIN func_rettype ON func_rettype.func_oid = mz_functions.oid;",
     id: GlobalId::System(5021),
     needs_logs: false,
 };
