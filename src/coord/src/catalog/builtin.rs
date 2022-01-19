@@ -897,7 +897,8 @@ lazy_static! {
             .with_column("arg_ids", ScalarType::Array(Box::new(ScalarType::String)).nullable(false))
             .with_column("variadic_id", ScalarType::String.nullable(true))
             .with_column("ret_id", ScalarType::String.nullable(true))
-            .with_column("ret_set", ScalarType::Bool.nullable(false)),
+            .with_column("ret_set", ScalarType::Bool.nullable(false))
+            .with_column("kind", ScalarType::String.nullable(false)),
         id: GlobalId::System(4041),
         index_id: GlobalId::System(4042),
         persistent: false,
@@ -1400,7 +1401,8 @@ pub const PG_PROC: BuiltinView = BuiltinView {
         NULL::pg_catalog.text AS proargdefaults,
         func_args.proargtypes,
         func_rettype.prorettype,
-        mz_functions.ret_set AS proretset
+        mz_functions.ret_set AS proretset,
+        mz_functions.kind AS prokind
     FROM
         mz_catalog.mz_functions
         JOIN mz_catalog.mz_schemas ON mz_functions.schema_id = mz_schemas.id

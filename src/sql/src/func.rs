@@ -169,7 +169,7 @@ impl Operation<HirScalarExpr> {
     }
 }
 
-impl<R: GetReturnType> Operation<R> {
+impl<R: FuncImplMetadata> Operation<R> {
     fn new<F>(f: F) -> Operation<R>
     where
         F: Fn(
@@ -397,9 +397,10 @@ pub struct FuncImplCatalogDetails {
     pub variadic_oid: Option<u32>,
     pub return_oid: Option<u32>,
     pub return_is_set: bool,
+    pub kind: &'static str,
 }
 
-impl<R: GetReturnType> FuncImpl<R> {
+impl<R: FuncImplMetadata> FuncImpl<R> {
     fn details(&self) -> FuncImplCatalogDetails {
         FuncImplCatalogDetails {
             oid: self.oid,
@@ -407,6 +408,7 @@ impl<R: GetReturnType> FuncImpl<R> {
             variadic_oid: self.params.variadic_oid(),
             return_oid: self.return_type.typ.as_ref().map(|t| t.oid()),
             return_is_set: self.return_type.is_set_of,
+            kind: R::kind().to_str(),
         }
     }
 }
@@ -997,11 +999,29 @@ impl From<ScalarType> for ReturnType {
     }
 }
 
-pub trait GetReturnType {
-    fn return_type(&self, ecx: &ExprContext, param_list: &ParamList) -> ReturnType;
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum FuncImplKind {
+    Normal,
+    Aggregate,
+    Window,
 }
 
-impl GetReturnType for HirScalarExpr {
+impl FuncImplKind {
+    fn to_str(&self) -> &'static str {
+        match self {
+            FuncImplKind::Normal => "f",
+            FuncImplKind::Aggregate => "a",
+            FuncImplKind::Window => "w",
+        }
+    }
+}
+
+pub trait FuncImplMetadata {
+    fn return_type(&self, ecx: &ExprContext, param_list: &ParamList) -> ReturnType;
+    fn kind() -> FuncImplKind;
+}
+
+impl FuncImplMetadata for HirScalarExpr {
     fn return_type(&self, ecx: &ExprContext, param_list: &ParamList) -> ReturnType {
         fn assert_oti_len(oti: &[ColumnType], len: usize, name: &str) {
             assert_eq!(
@@ -1045,23 +1065,35 @@ impl GetReturnType for HirScalarExpr {
 
         ReturnType::scalar(c.scalar_type.into())
     }
+
+    fn kind() -> FuncImplKind {
+        FuncImplKind::Normal
+    }
 }
 
-impl GetReturnType for (HirScalarExpr, AggregateFunc) {
+impl FuncImplMetadata for (HirScalarExpr, AggregateFunc) {
     fn return_type(&self, ecx: &ExprContext, _param_list: &ParamList) -> ReturnType {
         let c = ecx.column_type(&self.0);
         let s = self.1.output_type(c).scalar_type;
         ReturnType::scalar(s.into())
     }
-}
 
-impl GetReturnType for ScalarWindowFunc {
-    fn return_type(&self, _ecx: &ExprContext, _param_list: &ParamList) -> ReturnType {
-        ReturnType::scalar(self.output_type().scalar_type.into())
+    fn kind() -> FuncImplKind {
+        FuncImplKind::Aggregate
     }
 }
 
-impl GetReturnType for TableFuncPlan {
+impl FuncImplMetadata for ScalarWindowFunc {
+    fn return_type(&self, _ecx: &ExprContext, _param_list: &ParamList) -> ReturnType {
+        ReturnType::scalar(self.output_type().scalar_type.into())
+    }
+
+    fn kind() -> FuncImplKind {
+        FuncImplKind::Window
+    }
+}
+
+impl FuncImplMetadata for TableFuncPlan {
     fn return_type(&self, _ecx: &ExprContext, _param_list: &ParamList) -> ReturnType {
         let mut cols: Vec<ScalarType> = match &self.expr {
             HirRelationExpr::CallTable { func, .. } => func
@@ -1097,6 +1129,10 @@ impl GetReturnType for TableFuncPlan {
             // ```
             _ => ReturnType::set_of(ParamType::RecordAny),
         }
+    }
+
+    fn kind() -> FuncImplKind {
+        FuncImplKind::Normal
     }
 }
 

@@ -437,6 +437,7 @@ impl CatalogState {
                     Datum::from(variadic_id.as_deref()),
                     Datum::from(ret_id.as_deref()),
                     func_impl_details.return_is_set.into(),
+                    Datum::String(func_impl_details.kind),
                 ]),
                 diff,
             });
