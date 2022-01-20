@@ -126,6 +126,8 @@ changes that have not yet been documented.
 - Add the [`pg_function_is_visible`](/sql/functions#postgresql-compatibility-func)
   function.
 
+- Add the `proargtypes`, `prorettype`, and `proretset` columns to `pg_proc`.
+
 {{< comment >}}
 Only add new release notes above this line.
 
@@ -177,15 +179,6 @@ boundary don't silently merge their release notes into the wrong place.
 - When initializing a [PostgreSQL source](/sql/create-source/postgres), report
   an error if the configured publication does not exist {{% gh 9933 %}}.
   Previously, Materialize would silently import zero tables.
-
-- Add the `proargtypes`, `prorettype`, and `proretset` columns to `pg_proc`.
-
-{{< comment >}}
-Only add new release notes above this line.
-
-The presence of this comment ensures that PRs that are alive across a release
-boundary don't silently merge their release notes into the wrong place.
-{{</ comment >}}
 
 {{% version-header v0.16.0 %}}
 
@@ -355,8 +348,8 @@ Improve PostgreSQL compatibility:
   sources](/sql/create-source/avro-kafka/) via the new `INCLUDE PARTITION`,
   `INCLUDE OFFSET`, and `INCLUDE TIMESTAMP` options, respectively.
 
-- Add the [`pg_type_is_visible`](/sql/functions#postgresql-compatibility-func)
-  function.
+- Add the `pg_type_is_visible` and `pg_get_function_result` [PostgreSQL
+  compatibility functions](/sql/functions#postgresql-compatibility-func).
 
 - Add a stub implementation of the
   [`pg_get_constraintdef`](/sql/functions#postgresql-compatibility-func)

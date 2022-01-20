@@ -1893,8 +1893,25 @@ SELECT pg_catalog.pg_get_expr('abc', 1, true);
 ----
 abc
 
+# this function's oid
 query T
-SELECT pg_catalog.pg_get_expr('abc', 1, false);
+SELECT pg_catalog.pg_get_function_result(2165);
+----
+text
+
+# jsonb_each oid
+query T
+SELECT pg_catalog.pg_get_function_result(3208);
+----
+SETOF record
+
+query T
+SELECT pg_catalog.pg_get_function_result(1);
+----
+NULL
+
+query T
+SELECT pg_catalog.pg_get_expr('abc', 1);
 ----
 abc
 

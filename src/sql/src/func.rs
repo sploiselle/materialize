@@ -1945,6 +1945,22 @@ lazy_static! {
                 params!(String, Oid) => Operation::binary(|_ecx, l, _r| Ok(l)), 1716;
                 params!(String, Oid, Bool) => Operation::variadic(move |_ecx, mut args| Ok(args.remove(0))), 2509;
             },
+            "pg_get_function_result" => Scalar {
+                params!(Oid) => sql_impl_func(
+                    "(
+                        SELECT
+                            CASE
+                            WHEN pg_function_is_visible($1)
+                            THEN CASE WHEN ret_set THEN 'SETOF ' ELSE '' END || t.name
+                            ELSE NULL
+                            END
+                        FROM
+                            mz_functions AS f JOIN mz_types AS t ON f.ret_id = t.id
+                        WHERE
+                            f.oid = $1
+                    )"
+                ) => String, 2165;
+            },
             "pg_get_userbyid" => Scalar {
                 params!(Oid) => sql_impl_func("'unknown (OID=' || $1 || ')'") => String, 1642;
             },
