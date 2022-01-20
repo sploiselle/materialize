@@ -305,3 +305,15 @@ false
 pg_type_is_visible
 --------------------
 true
+
+# Test pg_function_is_visible.
+
+> SELECT pg_function_is_visible(2081);
+pg_function_is_visible
+----------------------
+true
+
+> SELECT pg_function_is_visible(1);
+pg_function_is_visible
+----------------------
+<null>

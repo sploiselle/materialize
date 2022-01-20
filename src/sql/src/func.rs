@@ -1920,6 +1920,13 @@ lazy_static! {
                     ))
                 }), 2026;
             },
+            "pg_function_is_visible" => Scalar {
+                params!(Oid) => sql_impl_func(
+                    "(SELECT s.name = ANY(current_schemas(true))
+                     FROM mz_catalog.mz_functions f JOIN mz_catalog.mz_schemas s ON f.schema_id = s.id
+                     WHERE f.oid = $1)"
+                ) => Bool, 2081;
+            },
             // pg_get_constraintdef gives more info about a constraint with in the `pg_constraint`
             // view. It currently returns no information as the `pg_constraint` view is empty in
             // materialize

@@ -121,9 +121,10 @@ changes that have not yet been documented.
 
 - Add basic Prometheus counters for PostgreSQL sources.
 
-- Improve PostgreSQL compatibility:
+- Support `SHOW TIME ZONE` as an alias for `SHOW TIMEZONE` {{% gh 9908 %}}.
 
-  - Support `SHOW TIME ZONE` as an alias for `SHOW TIMEZONE` {{% gh 9908 %}}.
+- Add the [`pg_function_is_visible`](/sql/functions#postgresql-compatibility-func)
+  function.
 
 {{< comment >}}
 Only add new release notes above this line.
