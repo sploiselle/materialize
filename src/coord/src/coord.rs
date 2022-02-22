@@ -1742,6 +1742,7 @@ impl Coordinator {
     /// Handle removing in-progress transaction state regardless of the end action
     /// of the transaction.
     async fn clear_transaction(&mut self, session: &mut Session) -> TransactionStatus {
+        // TODO: get instance ID of sinks to drop.
         let (drop_sinks, txn) = session.clear_transaction();
         self.drop_sinks(drop_sinks).await;
 
@@ -1968,6 +1969,7 @@ impl Coordinator {
             Plan::DiscardAll => {
                 let ret = if let TransactionStatus::Started(_) = session.transaction() {
                     self.drop_temp_items(session.conn_id()).await;
+                    // TODO: get instance ID of sinks to drop.
                     let drop_sinks = session.reset();
                     self.drop_sinks(drop_sinks).await;
                     Ok(ExecuteResponse::DiscardedAll)
@@ -2185,6 +2187,8 @@ impl Coordinator {
             conn_id,
             index_depends_on,
             self.catalog.index_enabled_by_default(&index_id),
+            // TODO: where do table indexes get created?
+            DEFAULT_COMPUTE_INSTANCE_ID,
         );
 
         let table_oid = self.catalog.allocate_oid()?;
@@ -2369,6 +2373,7 @@ impl Coordinator {
             let CreateSourcePlan {
                 name,
                 source,
+                // TODO: this should be an optional instance name
                 materialized,
                 ..
             } = plan;
@@ -2409,6 +2414,8 @@ impl Coordinator {
                     None,
                     vec![source_id],
                     self.catalog.index_enabled_by_default(&index_id),
+                    // TODO: Use new materialized Option<String> for instance name
+                    DEFAULT_COMPUTE_INSTANCE_ID,
                 );
                 let index_oid = self.catalog.allocate_oid()?;
                 ops.push(catalog::Op::CreateItem {
@@ -2589,6 +2596,8 @@ impl Coordinator {
                 view.conn_id,
                 vec![view_id],
                 self.catalog.index_enabled_by_default(&index_id),
+                // TODO: Use new materialized Option<String> for instance name
+                DEFAULT_COMPUTE_INSTANCE_ID,
             );
             let index_oid = self.catalog.allocate_oid()?;
             ops.push(catalog::Op::CreateItem {
@@ -2707,7 +2716,10 @@ impl Coordinator {
             conn_id: None,
             depends_on: index.depends_on,
             enabled: self.catalog.index_enabled_by_default(&id),
-            compute_instance_id: 0,
+            compute_instance_id: self
+                .catalog
+                .get_compute_instance_by_name(&index.in_instance)?
+                .id,
         };
         let oid = self.catalog.allocate_oid()?;
         let op = catalog::Op::CreateItem {
@@ -3207,6 +3219,7 @@ impl Coordinator {
         let mut dataflow = DataflowDesc::new(
             format!("temp-view-{}", view_id),
             view_id,
+            // TODO: Get default instance
             DEFAULT_COMPUTE_INSTANCE_ID,
         );
         dataflow.set_as_of(Antichain::from_elem(timestamp));
@@ -3324,6 +3337,7 @@ impl Coordinator {
                 let expr = self.view_optimizer.optimize(expr)?;
                 let desc = RelationDesc::new(expr.typ(), desc.iter_names());
                 let sink_desc = make_sink_desc(self, id, desc, &depends_on)?;
+                // TODO: get instance ID from sink_desc.
                 let mut dataflow =
                     DataflowDesc::new(format!("tail-{}", id), id, DEFAULT_COMPUTE_INSTANCE_ID);
                 let mut dataflow_builder = self.dataflow_builder();
@@ -3631,6 +3645,7 @@ impl Coordinator {
              -> Result<DataflowDescription<OptimizedMirRelationExpr>, CoordError> {
                 let start = Instant::now();
                 let optimized_plan = coord.view_optimizer.optimize(decorrelated_plan)?;
+                // TODO: Get default instace.
                 let mut dataflow = DataflowDesc::new(
                     format!("explanation"),
                     GlobalId::Explain,
@@ -4173,6 +4188,7 @@ impl Coordinator {
                         connector: SinkConnectorState::Ready(_),
                         ..
                     }) => {
+                        // TODO: Get instance from sink.
                         sinks_to_drop.push(*id);
                     }
                     CatalogItem::Index(_) => {
@@ -4324,6 +4340,7 @@ impl Coordinator {
             .await
     }
 
+    // TODO: get instance ID.
     async fn drop_sinks(&mut self, dataflow_names: Vec<GlobalId>) {
         if !dataflow_names.is_empty() {
             self.dataflow_client
@@ -4335,6 +4352,7 @@ impl Coordinator {
         }
     }
 
+    // TODO: get instance ID
     async fn drop_indexes(&mut self, indexes: Vec<GlobalId>) {
         let mut instance_key_map = HashMap::new();
         for id in indexes {
@@ -4770,6 +4788,7 @@ fn auto_generate_primary_idx(
     conn_id: Option<u32>,
     depends_on: Vec<GlobalId>,
     enabled: bool,
+    compute_instance_id: usize,
 ) -> catalog::Index {
     let default_key = on_desc.typ().default_key();
     catalog::Index {
@@ -4782,7 +4801,7 @@ fn auto_generate_primary_idx(
         conn_id,
         depends_on,
         enabled,
-        compute_instance_id: 0,
+        compute_instance_id,
     }
 }
 
