@@ -2699,6 +2699,7 @@ impl Coordinator {
             conn_id: None,
             depends_on: index.depends_on,
             enabled: self.catalog.index_enabled_by_default(&id),
+            compute_instance_id: DEFAULT_COMPUTE_INSTANCE_ID,
         };
         let oid = self.catalog.allocate_oid()?;
         let op = catalog::Op::CreateItem {
@@ -4752,6 +4753,7 @@ fn auto_generate_primary_idx(
         conn_id,
         depends_on,
         enabled,
+        compute_instance_id: DEFAULT_COMPUTE_INSTANCE_ID,
     }
 }
 
