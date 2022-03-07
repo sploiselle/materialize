@@ -401,6 +401,30 @@ impl AbstractExpr for CoercibleScalarExpr {
     ) -> Self::Type {
         match self {
             CoercibleScalarExpr::Coerced(expr) => Some(expr.typ(outers, inner, params)),
+            CoercibleScalarExpr::LiteralRecord(exprs) => {
+                let mut field_counter = 1;
+                let fields: Vec<_> = exprs
+                    .iter()
+                    .filter_map(|expr| expr.typ(outers, inner, params))
+                    .map(|typ| {
+                        let field_name = ColumnName::from(format!("f{}", field_counter));
+                        field_counter += 1;
+                        (field_name, typ.nullable(false))
+                    })
+                    .collect();
+                if fields.len() == exprs.len() {
+                    Some(
+                        ScalarType::Record {
+                            fields,
+                            custom_oid: None,
+                            custom_name: None,
+                        }
+                        .nullable(true),
+                    )
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }

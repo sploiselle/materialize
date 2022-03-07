@@ -797,7 +797,8 @@ SELECT array_upper(NULL::text[], 1)
 ----
 NULL
 
-query error Cannot call function array_upper\(unknown, integer\): arguments cannot be implicitly cast to any implementation's parameters; try providing explicit casts
+# TODO(fix)
+query error Cannot call function array_upper\(unknown, integer\): could not determine polymorphic type because input has type unknown
 SELECT array_upper(NULL, 1)
 
 query I
@@ -830,6 +831,9 @@ SELECT array_length(ARRAY[]::int[], 1)
 ----
 NULL
 
+query error could not determine polymorphic type because input has type unknown
+SELECT array_length(NULL, 1);
+
 # Test strange collapsing behavior of nested empty arrays. See #5545.
 
 query TIII
@@ -845,6 +849,12 @@ SELECT arr, array_lower(arr, 1), array_upper(arr, 1), array_length(arr, 1) FROM
 {}  NULL  NULL  NULL
 {}  NULL  NULL  NULL
 {}  NULL  NULL  NULL
+
+query error could not determine polymorphic type because input has type unknown
+SELECT array_upper(NULL, 1)
+
+query error could not determine polymorphic type because input has type unknown
+SELECT array_lower(NULL, 1)
 
 query T
 SELECT upper('a1Bd')
