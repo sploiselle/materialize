@@ -72,7 +72,8 @@ use crate::ast::{
 use crate::catalog::{CatalogItem, CatalogItemType, CatalogType, CatalogTypeDetails};
 use crate::kafka_util;
 use crate::names::{
-    resolve_names_data_type, DatabaseSpecifier, FullName, ResolvedDataType, SchemaName,
+    resolve_names_cluster, resolve_names_data_type, DatabaseSpecifier, FullName, ResolvedDataType,
+    SchemaName,
 };
 use crate::normalize;
 use crate::normalize::ident;
@@ -1760,6 +1761,7 @@ pub fn plan_create_sink(
     let CreateSinkStatement {
         name,
         from,
+        in_cluster,
         connector,
         with_options,
         format,
@@ -1864,7 +1866,10 @@ pub fn plan_create_sink(
         bail!("CREATE SINK ... AS OF is no longer supported");
     }
 
-    let compute_instance = scx.resolve_compute_instance(None)?.id();
+    let compute_instance = match in_cluster {
+        None => scx.resolve_compute_instance(None)?.id(),
+        Some(in_cluster) => resolve_names_cluster(scx, in_cluster)?.0,
+    };
 
     let mut depends_on = vec![from.id()];
     depends_on.extend(from.uses());
@@ -2002,6 +2007,7 @@ pub fn plan_create_index(
     let CreateIndexStatement {
         name,
         on_name,
+        in_cluster,
         key_parts,
         with_options,
         if_not_exists,
@@ -2075,7 +2081,10 @@ pub fn plan_create_index(
     };
 
     let options = plan_index_options(with_options.clone())?;
-    let compute_instance = scx.resolve_compute_instance(None)?.id();
+    let compute_instance = match in_cluster {
+        None => scx.resolve_compute_instance(None)?.id(),
+        Some(in_cluster) => resolve_names_cluster(scx, in_cluster.clone())?.0,
+    };
     let mut depends_on = vec![on.id()];
     depends_on.extend(exprs_depend_on);
 
