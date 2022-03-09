@@ -57,7 +57,7 @@ class HanaDialect : public Dialect {
         "	PRIMARY KEY (\"D_W_ID\",\"D_ID\") \n"
         ") UNLOAD PRIORITY 5",
 
-        "CREATE INDEX \"FK_DISTRICT_WAREHOUSE\" ON "
+        "CREATE INDEX \"FK_DISTRICT_WAREHOUSE\" IN CLUSTER [1] ON "
         "\"TPCCH\".\"DISTRICT\" ( \"D_W_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"CUSTOMER\" (\n"
@@ -89,7 +89,7 @@ class HanaDialect : public Dialect {
         "ALTER TABLE \"TPCCH\".\"CUSTOMER\" WITH PARAMETERS "
         "('CONCAT_ATTRIBUTE'=('$C_W_ID$C_D_ID$','C_W_ID','C_D_ID'))",
 
-        "CREATE INDEX \"FK_CUSTOMER_DISTRICT\" ON \"TPCCH\".\"CUSTOMER\" "
+        "CREATE INDEX \"FK_CUSTOMER_DISTRICT\" IN CLUSTER [1] ON \"TPCCH\".\"CUSTOMER\" "
         "( \"C_W_ID\" ASC,\"C_D_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"HISTORY\" (\n"
@@ -109,10 +109,10 @@ class HanaDialect : public Dialect {
         "ALTER TABLE \"TPCCH\".\"HISTORY\" WITH PARAMETERS ('CONCAT_ATTRIBUTE'="
         "('$H_W_ID$H_D_ID$','H_W_ID','H_D_ID'))",
 
-        "CREATE INDEX \"FK_HISTORY_CUSTOMER\" ON \"TPCCH\".\"HISTORY\" "
+        "CREATE INDEX \"FK_HISTORY_CUSTOMER\" IN CLUSTER [1] ON \"TPCCH\".\"HISTORY\" "
         "( \"H_C_W_ID\" ASC,\"H_C_D_ID\" ASC,\"H_C_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
-        "CREATE INDEX \"FK_HISTORY_DISTRICT\" ON \"TPCCH\".\"HISTORY\" "
+        "CREATE INDEX \"FK_HISTORY_DISTRICT\" IN CLUSTER [1] ON \"TPCCH\".\"HISTORY\" "
         "( \"H_W_ID\" ASC,\"H_D_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"NEWORDER\" (\n"
@@ -137,7 +137,7 @@ class HanaDialect : public Dialect {
         "ALTER TABLE \"TPCCH\".\"ORDER\" WITH PARAMETERS "
         "('CONCAT_ATTRIBUTE'=('$O_W_ID$O_D_ID$O_C_ID$','O_W_ID','O_D_ID','O_C_ID'))",
 
-        "CREATE INDEX \"FK_ORDER_CUSTOMER\" ON \"TPCCH\".\"ORDER\" "
+        "CREATE INDEX \"FK_ORDER_CUSTOMER\" IN CLUSTER [1] ON \"TPCCH\".\"ORDER\" "
         "( \"O_W_ID\" ASC,\"O_D_ID\" ASC,\"O_C_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"ORDERLINE\" (\n"
@@ -160,10 +160,10 @@ class HanaDialect : public Dialect {
         "ALTER TABLE \"TPCCH\".\"ORDERLINE\" WITH PARAMETERS "
         "('CONCAT_ATTRIBUTE'=('$OL_SUPPLY_W_ID$OL_I_ID$','OL_SUPPLY_W_ID','OL_I_ID'))",
 
-        "CREATE INDEX \"FK_ORDERLINE_ORDER\" ON \"TPCCH\".\"ORDERLINE\" "
+        "CREATE INDEX \"FK_ORDERLINE_ORDER\" IN CLUSTER [1] ON \"TPCCH\".\"ORDERLINE\" "
         "( \"OL_W_ID\" ASC,\"OL_D_ID\" ASC,\"OL_O_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
-        "CREATE INDEX \"FK_ORDERLINE_STOCK\" ON \"TPCCH\".\"ORDERLINE\" "
+        "CREATE INDEX \"FK_ORDERLINE_STOCK\" IN CLUSTER [1] ON \"TPCCH\".\"ORDERLINE\" "
         "( \"OL_SUPPLY_W_ID\" ASC,\"OL_I_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"ITEM\" (\n"
@@ -197,10 +197,10 @@ class HanaDialect : public Dialect {
         "	PRIMARY KEY (\"S_W_ID\",\"S_I_ID\")\n"
         ") UNLOAD PRIORITY 5",
 
-        "CREATE INDEX \"FK_STOCK_WAREHOUSE\" ON \"TPCCH\".\"STOCK\" "
+        "CREATE INDEX \"FK_STOCK_WAREHOUSE\" IN CLUSTER [1] ON \"TPCCH\".\"STOCK\" "
         "( \"S_W_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
-        "CREATE INDEX \"FK_STOCK_ITEM\" ON \"TPCCH\".\"STOCK\" "
+        "CREATE INDEX \"FK_STOCK_ITEM\" IN CLUSTER [1] ON \"TPCCH\".\"STOCK\" "
         "( \"S_I_ID\" ASC ) NONLEAF PARTIAL KEY LENGTH 1",
 
         "CREATE COLUMN TABLE \"TPCCH\".\"NATION\" (\n"

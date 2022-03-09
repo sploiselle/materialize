@@ -53,7 +53,8 @@ use mz_ore::collections::CollectionExt;
 use mz_ore::str::StrExt;
 use mz_repr::{strconv, ColumnName, RelationDesc, RelationType, ScalarType};
 use mz_sql_parser::ast::{
-    CreateClusterStatement, CreateSecretStatement, CsrSeedCompiledOrLegacy, SourceIncludeMetadata,
+    CreateClusterStatement, CreateSecretStatement, CsrSeedCompiledOrLegacy, RawIdent,
+    SourceIncludeMetadata,
 };
 
 use crate::ast::display::AstDisplay;
@@ -1755,13 +1756,19 @@ pub fn describe_create_sink(
 
 pub fn plan_create_sink(
     scx: &StatementContext,
-    stmt: CreateSinkStatement<Raw>,
+    mut stmt: CreateSinkStatement<Raw>,
 ) -> Result<Plan, anyhow::Error> {
+    let compute_instance = match stmt.in_cluster {
+        None => scx.resolve_compute_instance(None)?.id(),
+        Some(in_cluster) => resolve_names_cluster(scx, in_cluster)?.0,
+    };
+    stmt.in_cluster = Some(RawIdent::Resolved(compute_instance.to_string()));
+
     let create_sql = normalize::create_statement(scx, Statement::CreateSink(stmt.clone()))?;
     let CreateSinkStatement {
         name,
         from,
-        in_cluster,
+        in_cluster: _,
         connector,
         with_options,
         format,
@@ -1865,11 +1872,6 @@ pub fn plan_create_sink(
     if as_of.is_some() {
         bail!("CREATE SINK ... AS OF is no longer supported");
     }
-
-    let compute_instance = match in_cluster {
-        None => scx.resolve_compute_instance(None)?.id(),
-        Some(in_cluster) => resolve_names_cluster(scx, in_cluster)?.0,
-    };
 
     let mut depends_on = vec![from.id()];
     depends_on.extend(from.uses());
@@ -2085,6 +2087,8 @@ pub fn plan_create_index(
         None => scx.resolve_compute_instance(None)?.id(),
         Some(in_cluster) => resolve_names_cluster(scx, in_cluster.clone())?.0,
     };
+    *in_cluster = Some(RawIdent::Resolved(compute_instance.to_string()));
+
     let mut depends_on = vec![on.id()];
     depends_on.extend(exprs_depend_on);
 
