@@ -451,9 +451,8 @@ impl<T: AstInfo> AstDisplay for CreateSinkStatement<T> {
         }
         f.write_node(&self.name);
         if let Some(cluster) = &self.in_cluster {
-            f.write_str("IN CLUSTER ");
+            f.write_str(" IN CLUSTER ");
             f.write_node(cluster);
-            f.write_str(" ");
         }
         f.write_str(" FROM ");
         f.write_node(&self.from);
