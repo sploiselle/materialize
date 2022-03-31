@@ -121,12 +121,12 @@ select f1, (q).c1, (qq.q).c1.i from quadtable qq;
 #44 ("(55,)","(,66)")
 
 query B
-select ROW(1,2) < ROW(1,3) as true;
+select ROW(1,2) < ROW(1,3);
 ----
 true
 
 query B
-select ROW(1,2) < ROW(1,1) as false;
+select ROW(1,2) < ROW(1,1);
 ----
 false
 
@@ -136,22 +136,22 @@ select ROW(1,2) < ROW(1,NULL) is null;
 true
 
 query B
-select ROW(1,2,3) < ROW(1,3,NULL) as true;
+select ROW(1,2,3) < ROW(1,3,NULL);
 ----
 true
 
 query B
-select ROW(11,'ABC') < ROW(11,'DEF') as true;
+select ROW(11,'ABC') < ROW(11,'DEF');
 ----
 true
 
 query B
-select ROW(11,'ABC') > ROW(11,'DEF') as false;
+select ROW(11,'ABC') > ROW(11,'DEF');
 ----
 false
 
 query B
-select ROW(12,'ABC') > ROW(11,'DEF') as true;
+select ROW(12,'ABC') > ROW(11,'DEF');
 ----
 true
 
@@ -161,12 +161,12 @@ select ROW(1,2,3) < ROW(1,NULL,4) is null;
 true
 
 query B
-select ROW(1,2,3) = ROW(1,NULL,4) as false;
+select ROW(1,2,3) = ROW(1,NULL,4);
 ----
 false
 
 query B
-select ROW(1,2,3) <> ROW(1,NULL,4) as true;
+select ROW(1,2,3) <> ROW(1,NULL,4);
 ----
 true
 
@@ -518,3 +518,266 @@ select row(4,2)::testtype8 = '(1,2)';
 #  (values (1,row(1,2)), (1,row(null,null)), (1,null),
 #          (null,row(1,2)), (null,row(null,null)), (null,null) )
 #select r, r is null as isnull, r is not null as isnotnull from r;
+
+# equality operations between record and composite types
+
+statement ok
+CREATE TYPE one_int AS (i int);
+
+statement ok
+CREATE TYPE one_text AS (t text);
+
+statement ok
+CREATE TYPE two AS (i int, t text);
+
+query B
+SELECT ROW(1) < ROW(1)::one_int
+----
+false
+
+query B
+SELECT ROW(1) <= ROW(1)::one_int
+----
+true
+
+query B
+SELECT ROW(1) > ROW(1)::one_int
+----
+false
+
+query B
+SELECT ROW(1) >= ROW(1)::one_int
+----
+true
+
+query B
+SELECT ROW(1) = ROW(1)::one_int
+----
+true
+
+query B
+SELECT ROW(1) <> ROW(1)::one_int
+----
+false
+
+query error no overload for record\(f1: integer\) < one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) < ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) <= one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) <= ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) > one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) > ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) >= one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) >= ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) = one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) = ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) <> one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1) <> ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer\) < two: cannot compare record types with different numbers of columns
+SELECT ROW(1) < ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer\) <= two: cannot compare record types with different numbers of columns
+SELECT ROW(1) <= ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer\) > two: cannot compare record types with different numbers of columns
+SELECT ROW(1) > ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer\) >= two: cannot compare record types with different numbers of columns
+SELECT ROW(1) >= ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer\) = two: cannot compare record types with different numbers of columns
+SELECT ROW(1) = ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer\) <> two: cannot compare record types with different numbers of columns
+SELECT ROW(1) <> ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) < one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) < ROW(1)::one_int
+
+query error no overload for record\(f1: text\) <= one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) <= ROW(1)::one_int
+
+query error no overload for record\(f1: text\) > one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) > ROW(1)::one_int
+
+query error no overload for record\(f1: text\) >= one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) >= ROW(1)::one_int
+
+query error no overload for record\(f1: text\) = one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) = ROW(1)::one_int
+
+query error no overload for record\(f1: text\) <> one_int: cannot compare dissimilar column types text and integer at record column 1
+SELECT ROW('a'::text) <> ROW(1)::one_int
+
+query B
+SELECT ROW('a'::text) < ROW('a'::text)::one_text
+----
+false
+
+query B
+SELECT ROW('a'::text) <= ROW('a'::text)::one_text
+----
+true
+
+query B
+SELECT ROW('a'::text) > ROW('a'::text)::one_text
+----
+false
+
+query B
+SELECT ROW('a'::text) >= ROW('a'::text)::one_text
+----
+true
+
+query B
+SELECT ROW('a'::text) = ROW('a'::text)::one_text
+----
+true
+
+query B
+SELECT ROW('a'::text) <> ROW('a'::text)::one_text
+----
+false
+
+query error no overload for record\(f1: text\) < two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) < ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) <= two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) <= ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) > two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) > ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) >= two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) >= ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) = two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) = ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: text\) <> two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text) <> ROW(1,'a'::text)::two
+
+query error no overload for record\(f1: integer,f2: text\) < one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) < ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) <= one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) <= ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) > one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) > ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) >= one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) >= ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) = one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) = ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) <> one_int: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) <> ROW(1)::one_int
+
+query error no overload for record\(f1: integer,f2: text\) < one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) < ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer,f2: text\) <= one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) <= ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer,f2: text\) > one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) > ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer,f2: text\) >= one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) >= ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer,f2: text\) = one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) = ROW('a'::text)::one_text
+
+query error no overload for record\(f1: integer,f2: text\) <> one_text: cannot compare record types with different numbers of columns
+SELECT ROW(1,'a'::text) <> ROW('a'::text)::one_text
+
+query B
+SELECT ROW(1,'a'::text) < ROW(1,'a'::text)::two
+----
+false
+
+query B
+SELECT ROW(1,'a'::text) <= ROW(1,'a'::text)::two
+----
+true
+
+query B
+SELECT ROW(1,'a'::text) > ROW(1,'a'::text)::two
+----
+false
+
+query B
+SELECT ROW(1,'a'::text) >= ROW(1,'a'::text)::two
+----
+true
+
+query B
+SELECT ROW(1,'a'::text) = ROW(1,'a'::text)::two
+----
+true
+
+query B
+SELECT ROW(1,'a'::text) <> ROW(1,'a'::text)::two
+----
+false
+
+query error no overload for one_int < one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int < ROW('a'::text)::one_text
+
+query error no overload for one_int <= one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int <= ROW('a'::text)::one_text
+
+query error no overload for one_int > one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int > ROW('a'::text)::one_text
+
+query error no overload for one_int >= one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int >= ROW('a'::text)::one_text
+
+query error no overload for one_int = one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int = ROW('a'::text)::one_text
+
+query error no overload for one_int <> one_text: cannot compare dissimilar column types integer and text at record column 1
+SELECT ROW(1)::one_int <> ROW('a'::text)::one_text
+
+query error no overload for one_int < two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int < ROW(1,'a'::text)::two
+
+query error no overload for one_int <= two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int <= ROW(1,'a'::text)::two
+
+query error no overload for one_int > two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int > ROW(1,'a'::text)::two
+
+query error no overload for one_int >= two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int >= ROW(1,'a'::text)::two
+
+query error no overload for one_int = two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int = ROW(1,'a'::text)::two
+
+query error no overload for one_int <> two: cannot compare record types with different numbers of columns
+SELECT ROW(1)::one_int <> ROW(1,'a'::text)::two
+
+query error no overload for one_text < two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text < ROW(1,'a'::text)::two
+
+query error no overload for one_text <= two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text <= ROW(1,'a'::text)::two
+
+query error no overload for one_text > two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text > ROW(1,'a'::text)::two
+
+query error no overload for one_text >= two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text >= ROW(1,'a'::text)::two
+
+query error no overload for one_text = two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text = ROW(1,'a'::text)::two
+
+query error no overload for one_text <> two: cannot compare record types with different numbers of columns
+SELECT ROW('a'::text)::one_text <> ROW(1,'a'::text)::two

@@ -717,12 +717,8 @@ impl ParamType {
             | ListElementAnyCompatible
             | MapAny
             | MapAnyCompatible
-            | NonVecAny
-            // In PG, RecordAny isn't polymorphic even though it offers
-            // polymoprhic behavior. For more detail, see
-            // `PolymorphicCompatClass::StructuralEq`.
-            | RecordAny => true,
-            Any | Plain(_) => false,
+            | NonVecAny => true,
+            Any | Plain(_) | RecordAny => false,
         }
     }
 
@@ -1285,15 +1281,6 @@ enum PolymorphicCompatClass {
     /// work with `BestCommonList` are incommensurate with the parameter types
     /// used with `BestCommonMap`.
     BestCommonMap,
-    /// Represents type resolution for `ScalarType::Record` types, which e.g.
-    /// ignores custom types and type modifications.
-    ///
-    /// In [PG], this is handled by invocation of the function calls that take
-    /// `RecordAny` params, which we want to avoid if at all possible.
-    ///
-    /// [PG]:
-    ///     https://github.com/postgres/postgres/blob/33a377608fc29cdd1f6b63be561eab0aee5c81f0/src/backend/utils/adt/rowtypes.c#L1041
-    StructuralEq,
 }
 
 impl TryFrom<&ParamType> for PolymorphicCompatClass {
@@ -1306,7 +1293,6 @@ impl TryFrom<&ParamType> for PolymorphicCompatClass {
             ArrayAnyCompatible | AnyCompatible => PolymorphicCompatClass::BestCommonAny,
             ListAnyCompatible | ListElementAnyCompatible => PolymorphicCompatClass::BestCommonList,
             MapAnyCompatible => PolymorphicCompatClass::BestCommonMap,
-            RecordAny => PolymorphicCompatClass::StructuralEq,
             _ => return Err(()),
         })
     }
@@ -1316,7 +1302,6 @@ impl PolymorphicCompatClass {
     fn compatible(&self, ecx: &ExprContext, from: &ScalarType, to: &ScalarType) -> bool {
         use PolymorphicCompatClass::*;
         match self {
-            StructuralEq => from.structural_eq(to),
             BaseEq => from.base_eq(to),
             _ => typeconv::can_cast(ecx, CastContext::Implicit, from, to),
         }
@@ -1371,7 +1356,7 @@ impl PolymorphicSolution {
 
         self.seen.push(match param {
             AnyCompatible | ArrayAny | ListAny | ListAnyCompatible | MapAny | MapAnyCompatible
-            | NonVecAny | RecordAny => seen,
+            | NonVecAny => seen,
             ArrayAnyCompatible => seen.map(|array| array.unwrap_array_element_type().clone()),
             ListElementAnyCompatible => seen.map(|el| ScalarType::List {
                 custom_oid: None,
@@ -1425,7 +1410,7 @@ impl PolymorphicSolution {
                         custom_oid: None,
                     }),
                     // Do not infer type.
-                    PolymorphicCompatClass::StructuralEq | PolymorphicCompatClass::BaseEq => None,
+                    PolymorphicCompatClass::BaseEq => None,
                 },
             }
         } else {
@@ -1463,11 +1448,6 @@ impl PolymorphicSolution {
                     .expect("target_for_param_type only supports polymorphic parameters")
             ),
             "cannot use polymorphic solution for different compatibility classes"
-        );
-
-        assert!(
-            !matches!(param, RecordAny),
-            "RecordAny should not be cast to a target type"
         );
 
         match param {
@@ -1536,10 +1516,13 @@ fn coerce_args_to_types(
                 CoercibleScalarExpr::LiteralString(_) => {
                     sql_bail!("input of anonymous composite types is not implemented");
                 }
-                // By passing the creation of the polymorphic soution, we've
-                // already ensured that all of the record types are
-                // intrinsically well-typed enough to move onto the next step.
-                _ => cexpr.type_as_any(ecx)?,
+                _ => {
+                    let coerced = cexpr.type_as_any(ecx)?;
+                    if !matches!(ecx.scalar_type(&coerced), ScalarType::Record { .. }) {
+                        sql_bail!("try providing explicit casts");
+                    }
+                    coerced
+                }
             },
             Plain(ty) => do_convert(cexpr, ty)?,
             p => {
@@ -2863,6 +2846,30 @@ fn array_to_string(
     })
 }
 
+fn validate_record_cmp<'a>(
+    ecx: &ExprContext,
+    l: &HirScalarExpr,
+    r: &HirScalarExpr,
+) -> Result<(), PlanError> {
+    use mz_repr::adt::record::*;
+    let l = ecx.scalar_type(l);
+    let r = ecx.scalar_type(r);
+    if let Err(e) = record_cmp(&l, &r) {
+        match e {
+            RecordCmpError::DifferentNumberOfColumns => {
+                sql_bail!("cannot compare record types with different numbers of columns")
+            }
+            RecordCmpError::DissimilarColumnTypes { position, l, r } => sql_bail!(
+                "cannot compare dissimilar column types {} and {} at record column {}",
+                ecx.humanize_scalar_type(l),
+                ecx.humanize_scalar_type(r),
+                position
+            ),
+        }
+    }
+    Ok(())
+}
+
 lazy_static! {
     /// Correlates an operator with all of its implementations.
     static ref OP_IMPLS: HashMap<&'static str, Func> = {
@@ -3234,7 +3241,10 @@ lazy_static! {
                 params!(PgLegacyChar, PgLegacyChar) => BinaryFunc::Lt, 631;
                 params!(Jsonb, Jsonb) => BinaryFunc::Lt, 3242;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::Lt => Bool, 1072;
-                params!(RecordAny, RecordAny) => BinaryFunc::Lt => Bool, 2990;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::Lt))
+                }) => Bool, 2990;
             },
             "<=" => Scalar {
                 params!(Numeric, Numeric) => BinaryFunc::Lte, 1755;
@@ -3257,7 +3267,10 @@ lazy_static! {
                 params!(PgLegacyChar, PgLegacyChar) => BinaryFunc::Lte, 632;
                 params!(Jsonb, Jsonb) => BinaryFunc::Lte, 3244;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::Lte => Bool, 1074;
-                params!(RecordAny, RecordAny) => BinaryFunc::Lte => Bool, 2992;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::Lte))
+                }) => Bool, 2992;
             },
             ">" => Scalar {
                 params!(Numeric, Numeric) => BinaryFunc::Gt, 1756;
@@ -3280,7 +3293,10 @@ lazy_static! {
                 params!(PgLegacyChar, PgLegacyChar) => BinaryFunc::Gt, 633;
                 params!(Jsonb, Jsonb) => BinaryFunc::Gt, 3243;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::Gt => Bool, 1073;
-                params!(RecordAny, RecordAny) => BinaryFunc::Gt => Bool, 2991;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::Gt))
+                }) => Bool, 2991;
             },
             ">=" => Scalar {
                 params!(Numeric, Numeric) => BinaryFunc::Gte, 1757;
@@ -3303,7 +3319,10 @@ lazy_static! {
                 params!(PgLegacyChar, PgLegacyChar) => BinaryFunc::Gte, 634;
                 params!(Jsonb, Jsonb) => BinaryFunc::Gte, 3245;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::Gte => Bool, 1075;
-                params!(RecordAny, RecordAny) => BinaryFunc::Gte => Bool, 2993;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::Gte))
+                }) => Bool, 2993;
             },
             // Warning! If you are writing functions here that do not simply use
             // `BinaryFunc::Eq`, you will break row equality (used e.g. DISTINCT
@@ -3330,7 +3349,10 @@ lazy_static! {
                 params!(Jsonb, Jsonb) => BinaryFunc::Eq, 3240;
                 params!(ListAny, ListAny) => BinaryFunc::Eq => Bool, oid::FUNC_LIST_EQ_OID;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::Eq => Bool, 1070;
-                params!(RecordAny, RecordAny) => BinaryFunc::Eq => Bool, 2988;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::Eq))
+                }) => Bool, 2988;
             },
             "<>" => Scalar {
                 params!(Numeric, Numeric) => BinaryFunc::NotEq, 1753;
@@ -3353,7 +3375,10 @@ lazy_static! {
                 params!(PgLegacyChar, PgLegacyChar) => BinaryFunc::NotEq, 630;
                 params!(Jsonb, Jsonb) => BinaryFunc::NotEq, 3241;
                 params!(ArrayAny, ArrayAny) => BinaryFunc::NotEq => Bool, 1071;
-                params!(RecordAny, RecordAny) => BinaryFunc::NotEq => Bool, 2989;
+                params!(RecordAny, RecordAny) => Operation::binary(|ecx, lhs, rhs| {
+                    validate_record_cmp(ecx, &lhs, &rhs)?;
+                    Ok(lhs.call_binary(rhs, BinaryFunc::NotEq))
+                }) => Bool, 2989;
             }
         }
     };

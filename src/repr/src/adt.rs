@@ -23,6 +23,7 @@ pub mod datetime;
 pub mod interval;
 pub mod jsonb;
 pub mod numeric;
+pub mod record;
 pub mod regex;
 pub mod system;
 pub mod varchar;
