@@ -937,7 +937,7 @@ impl HirScalarExpr {
                                             };
                                             let record_type = ScalarType::Record {
                                                 fields,
-                                                custom_oid: None,
+                                                custom_id: None,
                                                 custom_name: None,
                                             };
                                             let agg_input = mz_expr::MirScalarExpr::CallVariadic {
@@ -958,7 +958,7 @@ impl HirScalarExpr {
                                             };
                                             let list_type = ScalarType::List {
                                                 element_type: Box::new(record_type),
-                                                custom_oid: None,
+                                                custom_id: None,
                                             };
                                             let agg_input_type = ScalarType::Record {
                                                 fields: std::iter::once(&list_type)
@@ -969,7 +969,7 @@ impl HirScalarExpr {
                                                         )
                                                     })
                                                     .collect_vec(),
-                                                custom_oid: None,
+                                                custom_id: None,
                                                 custom_name: None,
                                             }
                                             .nullable(false);

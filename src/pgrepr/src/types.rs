@@ -17,7 +17,7 @@ use mz_repr::adt::numeric::{
     InvalidNumericMaxScaleError, NumericMaxScale, NUMERIC_DATUM_MAX_PRECISION,
 };
 use mz_repr::adt::varchar::{InvalidVarCharMaxLengthError, VarCharMaxLength};
-use mz_repr::ScalarType;
+use mz_repr::{GlobalId, ScalarType};
 
 use crate::oid;
 
@@ -617,6 +617,75 @@ impl Type {
         self.inner().oid()
     }
 
+    /// Returns the [`GlobalId`] of this type.
+    pub fn global_id(&self) -> GlobalId {
+        use mz_repr::global_id::system::*;
+
+        match self {
+            Type::Array(t) => match &**t {
+                Type::Array(_) => unreachable!(),
+                Type::Bool => TYPE_BOOL_ARRAY_GLOBAL_ID,
+                Type::Bytea => TYPE_BYTEA_ARRAY_GLOBAL_ID,
+                Type::Char => TYPE_CHAR_ARRAY_GLOBAL_ID,
+                Type::Date => TYPE_DATE_ARRAY_GLOBAL_ID,
+                Type::Float4 => TYPE_FLOAT4_ARRAY_GLOBAL_ID,
+                Type::Float8 => TYPE_FLOAT8_ARRAY_GLOBAL_ID,
+                Type::Int2 => TYPE_INT2_ARRAY_GLOBAL_ID,
+                Type::Int4 => TYPE_INT4_ARRAY_GLOBAL_ID,
+                Type::Int8 => TYPE_INT8_ARRAY_GLOBAL_ID,
+                Type::Interval { .. } => TYPE_INTERVAL_ARRAY_GLOBAL_ID,
+                Type::Json => TYPE_JSONB_ARRAY_GLOBAL_ID,
+                Type::Jsonb => TYPE_JSONB_ARRAY_GLOBAL_ID,
+                Type::List(_) => unreachable!(),
+                Type::Map { .. } => unreachable!(),
+                Type::Numeric { .. } => TYPE_NUMERIC_ARRAY_GLOBAL_ID,
+                Type::Oid => TYPE_OID_ARRAY_GLOBAL_ID,
+                Type::Record(_) => TYPE_RECORD_ARRAY_GLOBAL_ID,
+                Type::Text => TYPE_TEXT_ARRAY_GLOBAL_ID,
+                Type::BpChar { .. } => TYPE_BPCHAR_ARRAY_GLOBAL_ID,
+                Type::VarChar { .. } => TYPE_VARCHAR_ARRAY_GLOBAL_ID,
+                Type::Time { .. } => TYPE_TIME_ARRAY_GLOBAL_ID,
+                Type::TimeTz { .. } => unreachable!(),
+                Type::Timestamp { .. } => TYPE_TIMESTAMP_ARRAY_GLOBAL_ID,
+                Type::TimestampTz { .. } => TYPE_TIMESTAMPTZ_ARRAY_GLOBAL_ID,
+                Type::Uuid => TYPE_UUID_ARRAY_GLOBAL_ID,
+                Type::RegClass => TYPE_REGCLASS_ARRAY_GLOBAL_ID,
+                Type::RegProc => TYPE_REGPROC_ARRAY_GLOBAL_ID,
+                Type::RegType => TYPE_REGTYPE_ARRAY_GLOBAL_ID,
+                Type::Int2Vector => TYPE_INT2_ARRAY_GLOBAL_ID,
+            },
+            Type::Bool => TYPE_BOOL_GLOBAL_ID,
+            Type::Bytea => TYPE_BYTEA_GLOBAL_ID,
+            Type::Char => TYPE_CHAR_GLOBAL_ID,
+            Type::Date => TYPE_DATE_GLOBAL_ID,
+            Type::Float4 => TYPE_FLOAT4_GLOBAL_ID,
+            Type::Float8 => TYPE_FLOAT8_GLOBAL_ID,
+            Type::Int2 => TYPE_INT2_GLOBAL_ID,
+            Type::Int4 => TYPE_INT4_GLOBAL_ID,
+            Type::Int8 => TYPE_INT8_GLOBAL_ID,
+            Type::Interval { .. } => TYPE_INTERVAL_GLOBAL_ID,
+            Type::Json => TYPE_JSONB_GLOBAL_ID,
+            Type::Jsonb => TYPE_JSONB_GLOBAL_ID,
+            Type::List(_) => TYPE_LIST_GLOBAL_ID,
+            Type::Map { .. } => TYPE_MAP_GLOBAL_ID,
+            Type::Numeric { .. } => TYPE_NUMERIC_GLOBAL_ID,
+            Type::Oid => TYPE_OID_GLOBAL_ID,
+            Type::Record(_) => TYPE_RECORD_GLOBAL_ID,
+            Type::Text => TYPE_TEXT_GLOBAL_ID,
+            Type::BpChar { .. } => TYPE_BPCHAR_GLOBAL_ID,
+            Type::VarChar { .. } => TYPE_VARCHAR_GLOBAL_ID,
+            Type::Time { .. } => TYPE_TIME_GLOBAL_ID,
+            Type::TimeTz { .. } => unreachable!(),
+            Type::Timestamp { .. } => TYPE_TIMESTAMP_GLOBAL_ID,
+            Type::TimestampTz { .. } => TYPE_TIMESTAMPTZ_GLOBAL_ID,
+            Type::Uuid => TYPE_UUID_GLOBAL_ID,
+            Type::RegClass => TYPE_REGCLASS_GLOBAL_ID,
+            Type::RegProc => TYPE_REGPROC_GLOBAL_ID,
+            Type::RegType => TYPE_REGTYPE_GLOBAL_ID,
+            Type::Int2Vector => TYPE_INT2_GLOBAL_ID,
+        }
+    }
+
     /// Returns the constraint on the type, if any.
     pub fn constraint(&self) -> Option<&dyn TypeConstraint> {
         match self {
@@ -760,11 +829,11 @@ impl TryFrom<&Type> for ScalarType {
             Type::Jsonb => Ok(ScalarType::Jsonb),
             Type::List(t) => Ok(ScalarType::List {
                 element_type: Box::new(TryFrom::try_from(&**t)?),
-                custom_oid: Some(t.oid()),
+                custom_id: None,
             }),
             Type::Map { value_type } => Ok(ScalarType::Map {
                 value_type: Box::new(TryFrom::try_from(&**value_type)?),
-                custom_oid: Some(value_type.oid()),
+                custom_id: None,
             }),
             Type::Numeric { constraints } => {
                 let max_scale = match constraints {
@@ -790,7 +859,7 @@ impl TryFrom<&Type> for ScalarType {
             Type::Oid => Ok(ScalarType::Oid),
             Type::Record(_) => Ok(ScalarType::Record {
                 fields: vec![],
-                custom_oid: None,
+                custom_id: None,
                 custom_name: None,
             }),
             Type::Text => Ok(ScalarType::String),

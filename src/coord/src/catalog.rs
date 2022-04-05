@@ -40,8 +40,7 @@ use mz_sql::ast::display::AstDisplay;
 use mz_sql::ast::Expr;
 use mz_sql::catalog::{
     CatalogDatabase, CatalogError as SqlCatalogError, CatalogItem as SqlCatalogItem,
-    CatalogItemType as SqlCatalogItemType, CatalogSchema, CatalogType, CatalogTypeDetails,
-    IdReference, NameReference, SessionCatalog, TypeReference,
+    CatalogItemType as SqlCatalogItemType, CatalogSchema, CatalogTypeDetails, SessionCatalog,
 };
 use mz_sql::names::{
     Aug, DatabaseId, FullObjectName, ObjectQualifiers, PartialObjectName, QualifiedObjectName,
@@ -58,8 +57,8 @@ use mz_transform::Optimizer;
 use uuid::Uuid;
 
 use crate::catalog::builtin::{
-    Builtin, BuiltinLog, BuiltinTable, BuiltinType, Fingerprint, BUILTINS, BUILTIN_ROLES,
-    INFORMATION_SCHEMA, MZ_CATALOG_SCHEMA, MZ_INTERNAL_SCHEMA, MZ_TEMP_SCHEMA, PG_CATALOG_SCHEMA,
+    Builtin, BuiltinLog, BuiltinTable, Fingerprint, BUILTINS, BUILTIN_ROLES, INFORMATION_SCHEMA,
+    MZ_CATALOG_SCHEMA, MZ_INTERNAL_SCHEMA, MZ_TEMP_SCHEMA, PG_CATALOG_SCHEMA,
 };
 use crate::persistcfg::PersistConfig;
 use crate::session::{PreparedStatement, Session, DEFAULT_DATABASE_NAME};
@@ -549,20 +548,20 @@ impl CatalogState {
     ///
     /// Panics if the builtin table doesn't exist in the catalog
     pub fn resolve_builtin_table(&self, builtin: &'static BuiltinTable) -> GlobalId {
-        self.resolve_builtin_object(&Builtin::<IdReference>::Table(builtin))
+        self.resolve_builtin_object(&Builtin::Table(builtin))
     }
 
     /// Optimized lookup for a builtin log
     ///
     /// Panics if the builtin log doesn't exist in the catalog
     pub fn resolve_builtin_log(&self, builtin: &'static BuiltinLog) -> GlobalId {
-        self.resolve_builtin_object(&Builtin::<IdReference>::Log(builtin))
+        self.resolve_builtin_object(&Builtin::Log(builtin))
     }
 
     /// Optimized lookup for a builtin object
     ///
     /// Panics if the builtin object doesn't exist in the catalog
-    pub fn resolve_builtin_object<T: TypeReference>(&self, builtin: &Builtin<T>) -> GlobalId {
+    pub fn resolve_builtin_object(&self, builtin: &Builtin) -> GlobalId {
         let schema_id = &self.ambient_schemas_by_name[builtin.schema()];
         let schema = &self.ambient_schemas_by_id[schema_id];
         schema.items[builtin.name()].clone()
@@ -768,7 +767,7 @@ pub struct Index {
 pub struct Type {
     pub create_sql: String,
     #[serde(skip)]
-    pub details: CatalogTypeDetails<IdReference>,
+    pub details: CatalogTypeDetails,
     pub depends_on: Vec<GlobalId>,
 }
 
@@ -1182,7 +1181,27 @@ impl Catalog {
             );
         }
 
-        catalog.load_builtin_types()?;
+        let pg_catalog_schema_id = catalog.state.get_pg_catalog_schema_id().clone();
+
+        // Insert into catalog
+        for typ in BUILTINS.types() {
+            catalog.state.insert_item(
+                typ.id,
+                typ.oid,
+                QualifiedObjectName {
+                    qualifiers: ObjectQualifiers {
+                        database_spec: ResolvedDatabaseSpecifier::Ambient,
+                        schema_spec: SchemaSpecifier::Id(pg_catalog_schema_id),
+                    },
+                    item: typ.name.to_owned(),
+                },
+                CatalogItem::Type(Type {
+                    create_sql: format!("CREATE TYPE {}", typ.name),
+                    details: typ.details.clone(),
+                    depends_on: vec![],
+                }),
+            );
+        }
 
         let persisted_builtin_ids = catalog.storage().load_system_gids()?;
         let AllocatedBuiltinSystemIds {
@@ -1412,146 +1431,6 @@ impl Catalog {
         }
 
         Ok((catalog, builtin_table_updates))
-    }
-
-    /// Loads built-in system types into the catalog.
-    ///
-    /// Built-in types sometimes have references to other built-in types, and sometimes these
-    /// references are circular. This makes loading built-in types more complicated than other
-    /// built-in objects, and requires us to make multiple passes over the types to correctly
-    /// resolve all references.
-    fn load_builtin_types(&mut self) -> Result<(), Error> {
-        let persisted_builtin_ids = self.storage().load_system_gids()?;
-
-        let AllocatedBuiltinSystemIds {
-            all_builtins,
-            new_builtins,
-            ..
-        } = self.allocate_system_ids(BUILTINS.types().collect(), |typ| {
-            persisted_builtin_ids
-                .get(&(typ.schema.to_string(), typ.name.to_string()))
-                .cloned()
-        })?;
-        let name_to_id_map: HashMap<&str, GlobalId> = all_builtins
-            .into_iter()
-            .map(|(typ, id)| (typ.name, id))
-            .collect();
-
-        // Replace named references with id references
-        let mut builtin_types: Vec<_> = BUILTINS
-            .types()
-            .map(|typ| Self::resolve_builtin_type(typ, &name_to_id_map))
-            .collect();
-
-        // Resolve array_id for types
-        let mut element_id_to_array_id = HashMap::new();
-        for typ in &builtin_types {
-            match &typ.details.typ {
-                CatalogType::Array { element_reference } => {
-                    let array_id = name_to_id_map[typ.name];
-                    element_id_to_array_id.insert(*element_reference, array_id);
-                }
-                _ => {}
-            }
-        }
-        let pg_catalog_schema_id = self.state.get_pg_catalog_schema_id().clone();
-        for typ in &mut builtin_types {
-            let element_id = name_to_id_map[typ.name];
-            typ.details.array_id = element_id_to_array_id.get(&element_id).map(|id| id.clone());
-        }
-
-        // Insert into catalog
-        for typ in builtin_types {
-            let element_id = name_to_id_map[typ.name];
-            self.state.insert_item(
-                element_id,
-                typ.oid,
-                QualifiedObjectName {
-                    qualifiers: ObjectQualifiers {
-                        database_spec: ResolvedDatabaseSpecifier::Ambient,
-                        schema_spec: SchemaSpecifier::Id(pg_catalog_schema_id),
-                    },
-                    item: typ.name.to_owned(),
-                },
-                CatalogItem::Type(Type {
-                    create_sql: format!("CREATE TYPE {}", typ.name),
-                    details: typ.details.clone(),
-                    depends_on: vec![],
-                }),
-            );
-        }
-
-        let new_system_id_mappings = new_builtins
-            .iter()
-            .map(|(typ, id)| (typ.schema, typ.name, *id, typ.fingerprint()))
-            .collect();
-        self.storage().set_system_gids(new_system_id_mappings)?;
-
-        Ok(())
-    }
-
-    fn resolve_builtin_type(
-        builtin: &BuiltinType<NameReference>,
-        name_to_id_map: &HashMap<&str, GlobalId>,
-    ) -> BuiltinType<IdReference> {
-        let typ: CatalogType<IdReference> = match &builtin.details.typ {
-            CatalogType::Array { element_reference } => CatalogType::Array {
-                element_reference: name_to_id_map[element_reference],
-            },
-            CatalogType::List { element_reference } => CatalogType::List {
-                element_reference: name_to_id_map[element_reference],
-            },
-            CatalogType::Map {
-                key_reference,
-                value_reference,
-            } => CatalogType::Map {
-                key_reference: name_to_id_map[key_reference],
-                value_reference: name_to_id_map[value_reference],
-            },
-            CatalogType::Record { fields } => CatalogType::Record {
-                fields: fields
-                    .into_iter()
-                    .map(|(column_name, reference)| {
-                        (column_name.clone(), name_to_id_map[reference])
-                    })
-                    .collect(),
-            },
-            CatalogType::Bool => CatalogType::Bool,
-            CatalogType::Bytes => CatalogType::Bytes,
-            CatalogType::Char => CatalogType::Char,
-            CatalogType::Date => CatalogType::Date,
-            CatalogType::Float32 => CatalogType::Float32,
-            CatalogType::Float64 => CatalogType::Float64,
-            CatalogType::Int16 => CatalogType::Int16,
-            CatalogType::Int32 => CatalogType::Int32,
-            CatalogType::Int64 => CatalogType::Int64,
-            CatalogType::Interval => CatalogType::Interval,
-            CatalogType::Jsonb => CatalogType::Jsonb,
-            CatalogType::Numeric => CatalogType::Numeric,
-            CatalogType::Oid => CatalogType::Oid,
-            CatalogType::PgLegacyChar => CatalogType::PgLegacyChar,
-            CatalogType::Pseudo => CatalogType::Pseudo,
-            CatalogType::RegClass => CatalogType::RegClass,
-            CatalogType::RegProc => CatalogType::RegProc,
-            CatalogType::RegType => CatalogType::RegType,
-            CatalogType::String => CatalogType::String,
-            CatalogType::Time => CatalogType::Time,
-            CatalogType::Timestamp => CatalogType::Timestamp,
-            CatalogType::TimestampTz => CatalogType::TimestampTz,
-            CatalogType::Uuid => CatalogType::Uuid,
-            CatalogType::VarChar => CatalogType::VarChar,
-            CatalogType::Int2Vector => CatalogType::Int2Vector,
-        };
-
-        BuiltinType {
-            name: builtin.name,
-            schema: builtin.schema,
-            oid: builtin.oid,
-            details: CatalogTypeDetails {
-                array_id: builtin.details.array_id,
-                typ,
-            },
-        }
     }
 
     /// Retuns the catalog's transient revision, which starts at 1 and is
@@ -3157,8 +3036,15 @@ impl ExprHumanizer for ConnCatalog<'_> {
 
         match typ {
             Array(t) => format!("{}[]", self.humanize_scalar_type(t)),
-            List { custom_oid, .. } | Map { custom_oid, .. } if custom_oid.is_some() => {
-                let item = self.get_item_by_oid(&custom_oid.unwrap());
+            List {
+                custom_id: Some(id),
+                ..
+            }
+            | Map {
+                custom_id: Some(id),
+                ..
+            } => {
+                let item = self.get_item(id);
                 self.minimal_qualification(item.name()).to_string()
             }
             List { element_type, .. } => {
@@ -3170,10 +3056,10 @@ impl ExprHumanizer for ConnCatalog<'_> {
                 self.humanize_scalar_type(value_type)
             ),
             Record {
-                custom_oid: Some(oid),
+                custom_id: Some(id),
                 ..
             } => {
-                let item = self.get_item_by_oid(oid);
+                let item = self.get_item(id);
                 self.minimal_qualification(item.name()).to_string()
             }
             Record {
@@ -3201,7 +3087,7 @@ impl ExprHumanizer for ConnCatalog<'_> {
                 } else {
                     // If PG_CATALOG_SCHEMA is not in search path, you need
                     // qualified object name to refer to type.
-                    let name = self.get_item_by_oid(&pgrepr_type.oid()).name();
+                    let name = self.get_item(&pgrepr_type.global_id()).name();
                     self.resolve_full_name(name).to_string()
                 };
                 res
@@ -3477,7 +3363,7 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
         }
     }
 
-    fn type_details(&self) -> Option<&CatalogTypeDetails<IdReference>> {
+    fn type_details(&self) -> Option<&CatalogTypeDetails> {
         if let CatalogItem::Type(Type { details, .. }) = self.item() {
             Some(details)
         } else {

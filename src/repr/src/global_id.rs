@@ -13,8 +13,14 @@ use std::str::FromStr;
 use anyhow::{anyhow, Error};
 use serde::{Deserialize, Serialize};
 
+use mz_lowertest::MzReflect;
+
+pub mod system;
+
 /// The identifier for a global dataflow.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, MzReflect,
+)]
 pub enum GlobalId {
     /// System namespace.
     System(u64),

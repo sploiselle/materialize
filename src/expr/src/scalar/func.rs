@@ -6025,7 +6025,7 @@ impl VariadicFunc {
                 // );
                 ScalarType::List {
                     element_type: Box::new(elem_type.clone()),
-                    custom_oid: None,
+                    custom_id: None,
                 }
                 .nullable(false)
             }
@@ -6041,7 +6041,7 @@ impl VariadicFunc {
                     .into_iter()
                     .zip(input_types.into_iter())
                     .collect(),
-                custom_oid: None,
+                custom_id: None,
                 custom_name: None,
             }
             .nullable(false),

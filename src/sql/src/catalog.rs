@@ -328,7 +328,7 @@ pub trait CatalogItem {
 
     /// Returns the type information associated with the catalog item, if the
     /// catalog item is a type.
-    fn type_details(&self) -> Option<&CatalogTypeDetails<IdReference>>;
+    fn type_details(&self) -> Option<&CatalogTypeDetails>;
 }
 
 /// The type of a [`CatalogItem`].
@@ -369,33 +369,11 @@ impl fmt::Display for CatalogItemType {
 
 /// Details about a type in the catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CatalogTypeDetails<T: TypeReference> {
+pub struct CatalogTypeDetails {
     /// The ID of the type with this type as the array element, if available.
     pub array_id: Option<GlobalId>,
     /// The description of this type.
-    pub typ: CatalogType<T>,
-}
-
-/// Represents a reference to type in the catalog
-pub trait TypeReference {
-    /// The actual type used to reference a `CatalogType`
-    type Reference: Clone + Debug + Eq + PartialEq;
-}
-
-/// Reference to a type by it's name
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NameReference;
-
-impl TypeReference for NameReference {
-    type Reference = &'static str;
-}
-
-/// Reference to a type by it's global ID
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IdReference;
-
-impl TypeReference for IdReference {
-    type Reference = GlobalId;
+    pub typ: CatalogType,
 }
 
 /// A type stored in the catalog.
@@ -405,9 +383,9 @@ impl TypeReference for IdReference {
 /// types in the catalog.
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CatalogType<T: TypeReference> {
+pub enum CatalogType {
     Array {
-        element_reference: T::Reference,
+        element_reference: GlobalId,
     },
     Bool,
     Bytes,
@@ -421,18 +399,18 @@ pub enum CatalogType<T: TypeReference> {
     Interval,
     Jsonb,
     List {
-        element_reference: T::Reference,
+        element_reference: GlobalId,
     },
     Map {
-        key_reference: T::Reference,
-        value_reference: T::Reference,
+        key_reference: GlobalId,
+        value_reference: GlobalId,
     },
     Numeric,
     Oid,
     PgLegacyChar,
     Pseudo,
     Record {
-        fields: Vec<(ColumnName, T::Reference)>,
+        fields: Vec<(ColumnName, GlobalId)>,
     },
     RegClass,
     RegProc,

@@ -28,6 +28,7 @@ use crate::adt::interval::Interval;
 use crate::adt::numeric::{Numeric, NumericMaxScale};
 use crate::adt::system::{Oid, PgLegacyChar, RegClass, RegProc, RegType};
 use crate::adt::varchar::{VarChar, VarCharMaxLength};
+use crate::GlobalId;
 use crate::{ColumnName, ColumnType, DatumList, DatumMap};
 use crate::{Row, RowArena};
 
@@ -945,15 +946,15 @@ pub enum ScalarType {
     /// always be [`Datum::Null`].
     List {
         element_type: Box<ScalarType>,
-        custom_oid: Option<u32>,
+        custom_id: Option<GlobalId>,
     },
     /// An ordered and named sequence of datums.
     Record {
         /// The names and types of the fields of the record, in order from left
         /// to right.
         fields: Vec<(ColumnName, ColumnType)>,
-        // TODO: turn custom_oid and name into an enum. it should only be possible to set one at a time
-        custom_oid: Option<u32>,
+        // TODO: turn custom_id and name into an enum. it should only be possible to set one at a time
+        custom_id: Option<GlobalId>,
         custom_name: Option<String>,
     },
     /// A PostgreSQL object identifier.
@@ -965,7 +966,7 @@ pub enum ScalarType {
     /// be [`Datum::Null`].
     Map {
         value_type: Box<ScalarType>,
-        custom_oid: Option<u32>,
+        custom_id: Option<GlobalId>,
     },
     /// A PostgreSQL function name.
     RegProc,
@@ -1511,21 +1512,21 @@ impl<'a> ScalarType {
         match self {
             List {
                 element_type,
-                custom_oid: None,
+                custom_id: None,
             } => List {
                 element_type: Box::new(element_type.without_modifiers()),
-                custom_oid: None,
+                custom_id: None,
             },
             Map {
                 value_type,
-                custom_oid: None,
+                custom_id: None,
             } => Map {
                 value_type: Box::new(value_type.without_modifiers()),
-                custom_oid: None,
+                custom_id: None,
             },
             Record {
                 fields,
-                custom_oid: None,
+                custom_id: None,
                 custom_name: None,
             } => {
                 let fields = fields
@@ -1543,7 +1544,7 @@ impl<'a> ScalarType {
                 Record {
                     fields,
                     custom_name: None,
-                    custom_oid: None,
+                    custom_id: None,
                 }
             }
             Array(a) => Array(Box::new(a.without_modifiers())),
@@ -1651,16 +1652,16 @@ impl<'a> ScalarType {
         match self {
             List {
                 element_type: t,
-                custom_oid,
+                custom_id,
             }
             | Map {
                 value_type: t,
-                custom_oid,
-            } => custom_oid.is_some() || t.is_custom_type(),
+                custom_id,
+            } => custom_id.is_some() || t.is_custom_type(),
             Record {
-                fields, custom_oid, ..
+                fields, custom_id, ..
             } => {
-                custom_oid.is_some()
+                custom_id.is_some()
                     || fields
                         .iter()
                         .map(|(_, t)| t)
@@ -1698,33 +1699,33 @@ impl<'a> ScalarType {
             (
                 List {
                     element_type: l,
-                    custom_oid: oid_l,
+                    custom_id: oid_l,
                 },
                 List {
                     element_type: r,
-                    custom_oid: oid_r,
+                    custom_id: oid_r,
                 },
             )
             | (
                 Map {
                     value_type: l,
-                    custom_oid: oid_l,
+                    custom_id: oid_l,
                 },
                 Map {
                     value_type: r,
-                    custom_oid: oid_r,
+                    custom_id: oid_r,
                 },
             ) => l.eq_inner(r, structure_only) && (oid_l == oid_r || structure_only),
             (Array(a), Array(b)) => a.eq_inner(b, structure_only),
             (
                 Record {
                     fields: fields_a,
-                    custom_oid: oid_a,
+                    custom_id: oid_a,
                     custom_name: name_a,
                 },
                 Record {
                     fields: fields_b,
-                    custom_oid: oid_b,
+                    custom_id: oid_b,
                     custom_name: name_b,
                 },
             ) => {
@@ -1780,7 +1781,7 @@ fn verify_base_eq_record_nullability() {
                 nullable: true,
             },
         )],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     let s2 = ScalarType::Record {
@@ -1791,12 +1792,12 @@ fn verify_base_eq_record_nullability() {
                 nullable: false,
             },
         )],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     let s3 = ScalarType::Record {
         fields: vec![],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     assert!(s1.base_eq(&s2));

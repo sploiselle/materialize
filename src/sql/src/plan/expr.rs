@@ -415,7 +415,7 @@ impl AbstractExpr for CoercibleScalarExpr {
                 Some(ColumnType {
                     scalar_type: ScalarType::Record {
                         fields,
-                        custom_oid: None,
+                        custom_id: None,
                         custom_name: None,
                     },
                     nullable: false,
