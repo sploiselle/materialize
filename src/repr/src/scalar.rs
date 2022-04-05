@@ -28,6 +28,7 @@ use crate::adt::interval::Interval;
 use crate::adt::numeric::{Numeric, NumericMaxScale};
 use crate::adt::system::{Oid, PgLegacyChar, RegClass, RegProc, RegType};
 use crate::adt::varchar::{VarChar, VarCharMaxLength};
+use crate::GlobalId;
 use crate::{ColumnName, ColumnType, DatumList, DatumMap};
 use crate::{Row, RowArena};
 
@@ -951,15 +952,15 @@ pub enum ScalarType {
     /// always be [`Datum::Null`].
     List {
         element_type: Box<ScalarType>,
-        custom_oid: Option<u32>,
+        custom_id: Option<GlobalId>,
     },
     /// An ordered and named sequence of datums.
     Record {
         /// The names and types of the fields of the record, in order from left
         /// to right.
         fields: Vec<(ColumnName, ColumnType)>,
-        // TODO: turn custom_oid and name into an enum. it should only be possible to set one at a time
-        custom_oid: Option<u32>,
+        // TODO: turn custom_id and name into an enum. it should only be possible to set one at a time
+        custom_id: Option<GlobalId>,
         custom_name: Option<String>,
     },
     /// A PostgreSQL object identifier.
@@ -971,7 +972,7 @@ pub enum ScalarType {
     /// be [`Datum::Null`].
     Map {
         value_type: Box<ScalarType>,
-        custom_oid: Option<u32>,
+        custom_id: Option<GlobalId>,
     },
     /// A PostgreSQL function name.
     RegProc,
@@ -1517,21 +1518,21 @@ impl<'a> ScalarType {
         match self {
             List {
                 element_type,
-                custom_oid: None,
+                custom_id: None,
             } => List {
                 element_type: Box::new(element_type.without_modifiers()),
-                custom_oid: None,
+                custom_id: None,
             },
             Map {
                 value_type,
-                custom_oid: None,
+                custom_id: None,
             } => Map {
                 value_type: Box::new(value_type.without_modifiers()),
-                custom_oid: None,
+                custom_id: None,
             },
             Record {
                 fields,
-                custom_oid: None,
+                custom_id: None,
                 custom_name: None,
             } => {
                 let fields = fields
@@ -1549,7 +1550,7 @@ impl<'a> ScalarType {
                 Record {
                     fields,
                     custom_name: None,
-                    custom_oid: None,
+                    custom_id: None,
                 }
             }
             Array(a) => Array(Box::new(a.without_modifiers())),
@@ -1652,28 +1653,35 @@ impl<'a> ScalarType {
         )
     }
 
-    pub fn is_custom_type(&self) -> bool {
+    pub fn get_custom_id(&self) -> Option<&GlobalId> {
         use ScalarType::*;
         match self {
-            List {
-                element_type: t,
-                custom_oid,
+            List { custom_id, .. } | Map { custom_id, .. } | Record { custom_id, .. } => {
+                custom_id.as_ref()
             }
-            | Map {
-                value_type: t,
-                custom_oid,
-            } => custom_oid.is_some() || t.is_custom_type(),
-            Record {
-                fields, custom_oid, ..
-            } => {
-                custom_oid.is_some()
-                    || fields
-                        .iter()
-                        .map(|(_, t)| t)
-                        .any(|t| t.scalar_type.is_custom_type())
-            }
-            _ => false,
+            _ => None,
         }
+    }
+
+    pub fn is_custom_type(&self) -> bool {
+        use ScalarType::*;
+        self.get_custom_id().is_some()
+            || match self {
+                List {
+                    element_type: t, ..
+                }
+                | Map { value_type: t, .. } => t.get_custom_id().is_some(),
+                Record {
+                    fields, custom_id, ..
+                } => {
+                    custom_id.is_some()
+                        || fields
+                            .iter()
+                            .map(|(_, t)| t)
+                            .any(|t| t.scalar_type.get_custom_id().is_some())
+                }
+                _ => false,
+            }
     }
 
     /// Determines equality among scalar types that acknowledges custom OIDs,
@@ -1704,33 +1712,33 @@ impl<'a> ScalarType {
             (
                 List {
                     element_type: l,
-                    custom_oid: oid_l,
+                    custom_id: oid_l,
                 },
                 List {
                     element_type: r,
-                    custom_oid: oid_r,
+                    custom_id: oid_r,
                 },
             )
             | (
                 Map {
                     value_type: l,
-                    custom_oid: oid_l,
+                    custom_id: oid_l,
                 },
                 Map {
                     value_type: r,
-                    custom_oid: oid_r,
+                    custom_id: oid_r,
                 },
             ) => l.eq_inner(r, structure_only) && (oid_l == oid_r || structure_only),
             (Array(a), Array(b)) => a.eq_inner(b, structure_only),
             (
                 Record {
                     fields: fields_a,
-                    custom_oid: oid_a,
+                    custom_id: oid_a,
                     custom_name: name_a,
                 },
                 Record {
                     fields: fields_b,
-                    custom_oid: oid_b,
+                    custom_id: oid_b,
                     custom_name: name_b,
                 },
             ) => {
@@ -1798,14 +1806,18 @@ impl Arbitrary for ScalarType {
                     // Array
                     inner.clone().prop_map(|x| ScalarType::Array(Box::new(x))),
                     // List
-                    (inner.clone(), any::<Option<u32>>()).prop_map(|(x, oid)| ScalarType::List {
-                        element_type: Box::new(x),
-                        custom_oid: oid
+                    (inner.clone(), any::<Option<GlobalId>>()).prop_map(|(x, id)| {
+                        ScalarType::List {
+                            element_type: Box::new(x),
+                            custom_id: id,
+                        }
                     }),
                     // Map
-                    (inner.clone(), any::<Option<u32>>()).prop_map(|(x, oid)| ScalarType::Map {
-                        value_type: Box::new(x),
-                        custom_oid: oid
+                    (inner.clone(), any::<Option<GlobalId>>()).prop_map(|(x, id)| {
+                        ScalarType::Map {
+                            value_type: Box::new(x),
+                            custom_id: id,
+                        }
                     }),
                     // Record
                     {
@@ -1823,13 +1835,18 @@ impl Arbitrary for ScalarType {
                             prop::collection::vec((any::<ColumnName>(), column_type_strat), 0..10);
 
                         // Now we combine it with the default strategies to get Records.
-                        (fields_strat, any::<Option<u32>>(), any::<Option<String>>()).prop_map(
-                            |(fields, custom_oid, custom_name)| ScalarType::Record {
-                                fields,
-                                custom_oid,
-                                custom_name,
-                            },
+                        (
+                            fields_strat,
+                            any::<Option<GlobalId>>(),
+                            any::<Option<String>>(),
                         )
+                            .prop_map(
+                                |(fields, custom_id, custom_name)| ScalarType::Record {
+                                    fields,
+                                    custom_id,
+                                    custom_name,
+                                },
+                            )
                     }
                 ]
             },
@@ -1873,7 +1890,7 @@ fn verify_base_eq_record_nullability() {
                 nullable: true,
             },
         )],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     let s2 = ScalarType::Record {
@@ -1884,12 +1901,12 @@ fn verify_base_eq_record_nullability() {
                 nullable: false,
             },
         )],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     let s3 = ScalarType::Record {
         fields: vec![],
-        custom_oid: None,
+        custom_id: None,
         custom_name: None,
     };
     assert!(s1.base_eq(&s2));
