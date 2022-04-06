@@ -2367,6 +2367,7 @@ mod tests {
 
         let mut proc_oids = HashSet::new();
         let mut type_oids = HashSet::new();
+        let mut type_id_to_oid = HashMap::new();
 
         for builtin in BUILTINS.iter() {
             match builtin {
@@ -2377,6 +2378,13 @@ mod tests {
                         "{} reused oid {}",
                         ty.name,
                         ty.oid
+                    );
+
+                    assert!(
+                        type_id_to_oid.insert(ty.id, ty.oid).is_none(),
+                        "{} reused GlobalId {}",
+                        ty.name,
+                        ty.id
                     );
 
                     if ty.oid >= FIRST_MATERIALIZE_OID {
@@ -2508,16 +2516,22 @@ mod tests {
                             imp.oid, func.name, pg_fn.name
                         );
 
+                        let arg_oids: Vec<_> = imp
+                            .arg_oids
+                            .iter()
+                            .map(|id| type_id_to_oid[id].clone())
+                            .collect();
+
                         // Complain, but don't fail, if argument oids don't match.
                         // TODO: make these match.
-                        if imp.arg_oids != pg_fn.arg_oids {
+                        if arg_oids != pg_fn.arg_oids {
                             println!(
                                 "funcs with oid {} ({}) don't match arguments: {:?} in mz, {:?} in pg",
                                 imp.oid, func.name, imp.arg_oids, pg_fn.arg_oids
                             );
                         }
 
-                        if imp.return_oid != pg_fn.ret_oid {
+                        if imp.return_oid.map(|id| type_id_to_oid[&id]) != pg_fn.ret_oid {
                             println!(
                                 "funcs with oid {} ({}) don't match return types: {:?} in mz, {:?} in pg",
                                 imp.oid, func.name, imp.return_oid, pg_fn.ret_oid

@@ -20,7 +20,9 @@ use lazy_static::lazy_static;
 use mz_expr::func;
 use mz_ore::collections::CollectionExt;
 use mz_pgrepr::oid;
-use mz_repr::{ColumnName, ColumnType, Datum, RelationType, Row, ScalarBaseType, ScalarType};
+use mz_repr::{
+    ColumnName, ColumnType, Datum, GlobalId, RelationType, Row, ScalarBaseType, ScalarType,
+};
 
 use crate::ast::{SelectStatement, Statement};
 use crate::names::{resolve_names, resolve_names_expr, PartialObjectName};
@@ -422,9 +424,9 @@ pub struct FuncImpl<R> {
 #[derive(Debug)]
 pub struct FuncImplCatalogDetails {
     pub oid: u32,
-    pub arg_oids: Vec<u32>,
-    pub variadic_oid: Option<u32>,
-    pub return_oid: Option<u32>,
+    pub arg_oids: Vec<GlobalId>,
+    pub variadic_oid: Option<GlobalId>,
+    pub return_oid: Option<GlobalId>,
     pub return_is_set: bool,
 }
 
@@ -432,9 +434,9 @@ impl<R: GetReturnType> FuncImpl<R> {
     fn details(&self) -> FuncImplCatalogDetails {
         FuncImplCatalogDetails {
             oid: self.oid,
-            arg_oids: self.params.arg_oids(),
-            variadic_oid: self.params.variadic_oid(),
-            return_oid: self.return_type.typ.as_ref().map(|t| t.oid()),
+            arg_oids: self.params.arg_ids(),
+            variadic_oid: self.params.variadic_id(),
+            return_oid: self.return_type.typ.as_ref().map(|t| t.global_id()),
             return_is_set: self.return_type.is_set_of,
         }
     }
@@ -553,18 +555,18 @@ impl ParamList {
     }
 
     /// Generates values underlying data for for `mz_catalog.mz_functions.arg_ids`.
-    fn arg_oids(&self) -> Vec<u32> {
+    fn arg_ids(&self) -> Vec<GlobalId> {
         match self {
-            ParamList::Exact(p) => p.iter().map(|p| p.oid()).collect::<Vec<_>>(),
-            ParamList::Variadic(p) => vec![p.oid()],
+            ParamList::Exact(p) => p.iter().map(|p| p.global_id()).collect::<Vec<_>>(),
+            ParamList::Variadic(p) => vec![p.global_id()],
         }
     }
 
     /// Generates values for `mz_catalog.mz_functions.variadic_id`.
-    fn variadic_oid(&self) -> Option<u32> {
+    fn variadic_id(&self) -> Option<GlobalId> {
         match self {
             ParamList::Exact(_) => None,
-            ParamList::Variadic(p) => Some(p.oid()),
+            ParamList::Variadic(p) => Some(p.global_id()),
         }
     }
 
@@ -726,27 +728,29 @@ impl ParamType {
         }
     }
 
-    fn oid(&self) -> u32 {
+    fn global_id(&self) -> GlobalId {
+        use mz_repr::global_id::system::*;
+
         match self {
             ParamType::Plain(t) => {
                 assert!(!t.is_custom_type(),
                     "custom types cannot currently be used as parameters; use a polymorphic parameter that accepts the custom type instead"
                 );
                 let t: mz_pgrepr::Type = t.into();
-                t.oid()
+                t.global_id()
             }
-            ParamType::Any => postgres_types::Type::ANY.oid(),
-            ParamType::AnyCompatible => postgres_types::Type::ANYCOMPATIBLE.oid(),
-            ParamType::ArrayAny => postgres_types::Type::ANYARRAY.oid(),
-            ParamType::ArrayAnyCompatible => postgres_types::Type::ANYCOMPATIBLEARRAY.oid(),
-            ParamType::ListAny => mz_pgrepr::LIST.oid(),
-            ParamType::ListAnyCompatible => mz_pgrepr::ANYCOMPATIBLELIST.oid(),
-            // ListElementAnyCompatible is not identical to AnyCompatible, but reusing its OID appears harmless
-            ParamType::ListElementAnyCompatible => postgres_types::Type::ANYCOMPATIBLE.oid(),
-            ParamType::MapAny => mz_pgrepr::MAP.oid(),
-            ParamType::MapAnyCompatible => mz_pgrepr::ANYCOMPATIBLEMAP.oid(),
-            ParamType::NonVecAny => postgres_types::Type::ANYNONARRAY.oid(),
-            ParamType::RecordAny => postgres_types::Type::RECORD.oid(),
+            ParamType::Any => TYPE_ANY_GLOBAL_ID,
+            ParamType::AnyCompatible => TYPE_ANYCOMPATIBLE_GLOBAL_ID,
+            ParamType::ArrayAny => TYPE_ANYARRAY_GLOBAL_ID,
+            ParamType::ArrayAnyCompatible => TYPE_ANYCOMPATIBLEARRAY_GLOBAL_ID,
+            ParamType::ListAny => TYPE_LIST_GLOBAL_ID,
+            ParamType::ListAnyCompatible => TYPE_ANYCOMPATIBLELIST_GLOBAL_ID,
+            // ListElementAnyCompatible is not identical to AnyCompatible, but reusing its ID appears harmless
+            ParamType::ListElementAnyCompatible => TYPE_ANYCOMPATIBLE_GLOBAL_ID,
+            ParamType::MapAny => TYPE_MAP_GLOBAL_ID,
+            ParamType::MapAnyCompatible => TYPE_ANYCOMPATIBLEMAP_GLOBAL_ID,
+            ParamType::NonVecAny => TYPE_ANYNONARRAY_GLOBAL_ID,
+            ParamType::RecordAny => TYPE_RECORD_GLOBAL_ID,
         }
     }
 }
