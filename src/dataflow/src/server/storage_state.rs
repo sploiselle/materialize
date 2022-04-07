@@ -23,10 +23,10 @@ use mz_dataflow_types::client::{
 use mz_dataflow_types::sources::AwsExternalId;
 use mz_dataflow_types::sources::{ExternalSourceConnector, SourceConnector};
 use mz_dataflow_types::SourceInstanceDesc;
-use mz_expr::{GlobalId, PartitionId};
+use mz_expr::PartitionId;
 use mz_ore::now::NowFn;
 use mz_persist::client::RuntimeClient;
-use mz_repr::{Diff, Row, Timestamp};
+use mz_repr::{Diff, GlobalId, Row, Timestamp};
 
 use crate::metrics::Metrics;
 use crate::render::sources::PersistedSourceManager;

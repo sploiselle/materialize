@@ -7,10 +7,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-fn main() {
-    prost_build::Config::new()
-        .extern_path(".adt.array", "::mz_repr::proto::adt::array")
-        .extern_path(".global_id", "::mz_repr::proto::global_id")
-        .compile_protos(&["id.proto"], &["src/proto", "../repr/src/proto"])
-        .unwrap();
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package global_id;
+
+message ProtoGlobalId {
+    oneof kind {
+        uint64 system = 1;
+        uint64 user = 2;
+        uint64 transient = 3;
+        google.protobuf.Empty explain = 4;
+    }
 }

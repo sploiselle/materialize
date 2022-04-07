@@ -12,8 +12,7 @@ use differential_dataflow::Collection;
 use timely::dataflow::Scope;
 
 use mz_dataflow_types::{DataflowError, SourceInstanceRequest};
-use mz_expr::GlobalId;
-use mz_repr::{Diff, Row};
+use mz_repr::{Diff, GlobalId, Row};
 
 /// A type that can capture a specific source.
 pub trait StorageCapture {
@@ -120,7 +119,7 @@ mod boundary_hook {
     use mz_dataflow_types::client::{GenericClient, StorageCommand, StorageResponse};
     use mz_dataflow_types::sources::SourceDesc;
     use mz_dataflow_types::{SourceInstanceDesc, SourceInstanceId, SourceInstanceRequest};
-    use mz_expr::GlobalId;
+    use mz_repr::GlobalId;
 
     /// A client wrapper that observes source instantiation requests and enqueues them as commands.
     #[derive(Debug)]
@@ -258,8 +257,7 @@ mod event_link {
     use timely::dataflow::Scope;
 
     use mz_dataflow_types::{DataflowError, SourceInstanceRequest};
-    use mz_expr::GlobalId;
-    use mz_repr::{Diff, Row};
+    use mz_repr::{Diff, GlobalId, Row};
 
     use crate::activator::RcActivator;
     use crate::replay::MzReplay;
@@ -270,7 +268,7 @@ mod event_link {
     /// A simple boundary that uses activated event linked lists.
     pub struct EventLinkBoundary {
         /// Source boundaries shared between storage and compute.
-        shared: BTreeMap<(uuid::Uuid, mz_expr::GlobalId), SourceBoundary>,
+        shared: BTreeMap<(uuid::Uuid, mz_repr::GlobalId), SourceBoundary>,
         /// Enqueue source rendering requests.
         requests: tokio::sync::mpsc::UnboundedSender<super::SourceInstanceRequest>,
     }

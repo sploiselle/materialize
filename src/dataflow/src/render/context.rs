@@ -31,8 +31,8 @@ use timely::progress::{Antichain, Timestamp};
 use crate::arrangement::manager::{ErrSpine, RowSpine, TraceErrHandle, TraceRowHandle};
 use crate::operator::CollectionExt;
 use mz_dataflow_types::{DataflowDescription, DataflowError};
-use mz_expr::{GlobalId, Id, MapFilterProject, MirScalarExpr};
-use mz_repr::{DatumVec, Diff, Row, RowArena};
+use mz_expr::{Id, MapFilterProject, MirScalarExpr};
+use mz_repr::{DatumVec, Diff, GlobalId, Row, RowArena};
 
 // Local type definition to avoid the horror in signatures.
 pub type Arrangement<S, V> = Arranged<S, TraceRowHandle<V, V, <S as ScopeParent>::Timestamp, Diff>>;

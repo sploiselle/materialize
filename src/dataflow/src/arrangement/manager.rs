@@ -24,8 +24,7 @@ use mz_ore::metrics::{
 use timely::progress::frontier::{Antichain, AntichainRef};
 
 use mz_dataflow_types::DataflowError;
-use mz_expr::GlobalId;
-use mz_repr::{Diff, Row, Timestamp};
+use mz_repr::{Diff, GlobalId, Row, Timestamp};
 
 pub type RowSpine<K, V, T, R, O = usize> = OrdValSpine<K, V, T, R, O>;
 pub type ErrSpine<K, T, R, O = usize> = OrdKeySpine<K, T, R, O>;

@@ -25,8 +25,7 @@
 use lazy_static::lazy_static;
 
 use mz_dataflow_types::logging::{DifferentialLog, LogVariant, MaterializedLog, TimelyLog};
-use mz_expr::GlobalId;
-use mz_repr::{RelationDesc, ScalarType};
+use mz_repr::{GlobalId, RelationDesc, ScalarType};
 use mz_sql::catalog::{CatalogType, CatalogTypeDetails};
 
 pub const MZ_TEMP_SCHEMA: &str = "mz_temp";

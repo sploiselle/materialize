@@ -10,21 +10,13 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "global_id.proto";
 
 package id;
 
-message ProtoGlobalId {
-    oneof kind {
-        uint64 system = 1;
-        uint64 user = 2;
-        uint64 transient = 3;
-        google.protobuf.Empty explain = 4;
-    }
-}
-
 message ProtoId {
     oneof kind {
-        ProtoGlobalId global = 1;
+        .global_id.ProtoGlobalId global = 1;
         ProtoLocalId local = 2;
     }
 }

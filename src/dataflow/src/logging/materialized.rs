@@ -28,9 +28,9 @@ use crate::activator::RcActivator;
 use crate::arrangement::manager::RowSpine;
 use crate::arrangement::KeysValsHandle;
 use crate::replay::MzReplay;
-use mz_expr::{permutation_for_arrangement, GlobalId, MirScalarExpr, SourceInstanceId};
+use mz_expr::{permutation_for_arrangement, MirScalarExpr, SourceInstanceId};
 use mz_repr::adt::jsonb::Jsonb;
-use mz_repr::{Datum, DatumVec, Diff, Row, Timestamp};
+use mz_repr::{Datum, DatumVec, Diff, GlobalId, Row, Timestamp};
 
 /// Type alias for logging of materialized events.
 pub type Logger = timely::logging_core::Logger<MaterializedEvent, WorkerIdentifier>;

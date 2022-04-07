@@ -19,9 +19,10 @@ use timely::progress::Antichain;
 use crate::catalog::builtin::BuiltinLog;
 use mz_dataflow_types::client::ComputeInstanceId;
 use mz_dataflow_types::sources::MzOffset;
-use mz_expr::{GlobalId, PartitionId};
+use mz_expr::PartitionId;
 use mz_ore::cast::CastFrom;
 use mz_ore::collections::CollectionExt;
+use mz_repr::GlobalId;
 use mz_sql::catalog::CatalogError as SqlCatalogError;
 use mz_sql::names::{
     DatabaseId, ObjectQualifiers, QualifiedObjectName, ResolvedDatabaseSpecifier, SchemaId,

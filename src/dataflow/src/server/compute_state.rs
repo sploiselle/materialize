@@ -24,8 +24,7 @@ use tokio::sync::mpsc;
 use mz_dataflow_types::client::{ComputeCommand, ComputeResponse};
 use mz_dataflow_types::logging::LoggingConfig;
 use mz_dataflow_types::{DataflowError, PeekResponse, TailResponse};
-use mz_expr::GlobalId;
-use mz_repr::{Diff, Timestamp};
+use mz_repr::{Diff, GlobalId, Timestamp};
 
 use crate::activator::RcActivator;
 use crate::arrangement::manager::{TraceBundle, TraceManager};
