@@ -4032,7 +4032,7 @@ name = "mz-secrets"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "mz-expr",
+ "mz-repr",
 ]
 
 [[package]]
