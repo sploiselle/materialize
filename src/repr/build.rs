@@ -11,6 +11,7 @@ fn main() {
     prost_build::Config::new()
         .compile_protos(
             &[
+                "global_id.proto",
                 "row.proto",
                 "strconv.proto",
                 "scalar.proto",

@@ -10,6 +10,7 @@
 //! Generated protobuf code and companion impls.
 
 pub mod adt;
+pub mod global_id;
 pub mod row;
 mod scalar;
 pub mod strconv;

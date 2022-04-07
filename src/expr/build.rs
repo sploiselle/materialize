@@ -10,6 +10,7 @@
 fn main() {
     prost_build::Config::new()
         .extern_path(".adt.array", "::mz_repr::proto::adt::array")
+        .extern_path(".global_id", "::mz_repr::proto::global_id")
         .extern_path(".strconv", "::mz_repr::proto::strconv")
         .compile_protos(
             &["id.proto", "scalar.proto"],
