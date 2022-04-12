@@ -121,7 +121,6 @@ pub fn dbz_desc(desc: RelationDesc) -> RelationDesc {
         scalar_type: ScalarType::Record {
             fields: cols.into_iter().collect(),
             custom_id: None,
-            custom_name: Some("row".to_owned()),
         },
     };
     let typ = RelationType::new(vec![row.clone(), row]);

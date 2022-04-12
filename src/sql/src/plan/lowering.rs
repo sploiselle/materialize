@@ -938,7 +938,6 @@ impl HirScalarExpr {
                                             let record_type = ScalarType::Record {
                                                 fields,
                                                 custom_id: None,
-                                                custom_name: None,
                                             };
                                             let agg_input = mz_expr::MirScalarExpr::CallVariadic {
                                                 func: mz_expr::VariadicFunc::ListCreate {
@@ -970,7 +969,6 @@ impl HirScalarExpr {
                                                     })
                                                     .collect_vec(),
                                                 custom_id: None,
-                                                custom_name: None,
                                             }
                                             .nullable(false);
                                             let func = func.into_expr();
@@ -1129,7 +1127,6 @@ impl HirScalarExpr {
                                             let original_row_record_type = ScalarType::Record {
                                                 fields,
                                                 custom_id: None,
-                                                custom_name: None,
                                             };
 
                                             // Build a new record with the original row in a record in a list + the encoded args in a record
@@ -1159,7 +1156,6 @@ impl HirScalarExpr {
                                             let fn_input_record_type = ScalarType::Record {
                                                 fields: fn_input_record_fields,
                                                 custom_id: None,
-                                                custom_name: None,
                                             }
                                             .nullable(false);
 
@@ -1182,7 +1178,6 @@ impl HirScalarExpr {
                                                     fn_input_record_type.nullable(false),
                                                 )],
                                                 custom_id: None,
-                                                custom_name: None,
                                             }
                                             .nullable(false);
 

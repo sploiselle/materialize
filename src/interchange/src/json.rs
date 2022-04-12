@@ -199,11 +199,7 @@ impl<'a> ToJson for TypedDatum<'_> {
                         .collect();
                     serde_json::value::Value::Array(values)
                 }
-                ScalarType::Record {
-                    fields,
-                    custom_name,
-                    ..
-                } => {
+                ScalarType::Record { fields, .. } => {
                     let list = datum.unwrap_list();
                     let fields: Map<String, serde_json::value::Value> = fields
                         .iter()
@@ -216,10 +212,7 @@ impl<'a> ToJson for TypedDatum<'_> {
                         })
                         .collect();
 
-                    let name = match custom_name {
-                        Some(name) => name.clone(),
-                        None => namer(),
-                    };
+                    let name = namer();
                     json!({ name: fields })
                 }
                 ScalarType::Map { value_type, .. } => {
@@ -325,26 +318,14 @@ fn build_row_schema_field<F: FnMut() -> String>(
                 "values": inner
             })
         }
-        ScalarType::Record {
-            fields,
-            custom_name,
-            ..
-        } => {
-            let (name, name_seen) = match custom_name {
-                Some(name) => (name.clone(), !names_seen.insert(name.clone())),
-                None => (namer(), false),
-            };
-            if name_seen {
-                json!(name)
-            } else {
-                let fields = fields.to_vec();
-                let json_fields = build_row_schema_fields(&fields, names_seen, namer);
-                json!({
-                    "type": "record",
-                    "name": name,
-                    "fields": json_fields
-                })
-            }
+        ScalarType::Record { fields, .. } => {
+            let fields = fields.to_vec();
+            let json_fields = build_row_schema_fields(&fields, names_seen, namer);
+            json!({
+                "type": "record",
+                "name": namer(),
+                "fields": json_fields
+            })
         }
         ScalarType::Numeric { max_scale } => {
             let (p, s) = match max_scale {

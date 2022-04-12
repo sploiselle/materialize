@@ -959,9 +959,7 @@ pub enum ScalarType {
         /// The names and types of the fields of the record, in order from left
         /// to right.
         fields: Vec<(ColumnName, ColumnType)>,
-        // TODO: turn custom_id and name into an enum. it should only be possible to set one at a time
         custom_id: Option<GlobalId>,
-        custom_name: Option<String>,
     },
     /// A PostgreSQL object identifier.
     Oid,
@@ -1533,7 +1531,6 @@ impl<'a> ScalarType {
             Record {
                 fields,
                 custom_id: None,
-                custom_name: None,
             } => {
                 let fields = fields
                     .iter()
@@ -1549,7 +1546,7 @@ impl<'a> ScalarType {
                     .collect_vec();
                 Record {
                     fields,
-                    custom_name: None,
+
                     custom_id: None,
                 }
             }
@@ -1727,16 +1724,13 @@ impl<'a> ScalarType {
                 Record {
                     fields: fields_a,
                     custom_id: oid_a,
-                    custom_name: name_a,
                 },
                 Record {
                     fields: fields_b,
                     custom_id: oid_b,
-                    custom_name: name_b,
                 },
             ) => {
                 (oid_a == oid_b || structure_only)
-                    && (name_a == name_b || structure_only)
                     && fields_a.len() == fields_b.len()
                     && fields_a
                         .iter()
@@ -1884,7 +1878,6 @@ fn verify_base_eq_record_nullability() {
             },
         )],
         custom_id: None,
-        custom_name: None,
     };
     let s2 = ScalarType::Record {
         fields: vec![(
@@ -1895,12 +1888,10 @@ fn verify_base_eq_record_nullability() {
             },
         )],
         custom_id: None,
-        custom_name: None,
     };
     let s3 = ScalarType::Record {
         fields: vec![],
         custom_id: None,
-        custom_name: None,
     };
     assert!(s1.base_eq(&s2));
     assert!(!s1.base_eq(&s3));

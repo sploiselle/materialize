@@ -50,9 +50,10 @@ message ProtoScalarType {
     }
 
     message ProtoRecord {
+        reserved 3;
+        reserved "custom_name";
         repeated ProtoRecordField fields = 1;
         optional global_id.ProtoGlobalId custom_id = 2;
-        optional string custom_name = 3;
     }
 
     message ProtoMap {

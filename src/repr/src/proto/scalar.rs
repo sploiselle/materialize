@@ -89,14 +89,9 @@ impl From<&ScalarType> for ProtoScalarType {
                     element_type: Some(element_type.as_ref().into()),
                     custom_id: custom_id.map(|id| (&id).into()),
                 })),
-                ScalarType::Record {
-                    custom_id,
-                    fields,
-                    custom_name,
-                } => Record(ProtoRecord {
+                ScalarType::Record { custom_id, fields } => Record(ProtoRecord {
                     custom_id: custom_id.map(|id| (&id).into()),
                     fields: fields.into_iter().map(Into::into).collect(),
-                    custom_name: custom_name.clone(),
                 }),
                 ScalarType::Array(typ) => Array(typ.as_ref().into()),
                 ScalarType::Map {
@@ -173,7 +168,6 @@ impl TryFrom<ProtoScalarType> for ScalarType {
                     .into_iter()
                     .map(TryInto::try_into)
                     .collect::<Result<_, _>>()?,
-                custom_name: x.custom_name,
             }),
             Map(x) => Ok(ScalarType::Map {
                 value_type: Box::new(

@@ -1107,7 +1107,6 @@ pub mod sources {
                                                 .map(|(name, ty)| (name.clone(), ty.clone()))
                                                 .collect(),
                                             custom_id: None,
-                                            custom_name: None,
                                         },
                                     }]);
 
@@ -1371,7 +1370,6 @@ pub mod sources {
                                         ),
                                     ],
                                     custom_id: None,
-                                    custom_name: None,
                                 }),
                                 custom_id: None,
                             },

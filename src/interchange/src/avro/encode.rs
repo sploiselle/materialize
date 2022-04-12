@@ -157,7 +157,6 @@ impl AvroSchemaGenerator {
                             },
                         )],
                         custom_id: None,
-                        custom_name: Some("transaction".to_string()),
                     },
                 },
             ));

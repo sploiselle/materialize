@@ -6113,7 +6113,6 @@ impl VariadicFunc {
                     .zip(input_types.into_iter())
                     .collect(),
                 custom_id: None,
-                custom_name: None,
             }
             .nullable(false),
             SplitPart => ScalarType::String.nullable(in_nullable),
