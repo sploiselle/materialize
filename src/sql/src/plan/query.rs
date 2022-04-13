@@ -2478,6 +2478,7 @@ fn invent_column_name(
                     .first()
                     .map(|name| (name.column_name.clone(), NameQuality::High))
             }
+            Expr::Row { .. } => Some(("row".into(), NameQuality::High)),
             _ => None,
         }
     }
