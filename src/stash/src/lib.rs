@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
-use std::fmt;
+use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::iter;
 use std::iter::once;
@@ -841,7 +841,11 @@ where
         &mut self,
         key_from_id: F,
         v: V,
-    ) -> Result<Option<I>, ()> {
+    ) -> Result<Option<I>, ()>
+    where
+        K: Debug,
+        V: Debug,
+    {
         let id = self.next_id;
         let next_id = self
             .next_id
