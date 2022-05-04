@@ -23,6 +23,7 @@ use crate::DEFAULT_SCHEMA;
 use chrono::MIN_DATETIME;
 use lazy_static::lazy_static;
 use mz_build_info::DUMMY_BUILD_INFO;
+use mz_dataflow_types::client::ComputeInstanceId;
 use mz_dataflow_types::sources::{AwsExternalId, SourceConnector};
 use mz_expr::{DummyHumanizer, ExprHumanizer, MirScalarExpr};
 use mz_lowertest::*;
