@@ -652,7 +652,7 @@ pub fn plan_create_source(
                                     );
                                 }
                                 tx_metadata_collection =
-                                    Some(with_option_type!(Some(data_collection.clone()), String));
+                                    Some(String::try_from(data_collection.clone())?);
                             }
                         }
                     }

@@ -95,6 +95,7 @@ Decorrelated
 Default
 Delete
 Delimited
+Delimiter
 Desc
 Details
 Discard
@@ -223,10 +224,12 @@ Preceding
 Precision
 Prepare
 Primary
+Progress
 Protobuf
 Publication
 Pubnub
 Query
+Quote
 Raise
 Range
 Raw
@@ -291,6 +294,7 @@ Text
 Then
 Ties
 Time
+Timeout
 Timestamp
 Timing
 To

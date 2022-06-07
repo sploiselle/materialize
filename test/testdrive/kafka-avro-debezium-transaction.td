@@ -278,7 +278,7 @@ $ kafka-verify format=avro sink=materialize.public.data_sink sort-messages=true
 #
 # We want the next message to have a different timestamp
 > BEGIN
-> DECLARE c CURSOR FOR TAIL data_schema_inline WITH (snapshot = false, progress = true)
+> DECLARE c CURSOR FOR TAIL data_schema_inline WITH (SNAPSHOT = false, PROGRESS = true)
 > FETCH 1 c
 mz_timestamp  mz_progressed  mz_diff  a       b
 -------------------------------------------------
@@ -312,7 +312,7 @@ a  b
 
 # We want the next message to have a different timestamp
 > BEGIN
-> DECLARE c CURSOR FOR TAIL data_schema_inline WITH (snapshot = false, progress = true)
+> DECLARE c CURSOR FOR TAIL data_schema_inline WITH (SNAPSHOT = false, PROGRESS = true)
 > FETCH 1 c
 mz_timestamp  mz_progressed  mz_diff  a       b
 -------------------------------------------------

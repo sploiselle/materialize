@@ -973,6 +973,13 @@ TAIL foo.bar WITH (snapshot = false, timestamps) AS OF now()
 Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [WithOption { key: Ident("snapshot"), value: Some(Value(Boolean(false))) }, WithOption { key: Ident("timestamps"), value: None }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
 
 parse-statement
+TAIL foo.bar WITH (SNAPSHOT = false) AS OF now()
+----
+TAIL foo.bar WITH (snapshot = false, timestamps) AS OF now()
+=>
+Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [WithOption { key: Ident("snapshot"), value: Some(Value(Boolean(false))) }, WithOption { key: Ident("timestamps"), value: None }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
+
+parse-statement
 TAIL foo.bar WITH (SNAPSHOT false)
 ----
 error: Expected equals sign, found FALSE

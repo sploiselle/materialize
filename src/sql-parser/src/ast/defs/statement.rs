@@ -240,6 +240,43 @@ impl AstDisplay for CopyTarget {
 }
 impl_display!(CopyTarget);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CopyOptionName {
+    Format,
+    Delimiter,
+    Null,
+    Escape,
+    Quote,
+    Header,
+}
+
+impl AstDisplay for CopyOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str(match self {
+            CopyOptionName::Format => "FORMAT",
+            CopyOptionName::Delimiter => "DELIMITER",
+            CopyOptionName::Null => "NULL",
+            CopyOptionName::Escape => "ESCAPE",
+            CopyOptionName::Quote => "QUOTE",
+            CopyOptionName::Header => "HEADER",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CopyOption<T: AstInfo> {
+    pub name: CopyOptionName,
+    pub value: WithOptionValue<T>,
+}
+
+impl<T: AstInfo> AstDisplay for CopyOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        f.write_str(" = ");
+        f.write_node(&self.value);
+    }
+}
+
 /// `COPY`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CopyStatement<T: AstInfo> {
@@ -250,7 +287,7 @@ pub struct CopyStatement<T: AstInfo> {
     // TARGET
     pub target: CopyTarget,
     // OPTIONS
-    pub options: Vec<WithOption<T>>,
+    pub options: Vec<CopyOption<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for CopyStatement<T> {
@@ -1671,11 +1708,42 @@ impl AstDisplay for RollbackStatement {
 }
 impl_display!(RollbackStatement);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TailOptionName {
+    Snapshot,
+    Progress,
+}
+
+impl AstDisplay for TailOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        match self {
+            TailOptionName::Snapshot => f.write_str("SNAPSHOT"),
+            TailOptionName::Progress => f.write_str("PROGRESS"),
+        }
+    }
+}
+impl_display!(TailOptionName);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TailOption<T: AstInfo> {
+    pub name: TailOptionName,
+    pub value: WithOptionValue<T>,
+}
+
+impl<T: AstInfo> AstDisplay for TailOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        f.write_str(" = ");
+        f.write_node(&self.value);
+    }
+}
+impl_display_t!(TailOption);
+
 /// `TAIL`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TailStatement<T: AstInfo> {
     pub relation: TailRelation<T>,
-    pub options: Vec<WithOption<T>>,
+    pub options: Vec<TailOption<T>>,
     pub as_of: Option<AsOf<T>>,
 }
 
@@ -2081,12 +2149,39 @@ impl AstDisplay for CloseStatement {
 }
 impl_display!(CloseStatement);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FetchOptionName {
+    Timeout,
+}
+
+impl AstDisplay for FetchOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str(match self {
+            FetchOptionName::Timeout => "TIMEOUT",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FetchOption<T: AstInfo> {
+    pub name: FetchOptionName,
+    pub value: WithOptionValue<T>,
+}
+
+impl<T: AstInfo> AstDisplay for FetchOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        f.write_str(" = ");
+        f.write_node(&self.value);
+    }
+}
+
 /// `FETCH ...`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FetchStatement<T: AstInfo> {
     pub name: Ident,
     pub count: Option<FetchDirection>,
-    pub options: Vec<WithOption<T>>,
+    pub options: Vec<FetchOption<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for FetchStatement<T> {

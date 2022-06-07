@@ -1689,8 +1689,7 @@ impl<'a> Parser<'a> {
             let with_options = if self.peek_keyword(WITH)
                 && self.peek_nth_token(1) != Some(Token::Keyword(SNAPSHOT))
             {
-                self.expect_keyword(WITH).unwrap();
-                self.parse_comma_separated(Parser::parse_avro_schema_options)?
+                self.parse_kw_options(Parser::parse_avro_schema_options)?
             } else {
                 vec![]
             };
@@ -2448,18 +2447,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let with_options = if self.parse_keyword(WITH) {
-            self.expect_token(&Token::LParen)?;
-            let o = if matches!(self.peek_token(), Some(Token::RParen)) {
-                vec![]
-            } else {
-                self.parse_comma_separated(Parser::parse_index_option)?
-            };
-            self.expect_token(&Token::RParen)?;
-            o
-        } else {
-            vec![]
-        };
+        let with_options = self.parse_kw_options(Parser::parse_index_option)?;
 
         Ok(Statement::CreateIndex(CreateIndexStatement {
             name,
@@ -2657,7 +2645,12 @@ impl<'a> Parser<'a> {
         self.expect_token(&Token::Dot)?;
         let name = self.parse_identifier()?;
 
-        let options = self.parse_comma_separated(Parser::parse_replica_option)?;
+        let options = if matches!(self.peek_token(), Some(Token::Semicolon) | None) {
+            vec![]
+        } else {
+            self.parse_kw_options(Parser::parse_replica_option)?
+        };
+
         Ok(Statement::CreateClusterReplica(
             CreateClusterReplicaStatement {
                 of_cluster,
@@ -3017,6 +3010,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_kw_options<T, F>(&mut self, f: F) -> Result<Vec<T>, ParserError>
+    where
+        F: FnMut(&mut Self) -> Result<T, ParserError>,
+    {
+        Ok(if self.parse_keyword(WITH) {
+            let expect_rparen = self.consume_token(&Token::LParen);
+            let o = self.parse_comma_separated(f)?;
+            if expect_rparen {
+                self.expect_token(&Token::RParen)?;
+            }
+            o
+        } else {
+            vec![]
+        })
+    }
+
     fn parse_with_options(
         &mut self,
         require_equals: bool,
@@ -3200,7 +3209,6 @@ impl<'a> Parser<'a> {
             }
             _ => unreachable!(),
         };
-        let mut options = vec![];
         // WITH must be followed by LParen. The WITH in COPY is optional for backward
         // compat with Postgres but is required elsewhere, which is why we don't use
         // parse_with_options here.
@@ -3210,16 +3218,35 @@ impl<'a> Parser<'a> {
         } else {
             self.consume_token(&Token::LParen)
         };
-        if has_options {
-            self.prev_token();
-            options = self.parse_with_options(false)?;
-        }
+        let options = if has_options {
+            let o = self.parse_comma_separated(Parser::parse_copy_options)?;
+            self.expect_token(&Token::RParen)?;
+            o
+        } else {
+            vec![]
+        };
         Ok(Statement::Copy(CopyStatement {
             relation,
             direction,
             target,
             options,
         }))
+    }
+
+    fn parse_copy_options(&mut self) -> Result<CopyOption<Raw>, ParserError> {
+        let name =
+            match self.expect_one_of_keywords(&[FORMAT, DELIMITER, NULL, ESCAPE, QUOTE, HEADER])? {
+                FORMAT => CopyOptionName::Format,
+                DELIMITER => CopyOptionName::Format,
+                NULL => CopyOptionName::Format,
+                ESCAPE => CopyOptionName::Format,
+                QUOTE => CopyOptionName::Format,
+                HEADER => CopyOptionName::Format,
+                _ => unreachable!(),
+            };
+        let _ = self.consume_token(&Token::Eq);
+        let value = self.parse_with_option_value()?;
+        Ok(CopyOption { name, value })
     }
 
     /// Parse a literal value (numbers, strings, date/time, booleans)
@@ -4777,13 +4804,28 @@ impl<'a> Parser<'a> {
         } else {
             TailRelation::Name(self.parse_raw_name()?)
         };
-        let options = self.parse_opt_with_options()?;
+        let options = self.parse_kw_options(Parser::parse_tail_options)?;
         let as_of = self.parse_optional_as_of()?;
         Ok(Statement::Tail(TailStatement {
             relation,
             options,
             as_of,
         }))
+    }
+
+    fn parse_tail_options(&mut self) -> Result<TailOption<Raw>, ParserError> {
+        let name = match self.expect_one_of_keywords(&[PROGRESS, SNAPSHOT])? {
+            PROGRESS => TailOptionName::Progress,
+            SNAPSHOT => TailOptionName::Snapshot,
+            _ => unreachable!(),
+        };
+
+        let _ = self.consume_token(&Token::Eq);
+
+        Ok(TailOption {
+            name,
+            value: self.parse_with_option_value()?,
+        })
     }
 
     /// Parse an `EXPLAIN` statement, assuming that the `EXPLAIN` token
@@ -4956,12 +4998,21 @@ impl<'a> Parser<'a> {
         };
         let _ = self.parse_keyword(FROM);
         let name = self.parse_identifier()?;
-        let options = self.parse_opt_with_options()?;
+        let options = self.parse_kw_options(Parser::parse_fetch_option)?;
         Ok(Statement::Fetch(FetchStatement {
             name,
             count,
             options,
         }))
+    }
+
+    fn parse_fetch_option(&mut self) -> Result<FetchOption<Raw>, ParserError> {
+        self.expect_keyword(TIMEOUT)?;
+        let _ = self.consume_token(&Token::Eq);
+        Ok(FetchOption {
+            name: FetchOptionName::Timeout,
+            value: self.parse_with_option_value()?,
+        })
     }
 
     /// Parse a `RAISE` statement, assuming that the `RAISE` token
