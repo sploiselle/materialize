@@ -1686,9 +1686,11 @@ impl<'a> Parser<'a> {
             let schema = self.parse_schema()?;
             // Look ahead to avoid erroring on `WITH SNAPSHOT`; we only want to
             // accept `WITH (...)` here.
-            let with_options = if self.peek_nth_token(1) == Some(Token::LParen) {
-                self.expect_keyword(WITH)?;
-                self.parse_with_options(false)?
+            let with_options = if self.peek_keyword(WITH)
+                && self.peek_nth_token(1) != Some(Token::Keyword(SNAPSHOT))
+            {
+                self.expect_keyword(WITH).unwrap();
+                self.parse_comma_separated(Parser::parse_avro_schema_options)?
             } else {
                 vec![]
             };
@@ -1704,6 +1706,15 @@ impl<'a> Parser<'a> {
             );
         };
         Ok(avro_schema)
+    }
+
+    fn parse_avro_schema_options(&mut self) -> Result<AvroSchemaOption<Raw>, ParserError> {
+        self.expect_keywords(&[CONFLUENT, WIRE, FORMAT])?;
+        let _ = self.consume_token(&Token::Eq);
+        Ok(AvroSchemaOption {
+            name: AvroSchemaOptionName::ConfluentWireFormat,
+            value: self.parse_with_option_value()?,
+        })
     }
 
     fn parse_protobuf_schema(&mut self) -> Result<ProtobufSchema<Raw>, ParserError> {

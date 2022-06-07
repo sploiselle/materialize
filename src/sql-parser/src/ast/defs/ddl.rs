@@ -54,13 +54,41 @@ impl AstDisplay for Schema {
 impl_display!(Schema);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AvroSchemaOptionName {
+    /// The `CONFLUENT WIRE FORMAT [=] <bool>` option.
+    ConfluentWireFormat,
+}
+
+impl AstDisplay for AvroSchemaOptionName {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        match self {
+            AvroSchemaOptionName::ConfluentWireFormat => f.write_str("CONFLUENT WIRE FORMAT"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AvroSchemaOption<T: AstInfo> {
+    pub name: AvroSchemaOptionName,
+    pub value: WithOptionValue<T>,
+}
+
+impl<T: AstInfo> AstDisplay for AvroSchemaOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        f.write_str(" = ");
+        f.write_node(&self.value);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AvroSchema<T: AstInfo> {
     Csr {
         csr_connector: CsrConnectorAvro<T>,
     },
     InlineSchema {
         schema: Schema,
-        with_options: Vec<WithOption<T>>,
+        with_options: Vec<AvroSchemaOption<T>>,
     },
 }
 
@@ -77,9 +105,8 @@ impl<T: AstInfo> AstDisplay for AvroSchema<T> {
                 f.write_str("USING ");
                 schema.fmt(f);
                 if !with_options.is_empty() {
-                    f.write_str(" WITH (");
+                    f.write_str(" WITH ");
                     f.write_node(&display::comma_separated(with_options));
-                    f.write_str(")");
                 }
             }
         }
