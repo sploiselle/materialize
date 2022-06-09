@@ -961,30 +961,30 @@ Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ide
 parse-statement
 TAIL foo.bar WITH (SNAPSHOT) AS OF now()
 ----
-TAIL foo.bar WITH (snapshot) AS OF now()
-=>
-Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [WithOption { key: Ident("snapshot"), value: None }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
+error: Expected option value, found right parenthesis
+TAIL foo.bar WITH (SNAPSHOT) AS OF now()
+                           ^
 
 parse-statement
 TAIL foo.bar WITH (SNAPSHOT = false, TIMESTAMPS) AS OF now()
 ----
-TAIL foo.bar WITH (snapshot = false, timestamps) AS OF now()
-=>
-Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [WithOption { key: Ident("snapshot"), value: Some(Value(Boolean(false))) }, WithOption { key: Ident("timestamps"), value: None }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
+error: Expected one of PROGRESS or SNAPSHOT, found identifier "timestamps"
+TAIL foo.bar WITH (SNAPSHOT = false, TIMESTAMPS) AS OF now()
+                                     ^
 
 parse-statement
 TAIL foo.bar WITH (SNAPSHOT = false) AS OF now()
 ----
-TAIL foo.bar WITH (snapshot = false, timestamps) AS OF now()
+TAIL foo.bar WITH (SNAPSHOT = false) AS OF now()
 =>
-Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [WithOption { key: Ident("snapshot"), value: Some(Value(Boolean(false))) }, WithOption { key: Ident("timestamps"), value: None }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
+Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [TailOption { name: Snapshot, value: Value(Boolean(false)) }], as_of: Some(At(Function(Function { name: UnresolvedObjectName([Ident("now")]), args: Args { args: [], order_by: [] }, filter: None, over: None, distinct: false }))) })
 
 parse-statement
 TAIL foo.bar WITH (SNAPSHOT false)
 ----
-error: Expected equals sign, found FALSE
-TAIL foo.bar WITH (SNAPSHOT false)
-                            ^
+TAIL foo.bar WITH (SNAPSHOT = false)
+=>
+Tail(TailStatement { relation: Name(Name(UnresolvedObjectName([Ident("foo"), Ident("bar")]))), options: [TailOption { name: Snapshot, value: Value(Boolean(false)) }], as_of: None })
 
 parse-statement
 TAIL (SELECT * FROM a)
@@ -1236,30 +1236,30 @@ CREATE CLUSTER REPLICA replica SIZE 'small', (REMOTE ['host1'])
 parse-statement
 CREATE CLUSTER REPLICA default.replica SIZE 'small'
 ----
+error: Expected end of statement, found SIZE
 CREATE CLUSTER REPLICA default.replica SIZE 'small'
-=>
-CreateClusterReplica(CreateClusterReplicaStatement { of_cluster: Ident("default"), definition: ReplicaDefinition { name: Ident("replica"), options: [ReplicaOption { name: Size, value: Value(String("small")) }] } })
+                                       ^
 
 parse-statement
 CREATE CLUSTER REPLICA default.replica SIZE 'small', AVAILABILITY ZONE 'a'
 ----
+error: Expected end of statement, found SIZE
 CREATE CLUSTER REPLICA default.replica SIZE 'small', AVAILABILITY ZONE 'a'
-=>
-CreateClusterReplica(CreateClusterReplicaStatement { of_cluster: Ident("default"), definition: ReplicaDefinition { name: Ident("replica"), options: [ReplicaOption { name: Size, value: Value(String("small")) }, ReplicaOption { name: AvailabilityZone, value: Value(String("a")) }] } })
+                                       ^
 
 parse-statement
 CREATE CLUSTER REPLICA default.replica AVAILABILITY ZONE 'a', AVAILABILITY ZONE 'b'
 ----
+error: Expected end of statement, found AVAILABILITY
 CREATE CLUSTER REPLICA default.replica AVAILABILITY ZONE 'a', AVAILABILITY ZONE 'b'
-=>
-CreateClusterReplica(CreateClusterReplicaStatement { of_cluster: Ident("default"), definition: ReplicaDefinition { name: Ident("replica"), options: [ReplicaOption { name: AvailabilityZone, value: Value(String("a")) }, ReplicaOption { name: AvailabilityZone, value: Value(String("b")) }] } })
+                                       ^
 
 parse-statement
 CREATE CLUSTER REPLICA default.replica REMOTE ['host1'], AVAILABILITY ZONE 'a'
 ----
+error: Expected end of statement, found REMOTE
 CREATE CLUSTER REPLICA default.replica REMOTE ['host1'], AVAILABILITY ZONE 'a'
-=>
-CreateClusterReplica(CreateClusterReplicaStatement { of_cluster: Ident("default"), definition: ReplicaDefinition { name: Ident("replica"), options: [ReplicaOption { name: Remote, value: Value(Array([String("host1")])) }, ReplicaOption { name: AvailabilityZone, value: Value(String("a")) }] } })
+                                       ^
 
 parse-statement
 DROP CLUSTER cluster

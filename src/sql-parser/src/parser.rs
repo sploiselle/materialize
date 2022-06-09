@@ -3041,6 +3041,14 @@ impl<'a> Parser<'a> {
     /// `KEY`. If require_equals is false, additionally support `KEY VALUE` (but still the others).
     fn parse_with_option(&mut self, require_equals: bool) -> Result<WithOption<Raw>, ParserError> {
         let key = self.parse_identifier()?;
+        let value = self.parse_opt_with_option_value(require_equals)?;
+        Ok(WithOption { key, value })
+    }
+
+    fn parse_opt_with_option_value(
+        &mut self,
+        require_equals: bool,
+    ) -> Result<Option<WithOptionValue<Raw>>, ParserError> {
         let has_eq = self.consume_token(&Token::Eq);
         // No = was encountered and require_equals is false, so the next token might be
         // a value and might not. The only valid things that indicate no value would
@@ -3050,12 +3058,11 @@ impl<'a> Parser<'a> {
         if has_value && !has_eq && require_equals {
             return self.expected(self.peek_pos(), Token::Eq, self.peek_token());
         }
-        let value = if has_value {
+        Ok(if has_value {
             Some(self.parse_with_option_value()?)
         } else {
             None
-        };
-        Ok(WithOption { key, value })
+        })
     }
 
     fn parse_with_option_value(&mut self) -> Result<WithOptionValue<Raw>, ParserError> {
