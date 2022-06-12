@@ -2841,7 +2841,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3024,7 +3024,7 @@ dependencies = [
  "sha2",
  "snap",
  "tracing",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3054,7 +3054,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3126,7 +3126,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3176,7 +3176,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uncased",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3236,7 +3236,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3283,7 +3283,7 @@ dependencies = [
  "sha-1",
  "sha2",
  "uncased",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3314,7 +3314,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3351,7 +3351,7 @@ dependencies = [
  "serde_json",
  "timely",
  "tracing",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3593,7 +3593,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "url",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3625,7 +3625,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3657,7 +3657,7 @@ dependencies = [
  "mz-repr",
  "once_cell",
  "postgres-types",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3783,7 +3783,7 @@ dependencies = [
  "serde_regex",
  "smallvec",
  "url",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3887,7 +3887,7 @@ dependencies = [
  "tracing",
  "typemap_rev",
  "uncased",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3937,7 +3937,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tower-http",
- "uuid 1.1.0",
+ "uuid 1.1.2",
  "walkdir",
 ]
 
@@ -4017,7 +4017,7 @@ dependencies = [
  "tokio-serde",
  "tokio-util 0.7.2",
  "tracing",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -4099,7 +4099,7 @@ dependencies = [
  "tokio-util 0.7.2",
  "tracing-subscriber",
  "url",
- "uuid 1.1.0",
+ "uuid 1.1.2",
  "walkdir",
 ]
 
@@ -4742,7 +4742,7 @@ dependencies = [
  "postgres-protocol",
  "serde",
  "serde_json",
- "uuid 1.1.0",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -6608,9 +6608,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.1.0"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93bbc61e655a4833cf400d0d15bf3649313422fa7572886ad6dab16d79886365"
+checksum = "dd6469f4314d5f1ffec476e05f17cc9a78bc7a27a6a857842170bdf8d6f98d2f"
 dependencies = [
  "getrandom",
  "serde",
