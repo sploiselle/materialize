@@ -80,6 +80,7 @@ use derivative::Derivative;
 use differential_dataflow::lattice::Lattice;
 use futures::StreamExt;
 use itertools::Itertools;
+use mz_sql::kafka_util;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use timely::order::PartialOrder;
@@ -182,6 +183,7 @@ pub enum Message<T = mz_repr::Timestamp> {
     Command(Command),
     ControllerReady,
     CreateSourceStatementReady(CreateSourceStatementReady),
+    CreateConnectionPlanReady(CreateConnectionPlanReady),
     SinkConnectionReady(SinkConnectionReady),
     SendDiffs(SendDiffs),
     WriteLockGrant(tokio::sync::OwnedMutexGuard<()>),
@@ -217,6 +219,18 @@ pub struct CreateSourceStatementReady {
     #[derivative(Debug = "ignore")]
     pub tx: ClientTransmitter<ExecuteResponse>,
     pub result: Result<CreateSourceStatement<Aug>, AdapterError>,
+    pub params: Params,
+    pub depends_on: Vec<GlobalId>,
+    pub original_stmt: Statement<Raw>,
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct CreateConnectionPlanReady {
+    pub session: Session,
+    #[derivative(Debug = "ignore")]
+    pub tx: ClientTransmitter<ExecuteResponse>,
+    pub result: Result<CreateConnectionPlan, anyhow::Error>,
     pub params: Params,
     pub depends_on: Vec<GlobalId>,
     pub original_stmt: Statement<Raw>,
@@ -1064,6 +1078,9 @@ impl<S: Append + 'static> Coordinator<S> {
                 Message::CreateSourceStatementReady(ready) => {
                     self.message_create_source_statement_ready(ready).await
                 }
+                Message::CreateConnectionPlanReady(ready) => {
+                    self.message_create_connection_plan_ready(ready).await
+                }
                 Message::SinkConnectionReady(ready) => {
                     self.message_sink_connection_ready(ready).await
                 }
@@ -1463,6 +1480,45 @@ impl<S: Append + 'static> Coordinator<S> {
 
         let result = self
             .sequence_create_source(&mut session, plan, depends_on)
+            .await;
+        tx.send(result, session);
+    }
+
+    async fn message_create_connection_plan_ready(
+        &mut self,
+        CreateConnectionPlanReady {
+            mut session,
+            tx,
+            result,
+            params,
+            depends_on,
+            original_stmt,
+        }: CreateConnectionPlanReady,
+    ) {
+        let plan = match result {
+            Ok(stmt) => stmt,
+            Err(e) => return tx.send(Err(e.into()), session),
+        };
+
+        // Ensure that all dependencies still exist after check, as a `DROP
+        // SECRET` may have sneaked in. If any have gone missing, we replan the
+        // original statement. This will either produce a nice "unknown
+        // secret" error, or pick up a new connector that has replaced the
+        // dropped connector.
+        //
+        // WARNING: If we support `ALTER SECRET`, we'll need to also check
+        // for connectors that were altered while we were purifying.
+        if !depends_on
+            .iter()
+            .all(|id| self.catalog.try_get_entry(id).is_some())
+        {
+            self.handle_execute_inner(original_stmt, params, session, tx)
+                .await;
+            return;
+        }
+
+        let result = self
+            .sequence_create_connection(&mut session, plan, depends_on)
             .await;
         tx.send(result, session);
     }
@@ -2059,15 +2115,19 @@ impl<S: Append + 'static> Coordinator<S> {
             Err(e) => return tx.send(Err(e.into()), session),
         };
         let depends_on = depends_on.into_iter().collect();
-        // N.B. The catalog can change during purification so we must validate that the dependencies still exist after
-        // purification.  This should be done back on the main thread.
-        // We do the validation:
-        //   - In the handler for `Message::CreateSourceStatementReady`, before we handle the purified statement.
-        // If we add special handling for more types of `Statement`s, we'll need to ensure similar verification
-        // occurs.
+
+        // The follwoing statements are processed off the main coordinator
+        // thread of control; currently, because they integrate with external
+        // services and could take an unbounded amount of time.
+        //
+        // N.B. The catalog can change while these statements are handled off
+        // the main thread, so we must validate that the dependencies still
+        // exist afterward. This should be done back on the main thread.
+        //
+        // We do this validation in the handler for the message sent from the
+        // greenthread, and additional code paths added here should follow
+        // suit.
         match stmt {
-            // `CREATE SOURCE` statements must be purified off the main
-            // coordinator thread of control.
             Statement::CreateSource(stmt) => {
                 let internal_cmd_tx = self.internal_cmd_tx.clone();
                 let conn_id = session.conn_id();
@@ -2082,6 +2142,81 @@ impl<S: Append + 'static> Coordinator<S> {
                     internal_cmd_tx
                         .send(Message::CreateSourceStatementReady(
                             CreateSourceStatementReady {
+                                session,
+                                tx,
+                                result,
+                                params,
+                                depends_on,
+                                original_stmt,
+                            },
+                        ))
+                        .expect("sending to internal_cmd_tx cannot fail");
+                });
+            }
+
+            stmt @ Statement::CreateConnection(_) => {
+                use mz_storage::client::connections::Connection::*;
+
+                let internal_cmd_tx = self.internal_cmd_tx.clone();
+                let conn_id = session.conn_id();
+
+                let connection_plan = match self.handle_statement(&mut session, stmt, &params).await
+                {
+                    Ok(plan) => match plan {
+                        Plan::CreateConnection(plan) => plan,
+                        _ => unreachable!(
+                            "Statement::CreateConnection generates Plan::CreateConnection"
+                        ),
+                    },
+                    Err(e) => return tx.send(Err(e), session),
+                };
+
+                let secrets_reader = self.connection_context.secrets_reader.clone();
+                let librdkafka_log_level = self.connection_context.librdkafka_log_level.clone();
+
+                task::spawn(|| format!("CONNECTION validation:{conn_id}"), async move {
+                    // Ensure connections work.
+                    let result = match &connection_plan.connection.connection {
+                        Kafka(conn) => {
+                            match kafka_util::create_consumer(
+                                None,
+                                conn,
+                                &BTreeMap::new(),
+                                librdkafka_log_level,
+                                &secrets_reader,
+                            )
+                            .await
+                            {
+                                Ok(_) => Ok(connection_plan),
+                                Err(e) => Err(anyhow!(
+                                    "Failed to create and connect Kafka consumer: {}",
+                                    e
+                                )),
+                            }
+                        }
+                        Csr(conn) => {
+                            let res = conn.connect(&secrets_reader).await.map_err(|e| {
+                                anyhow!("Failed to create Confluent Schema Registry client: {}", e)
+                            });
+                            match res {
+                                // We use `list_subjects` to validate the
+                                // connection only because it requires no
+                                // additional parameters.
+                                Ok(client) => match client.list_subjects().await {
+                                    Ok(_) => Ok(connection_plan),
+                                    Err(e) => Err(anyhow!(
+                                        "Failed to connect to Confluent Schema Registry: {}",
+                                        e
+                                    )),
+                                },
+                                Err(e) => Err(e),
+                            }
+                        }
+                    };
+
+                    internal_cmd_tx
+                        .send(Message::CreateConnectionPlanReady(
+                            CreateConnectionPlanReady {
                                 session,
                                 tx,
                                 result,
@@ -2574,7 +2709,15 @@ impl<S: Append + 'static> Coordinator<S> {
     async fn sequence_create_connection(
         &mut self,
         session: &Session,
-        plan: CreateConnectionPlan,
+        CreateConnectionPlan {
+            name,
+            connection:
+                mz_sql::plan::Connection {
+                    connection,
+                    create_sql,
+                },
+            if_not_exists,
+        }: CreateConnectionPlan,
         depends_on: Vec<GlobalId>,
     ) -> Result<ExecuteResponse, AdapterError> {
         let connection_oid = self.catalog.allocate_oid().await?;
@@ -2582,10 +2725,10 @@ impl<S: Append + 'static> Coordinator<S> {
         let ops = vec![catalog::Op::CreateItem {
             id: connection_gid,
             oid: connection_oid,
-            name: plan.name.clone(),
+            name: name.clone(),
             item: CatalogItem::Connection(Connection {
-                create_sql: plan.connection.create_sql,
-                connection: plan.connection.connection,
+                create_sql,
+                connection,
                 depends_on,
             }),
         }];
@@ -2594,7 +2737,7 @@ impl<S: Append + 'static> Coordinator<S> {
             Err(AdapterError::Catalog(catalog::Error {
                 kind: catalog::ErrorKind::ItemAlreadyExists(_),
                 ..
-            })) if plan.if_not_exists => Ok(ExecuteResponse::CreatedConnection { existed: true }),
+            })) if if_not_exists => Ok(ExecuteResponse::CreatedConnection { existed: true }),
             Err(err) => Err(err),
         }
     }

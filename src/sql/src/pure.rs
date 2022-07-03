@@ -18,8 +18,6 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context};
 use aws_arn::ARN;
-use mz_kafka_util::KafkaAddrs;
-use mz_sql_parser::ast::{CsrConnection, KafkaConnection, KafkaSourceConnection};
 use prost::Message;
 use protobuf_native::compiler::{SourceTreeDescriptorDatabase, VirtualSourceTree};
 use protobuf_native::MessageLite;
@@ -27,8 +25,10 @@ use tracing::info;
 use uuid::Uuid;
 
 use mz_ccsr::{Client, GetBySubjectError};
+use mz_kafka_util::KafkaAddrs;
 use mz_proto::RustType;
 use mz_repr::strconv;
+use mz_sql_parser::ast::{CsrConnection, KafkaConnection, KafkaSourceConnection};
 use mz_storage::client::connections::aws::{AwsConfig, AwsExternalIdPrefix};
 use mz_storage::client::connections::{Connection, ConnectionContext};
 use mz_storage::client::sources::PostgresSourceDetails;
@@ -103,7 +103,7 @@ pub async fn purify_create_source(
                 }
             };
             let consumer = kafka_util::create_consumer(
-                &topic,
+                Some(&topic),
                 &connection,
                 &connection_options,
                 connection_context.librdkafka_log_level,

@@ -218,7 +218,7 @@ pub fn extract_config(
 ///
 /// - `librdkafka` cannot create a BaseConsumer using the provided `options`.
 pub async fn create_consumer(
-    topic: &str,
+    topic: Option<&str>,
     kafka_connection: &KafkaConnection,
     options: &BTreeMap<String, StringOrSecret>,
     librdkafka_log_level: tracing::Level,
@@ -242,18 +242,26 @@ pub async fn create_consumer(
     let consumer: Arc<BaseConsumer<KafkaErrCheckContext>> =
         Arc::new(config.create_with_context(KafkaErrCheckContext::default())?);
     let context = Arc::clone(&consumer.context());
-    let owned_topic = String::from(topic);
+    let owned_topic = topic.map(|topic| String::from(topic));
     // Wait for a metadata request for up to one second. This greatly
     // increases the probability that we'll see a connection error if
     // e.g. the hostname was mistyped. librdkafka doesn't expose a
     // better API for asking whether a connection succeeded or failed,
     // unfortunately.
-    task::spawn_blocking(move || format!("kafka_set_metadata:{broker}:{topic}"), {
-        let consumer = Arc::clone(&consumer);
+    task::spawn_blocking(
         move || {
-            let _ = consumer.fetch_metadata(Some(&owned_topic), Duration::from_secs(1));
-        }
-    })
+            format!(
+                "kafka_set_metadata:{broker}:{}",
+                topic.unwrap_or_else(|| "CONNECTION TEST")
+            )
+        },
+        {
+            let consumer = Arc::clone(&consumer);
+            move || {
+                let _ = consumer.fetch_metadata(owned_topic.as_deref(), Duration::from_secs(1));
+            }
+        },
+    )
     .await?;
     let error = context.error.lock().expect("lock poisoned");
     if let Some(error) = &*error {
@@ -395,6 +403,7 @@ impl ClientContext for KafkaErrCheckContext {
                 *error = Some(log_message.to_string());
             }
         }
+
         MzClientContext.log(level, fac, log_message)
     }
     // Refer to the comment on the `log` callback.

@@ -142,6 +142,12 @@ $ kafka-verify format=avro sink=materialize.public.env_pw_snk sort-messages=true
 {"before": null, "after": {"row":{"a": 1}}}
 {"before": null, "after": {"row":{"a": 2}}}
 
+# Non-SSL connection to SSL broker
+! CREATE CONNECTION kafka_non_ssl
+  FOR KAFKA
+    BROKER 'kafka:9092';
+contains: Failed to create and connect Kafka consumer
+
 # not basic_auth
 ! CREATE SINK no_basic_auth FROM data
   INTO KAFKA BROKER 'kafka' TOPIC 'snk'
@@ -206,6 +212,12 @@ a
 ---
 1
 2
+
+# Non-SSL connection to SSL CSR
+! CREATE CONNECTION csr_non_ssl
+  FOR CONFLUENT SCHEMA REGISTRY
+    URL '${testdrive.schema-registry-url}';
+contains: Failed to connect to Confluent Schema Registry
 
 > CREATE CONNECTION csr_ssl
   FOR CONFLUENT SCHEMA REGISTRY
