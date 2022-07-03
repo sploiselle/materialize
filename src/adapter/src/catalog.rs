@@ -181,8 +181,9 @@ impl CatalogState {
     fn log_dependencies_inner(&self, id: GlobalId, out: &mut Vec<GlobalId>) {
         match self.get_entry(&id).item() {
             CatalogItem::Log(_) => out.push(id),
-            CatalogItem::View(view) => {
-                for id in view.depends_on.iter() {
+            CatalogItem::View(View { depends_on, .. })
+            | CatalogItem::Connection(Connection { depends_on, .. }) => {
+                for id in depends_on.iter() {
                     self.log_dependencies_inner(*id, out);
                 }
             }
@@ -192,8 +193,7 @@ impl CatalogState {
             | CatalogItem::Source(_)
             | CatalogItem::Type(_)
             | CatalogItem::Func(_)
-            | CatalogItem::Secret(_)
-            | CatalogItem::Connection(_) => (),
+            | CatalogItem::Secret(_) => (),
         }
     }
 
@@ -1041,6 +1041,7 @@ pub struct Secret {
 pub struct Connection {
     pub create_sql: String,
     pub connection: mz_storage::client::connections::Connection,
+    pub depends_on: Vec<GlobalId>,
 }
 
 impl CatalogItem {
@@ -1108,7 +1109,7 @@ impl CatalogItem {
             CatalogItem::Type(typ) => &typ.depends_on,
             CatalogItem::View(view) => &view.depends_on,
             CatalogItem::Secret(_) => &[],
-            CatalogItem::Connection(_) => &[],
+            CatalogItem::Connection(connection) => &connection.depends_on,
         }
     }
 
@@ -3288,6 +3289,7 @@ impl<S: Append> Catalog<S> {
                 CatalogItem::Connection(Connection {
                     create_sql: connection.create_sql,
                     connection: connection.connection,
+                    depends_on,
                 })
             }
             _ => bail!("catalog entry generated inappropriate plan"),
