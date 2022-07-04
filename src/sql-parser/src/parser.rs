@@ -1959,13 +1959,7 @@ impl<'a> Parser<'a> {
                 _ => unreachable!(),
             },
             SSL => match self.expect_one_of_keywords(&[KEY, CERTIFICATE])? {
-                KEY => {
-                    if self.parse_keyword(PASSWORD) {
-                        KafkaConnectionOptionName::SslKeyPassword
-                    } else {
-                        KafkaConnectionOptionName::SslKey
-                    }
-                }
+                KEY => KafkaConnectionOptionName::SslKey,
                 CERTIFICATE => {
                     if self.parse_keyword(AUTHORITY) {
                         KafkaConnectionOptionName::SslCertificateAuthority
