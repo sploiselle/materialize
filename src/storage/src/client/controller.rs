@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -658,7 +659,10 @@ where
 
         let mut appends_by_id = HashMap::new();
         for (id, (updates, upper)) in updates_by_id {
-            let current_upper = self.state.persist_handles[&id].write.upper().clone();
+            let mut current_upper = Antichain::from_elem(T::minimum());
+            for PersistHandles { read: _, write } in self.state.persist_handles[&id].values() {
+                current_upper.join_assign(write.upper());
+            }
             appends_by_id.insert(id, (updates.into_iter().flatten(), current_upper, upper));
         }
 
@@ -671,7 +675,7 @@ where
         // Instead, we first group the update by ID above and then iterate
         // through all available write handles and see if there are any updates
         // for it. If yes, we send them all in one go.
-        for (id, persist_handle) in self.state.persist_handles.iter_mut() {
+        for (id, persist_handles) in self.state.persist_handles.iter_mut() {
             let (updates, upper, new_upper) = match appends_by_id.remove(id) {
                 Some(updates) => updates,
                 None => continue,
@@ -679,26 +683,54 @@ where
 
             let new_upper = Antichain::from_elem(new_upper);
 
-            let updates = updates
-                .into_iter()
-                .map(|u| ((SourceData(Ok(u.row)), ()), u.timestamp, u.diff));
+            let shards = persist_handles.keys().cloned().collect::<Vec<_>>();
+            let mut updates_by_shard: HashMap<ShardId, Vec<_>> = HashMap::default();
+            for shard in &shards {
+                // All shards must be included in update to ensure their uppers
+                // advance, irrespective of their updates.
+                updates_by_shard.insert(shard.clone(), vec![]);
+            }
 
-            let write = &mut persist_handle.write;
+            for u in updates {
+                let row = u.row.deref().data();
+                let mut shard_router = [0u8; 8];
+                shard_router[8 - std::cmp::min(row.len(), 8)..]
+                    .copy_from_slice(&row[..std::cmp::min(row.len(), 8)]);
+                let shard_idx = usize::from_be_bytes(shard_router) % shards.len();
+                updates_by_shard
+                    .get_mut(&shards[shard_idx])
+                    .expect("all shards accounted for")
+                    .push(((SourceData(Ok(u.row)), ()), u.timestamp, u.diff));
+            }
 
-            futs.push(async move {
-                write
-                    .compare_and_append(updates, upper.clone(), new_upper.clone())
-                    .await
-                    .expect("cannot append updates")
-                    .expect("cannot append updates")
-                    .or(Err(StorageError::InvalidUpper(*id)))?;
+            for (shard, persist_handle) in persist_handles.iter_mut() {
+                let update = updates_by_shard
+                    .remove(&shard)
+                    .expect("all shards included in updates");
+                if !update.is_empty() {
+                    println!("\nshard {:?}\nupdate {:?}", shard, update);
+                    println!("all shards {:?}", shards);
+                    println!("\n\n\n");
+                }
+                let upper = upper.clone();
+                let new_upper = new_upper.clone();
+                let write = &mut persist_handle.write;
 
-                let mut change_batch = ChangeBatch::new();
-                change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
-                change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
+                futs.push(async move {
+                    let mut change_batch = ChangeBatch::new();
+                    change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
+                    change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
 
-                Ok::<_, StorageError>((*id, change_batch))
-            })
+                    write
+                        .compare_and_append(update, upper, new_upper)
+                        .await
+                        .expect("cannot append updates")
+                        .expect("cannot append updates")
+                        .or(Err(StorageError::InvalidUpper(*id)))?;
+
+                    Ok::<_, StorageError>((*id, change_batch))
+                })
+            }
         }
 
         let change_batches = futs.try_collect::<Vec<_>>().await?;
@@ -713,19 +745,20 @@ where
         id: GlobalId,
         as_of: Self::Timestamp,
     ) -> Result<Vec<(Row, Diff)>, StorageError> {
-        let as_of = Antichain::from_elem(as_of);
-        let mut snapshot = self.state.persist_handles[&id]
-            .read
-            .snapshot(as_of)
-            .await
-            .map_err(|_| StorageError::ReadBeforeSince(id))?;
-
         let mut contents = Vec::new();
+        let as_of = Antichain::from_elem(as_of);
+        // TODO: parallelize reads
+        for (_shard_id, PersistHandles { read, write }) in &self.state.persist_handles[&id] {
+            let mut snapshot = read
+                .snapshot(as_of.clone())
+                .await
+                .map_err(|_| StorageError::ReadBeforeSince(id))?;
 
-        while let Some(updates) = snapshot.next().await {
-            for ((source_data, _pid), _ts, diff) in updates {
-                let row = source_data.expect("cannot read snapshot").0?;
-                contents.push((row, diff));
+            while let Some(updates) = snapshot.next().await {
+                for ((source_data, _pid), _ts, diff) in updates {
+                    let row = source_data.expect("cannot read snapshot").0?;
+                    contents.push((row, diff));
+                }
             }
         }
 
@@ -846,7 +879,9 @@ where
             }
 
             let fut = async move {
-                persist_handle.read.downgrade_since(frontier.clone()).await;
+                for (_, PersistHandles { read, write: _ }) in persist_handle.iter_mut() {
+                    read.downgrade_since(frontier.clone()).await
+                }
                 (*id, frontier)
             };
 

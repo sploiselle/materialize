@@ -10,7 +10,7 @@
 //! Timestamper using persistent collection
 use std::borrow::Borrow;
 use std::collections::hash_map::{self, HashMap};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::iter::Peekable;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,17 +22,29 @@ use timely::progress::frontier::Antichain;
 use timely::progress::Timestamp as _;
 use timely::PartialOrder;
 use tokio::sync::Mutex;
+use tokio_stream::{StreamExt, StreamMap};
 
 use mz_expr::PartitionId;
 use mz_ore::now::NowFn;
 use mz_persist_client::cache::PersistClientCache;
 use mz_persist_client::read::{Listen, ListenEvent, ReadHandle};
 use mz_persist_client::write::WriteHandle;
-use mz_persist_client::Upper;
+use mz_persist_client::{ShardId, Upper};
 use mz_repr::Timestamp;
 
-use crate::client::controller::CollectionMetadata;
+use crate::client::controller::{CollectionMetadata, Shard};
 use crate::client::sources::MzOffset;
+
+pub struct RemapShardState {
+    /// Since frontier of the partial remap trace
+    since: Antichain<Timestamp>,
+    /// Upper frontier of the partial remap trace
+    upper: Antichain<Timestamp>,
+    /// Write handle of the remap persist shard
+    write_handle: WriteHandle<(), PartitionId, Timestamp, MzOffset>,
+    /// Read handle of the remap persist shard
+    read_handle: ReadHandle<(), PartitionId, Timestamp, MzOffset>,
+}
 
 /// The reclock operator reclocks a stream that is timestamped with some timestamp `SourceTime`
 /// into another time domain that is timestamped with some timestamp `DestTime`.
@@ -43,20 +55,15 @@ pub struct ReclockOperator {
     /// A dTVC trace of the remap collection containing all consolidated updates at
     /// `t` such that `since <= t < upper` indexed by partition and sorted by time.
     remap_trace: HashMap<PartitionId, Vec<(Timestamp, MzOffset)>>,
-    /// Since frontier of the partial remap trace
-    since: Antichain<Timestamp>,
-    /// Upper frontier of the partial remap trace
-    upper: Antichain<Timestamp>,
     /// The upper frontier in terms of `SourceTime`. Any attempt to reclock messages beyond this
     /// frontier will lead to minting new bindings.
     source_upper: HashMap<PartitionId, MzOffset>,
-
-    /// Write handle of the remap persist shard
-    write_handle: WriteHandle<(), PartitionId, Timestamp, MzOffset>,
-    /// Read handle of the remap persist shard
-    read_handle: ReadHandle<(), PartitionId, Timestamp, MzOffset>,
+    shards: BTreeMap<ShardId, RemapShardState>,
     /// A listener to tail the remap shard for new updates
-    listener: Listen<(), PartitionId, Timestamp, MzOffset>,
+    listener: StreamMap<
+        ShardId,
+        std::pin::Pin<Box<dyn futures::Stream<Item = ListenEvent<(), PartitionId, u64, MzOffset>>>>,
+    >,
     /// The function that should be used to get the current time when minting new bindings
     now: NowFn,
     /// Values of current time will be rounded to be multiples of this duration in milliseconds
@@ -79,45 +86,90 @@ impl ReclockOperator {
             .context("error creating persist client")?;
         drop(persist_clients);
 
-        let (write_handle, read_handle) = persist_client
-            .open(metadata.remap_shard)
-            .await
-            .context("error opening persist shard")?;
+        let mut shards = BTreeMap::new();
+        let mut listens = Vec::with_capacity(metadata.shards.len());
 
-        let (since, upper) = (read_handle.since(), write_handle.upper().clone());
+        for Shard { remap_shard, .. } in &metadata.shards {
+            let (write_handle, read_handle) = persist_client
+                .open(*remap_shard)
+                .await
+                .context("error opening persist shard")?;
 
-        assert!(
-            PartialOrder::less_equal(since, &as_of),
-            "invalid as_of: as_of({as_of:?}) < since({since:?})"
-        );
+            let (since, upper) = (read_handle.since(), write_handle.upper().clone());
 
-        assert!(
-            as_of.elements() == [Timestamp::minimum()] || PartialOrder::less_than(&as_of, &upper),
-            "invalid as_of: upper({upper:?}) <= as_of({as_of:?})",
-        );
+            assert!(
+                PartialOrder::less_equal(since, &as_of),
+                "invalid as_of: as_of({as_of:?}) < since({since:?})"
+            );
 
-        let listener = read_handle
-            .listen(as_of.clone())
-            .await
-            .expect("since <= as_of asserted");
+            assert!(
+                as_of.elements() == [Timestamp::minimum()]
+                    || PartialOrder::less_than(&as_of, &upper),
+                "invalid as_of: upper({upper:?}) <= as_of({as_of:?})",
+            );
+
+            // Then, listen continously and yield any new updates. This loop is expected to never
+            // finish.
+            listens.push((
+                *remap_shard,
+                Box::pin(
+                    read_handle
+                        .listen(as_of.clone())
+                        .await
+                        .expect("since <= as_of asserted")
+                        .into_stream(),
+                )
+                    as std::pin::Pin<
+                        Box<
+                            dyn futures::Stream<Item = ListenEvent<(), PartitionId, u64, MzOffset>>,
+                        >,
+                    >,
+            ));
+
+            shards.insert(
+                *remap_shard,
+                RemapShardState {
+                    since: as_of.clone(),
+                    upper,
+                    write_handle,
+                    read_handle,
+                },
+            );
+        }
+
+        let listener = listens.into_iter().collect::<StreamMap<_, _>>();
 
         let mut operator = Self {
             remap_trace: HashMap::new(),
-            since: as_of.clone(),
-            upper: Antichain::from_elem(Timestamp::minimum()),
             source_upper: HashMap::new(),
-            write_handle,
-            read_handle,
+            shards,
             listener,
             now,
             update_interval_ms: u64::try_from(update_interval.as_millis()).expect("huge duration"),
         };
 
         // Load the initial state that might exist in the shard
-        operator.sync(&upper).await;
+        operator.sync(&operator.upper()).await;
 
         Ok(operator)
     }
+
+    fn upper(&self) -> Antichain<Timestamp> {
+        let mut upper_agg = Antichain::from_elem(Timestamp::minimum());
+        self.shards
+            .values()
+            .map(|state| upper_agg.join_assign(&state.upper));
+        upper_agg
+    }
+
+    fn since(&self) -> Antichain<Timestamp> {
+        self.shards
+            .values()
+            .map(|state| state.since.clone())
+            .reduce(|accum, since| accum.meet(&since))
+            .expect("at least one shard")
+    }
+
     /// Reclocks a batch of messages timestamped with `SourceTime` and returns an iterator of
     /// messages timestamped with `DestTime`.
     ///
@@ -168,7 +220,7 @@ impl ReclockOperator {
         source_frontier: &HashMap<PartitionId, MzOffset>,
     ) -> Result<Antichain<Timestamp>, (PartitionId, MzOffset)> {
         // The upper is the greatest frontier that we can ever return
-        let mut dest_frontier = self.upper.clone();
+        let mut dest_frontier = self.upper();
 
         let mut partitions = HashSet::new();
         partitions.extend(self.source_upper.keys());
@@ -202,7 +254,8 @@ impl ReclockOperator {
     /// Compacts the internal state
     #[allow(dead_code)]
     pub async fn compact(&mut self, new_since: Antichain<Timestamp>) {
-        assert!(PartialOrder::less_equal(&self.since, &new_since));
+        let since = self.since();
+        assert!(PartialOrder::less_equal(&since, &new_since));
         for bindings in self.remap_trace.values_mut() {
             // Compact the remap trace according to the computed frontier
             for (timestamp, _) in bindings.iter_mut() {
@@ -211,8 +264,11 @@ impl ReclockOperator {
             // And then consolidate
             consolidation::consolidate(bindings);
         }
-        self.since = new_since;
-        self.read_handle.downgrade_since(self.since.clone()).await;
+
+        for (_, shard) in self.shards.iter_mut() {
+            shard.since = new_since.clone();
+            shard.read_handle.downgrade_since(shard.since.clone()).await;
+        }
     }
 
     /// Advances the upper of the reclock operator if appropriate
@@ -243,37 +299,43 @@ impl ReclockOperator {
     /// Syncs the state of this operator to match that of the persist shard until the provided
     /// frontier
     async fn sync(&mut self, target_upper: &Antichain<Timestamp>) {
+        let upper = self.upper();
         let mut pending_batch = vec![];
 
         // If this is the first sync and the collection is non-empty load the initial snapshot
-        let first_sync = self.upper.elements() == [Timestamp::minimum()];
-        if first_sync && PartialOrder::less_than(&self.upper, target_upper) {
-            let mut snapshot = self
-                .read_handle
-                .snapshot(self.since.clone())
-                .await
-                .expect("local since is not beyond read handle's since");
-            while let Some(updates) = snapshot.next().await {
-                for ((_, pid), ts, diff) in updates {
-                    let pid = pid.expect("failed to decode partition");
-                    pending_batch.push((pid, ts, diff));
+        let first_sync = upper.elements() == [Timestamp::minimum()];
+        if first_sync && PartialOrder::less_than(&upper, target_upper) {
+            // TODO: parallelize reads
+            for state in self.shards.values() {
+                let mut snapshot = state
+                    .read_handle
+                    // TODO: check that this is safe/sane
+                    .snapshot(state.since.clone())
+                    .await
+                    .expect("local since is not beyond read handle's since");
+                while let Some(updates) = snapshot.next().await {
+                    for ((_, pid), ts, diff) in updates {
+                        let pid = pid.expect("failed to decode partition");
+                        pending_batch.push((pid, ts, diff));
+                    }
                 }
             }
         }
 
         // Tail the listen stream until we reach the target upper frontier. Note that, in the
         // common case, we are also the writer, so we are waiting to read-back what we wrote
-        while PartialOrder::less_than(&self.upper, target_upper) {
+        while PartialOrder::less_than(&upper, target_upper) {
             for event in self.listener.next().await {
                 match event {
-                    ListenEvent::Progress(new_upper) => {
+                    ListenEvent::Progress((shard_id, new_upper)) => {
                         consolidation::consolidate_updates(&mut pending_batch);
                         for (pid, ts, diff) in pending_batch.drain(..) {
                             let bindings = self.remap_trace.entry(pid.clone()).or_default();
                             bindings.push((ts, diff));
                             *self.source_upper.entry(pid.clone()).or_default() += diff;
                         }
-                        self.upper = new_upper;
+                        let state = self.shards.get_mut(&shard_id).expect("known to exist");
+                        state.upper = new_upper;
                     }
                     ListenEvent::Updates(updates) => {
                         for ((_, pid), ts, diff) in updates {

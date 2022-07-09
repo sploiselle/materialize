@@ -21,7 +21,8 @@ use timely::dataflow::operators::OkErr;
 use timely::dataflow::{Scope, Stream};
 use timely::progress::Antichain;
 use tokio::sync::Mutex;
-use tracing::trace;
+use tokio_stream::{StreamExt, StreamMap};
+use tracing::info;
 
 use mz_persist::location::ExternalError;
 use mz_persist_client::read::ListenEvent;
@@ -57,6 +58,23 @@ where
     G: Scope<Timestamp = mz_repr::Timestamp>,
 {
     let worker_index = scope.index();
+    let total_shards = metadata.shards.len();
+    let mut shard_counter = scope.index();
+
+    let mut responsible_shards = vec![];
+    while shard_counter < total_shards {
+        responsible_shards.push(metadata.shards[shard_counter].data_shard);
+        shard_counter += scope.peers();
+    }
+
+    let mut progress_by_shard_idx = std::collections::BTreeMap::new();
+
+    for i in 0..responsible_shards.len() {
+        progress_by_shard_idx.insert(i, as_of.clone());
+    }
+
+    println!("{}: persist source as of {:?}", worker_index, as_of);
+    println!("{}: responsible for {:?}", worker_index, responsible_shards);
 
     // This source is split into two parts: a first part that sets up `async_stream` and a timely
     // source operator that the continuously reads from that stream.
@@ -67,47 +85,55 @@ where
     // This is a generator that sets up an async `Stream` that can be continously polled to get the
     // values that are `yield`-ed from it's body.
     let async_stream = async_stream::try_stream!({
-        // We are reading only from worker 0. We can split the work of reading from the snapshot to
-        // multiple workers, but someone has to distribute the splits. Also, in the glorious
-        // STORAGE future, we will use multiple persist shards to back a STORAGE collection. Then,
-        // we can read in parallel, by distributing shard reading amongst workers.
-        if worker_index != 0 {
-            trace!("We are not worker 0, exiting...");
-            return;
+        let mut listens = Vec::with_capacity(responsible_shards.len());
+        for (idx, shard_id) in responsible_shards.into_iter().enumerate() {
+            let mut read = persist_clients
+                .lock()
+                .await
+                .open(metadata.persist_location.clone())
+                .await
+                .expect("could not open persist client")
+                .open_reader::<SourceData, (), mz_repr::Timestamp, mz_repr::Diff>(shard_id)
+                .await
+                .expect("could not open persist shard");
+
+            /// Aggressively downgrade `since`, to not hold back compaction.
+            read.downgrade_since(as_of.clone()).await;
+
+            println!(
+                "{}: snapshot for {:?} as of {:?}",
+                worker_index, shard_id, as_of
+            );
+
+            let mut snapshot_iter = read
+                .snapshot(as_of.clone())
+                .await
+                .expect("starting cannot serve requested as_of");
+
+            // First, yield all the updates from the snapshot.
+            while let Some(next) = snapshot_iter.next().await {
+                yield (idx, ListenEvent::Updates(next));
+            }
+
+            println!("{}: cleared snapshot for {:?}", worker_index, shard_id);
+
+            // Then, listen continously and yield any new updates. This loop is expected to never
+            // finish.
+            listens.push((
+                idx,
+                Box::pin(
+                    read.listen(as_of.clone())
+                        .await
+                        .expect("cannot serve requested as_of")
+                        .into_stream(),
+                ),
+            ))
         }
 
-        let mut read = persist_clients
-            .lock()
-            .await
-            .open(metadata.persist_location)
-            .await
-            .expect("could not open persist client")
-            .open_reader::<SourceData, (), mz_repr::Timestamp, mz_repr::Diff>(metadata.data_shard)
-            .await
-            .expect("could not open persist shard");
-
-        /// Aggressively downgrade `since`, to not hold back compaction.
-        read.downgrade_since(as_of.clone()).await;
-
-        let mut snapshot_iter = read
-            .snapshot(as_of.clone())
-            .await
-            .expect("cannot serve requested as_of");
-
-        // First, yield all the updates from the snapshot.
-        while let Some(next) = snapshot_iter.next().await {
-            yield ListenEvent::Updates(next);
-        }
-
-        // Then, listen continously and yield any new updates. This loop is expected to never
-        // finish.
-        let mut listen = read
-            .listen(as_of)
-            .await
-            .expect("cannot serve requested as_of");
+        let mut listen_agg = listens.into_iter().collect::<StreamMap<_, _>>();
 
         loop {
-            for event in listen.next().await {
+            for (idx, event) in listen_agg.next().await {
                 // TODO(petrosagg): We are incorrectly NOT downgrading the since frontier of this
                 // read handle which will hold back compaction in persist. This is currently a
                 // necessary evil to avoid too much contension on persist's consensus
@@ -118,7 +144,7 @@ where
                 // if let ListenEvent::Progress(upper) = &event {
                 //     read.downgrade_since(upper.clone()).await;
                 // }
-                yield event;
+                yield (idx, event);
             }
         }
     });
@@ -131,16 +157,7 @@ where
             let waker = futures_util::task::waker(waker_activator);
             let activator = scope.activator_for(&info.address[..]);
 
-            // There is a bit of a mismatch: listening on a ReadHandle will give us an Antichain<T>
-            // as a frontier in `Progress` messages while a timely source usually only has a single
-            // `Capability` that it can downgrade. We can work around that by using a
-            // `CapabilitySet`, which allows downgrading the contained capabilities to a frontier
-            // but `util::source` gives us both a vanilla `Capability` and a `CapabilitySet` that
-            // we have to keep downgrading because we cannot simply drop the one that we don't
-            // need.
-            let mut current_ts = 0;
-
-            move |cap, output| {
+            move |cap_set, output| {
                 let mut context = Context::from_waker(&waker);
                 // Bound execution of operator to prevent a single operator from hogging
                 // the CPU if there are many messages to process
@@ -148,18 +165,45 @@ where
 
                 while let Poll::Ready(item) = pinned_stream.as_mut().poll_next(&mut context) {
                     match item {
-                        Some(Ok(ListenEvent::Progress(upper))) => match upper.into_option() {
-                            Some(ts) => {
-                                current_ts = ts;
-                                cap.downgrade(&ts);
+                        Some(Ok((shard_idx, ListenEvent::Progress(upper)))) => {
+                            println!("Poll::Ready shard_idx {shard_idx}: {:?}", upper);
+                            progress_by_shard_idx.insert(shard_idx, upper.clone());
+                            let lower_bound: Antichain<u64> = dbg!(Antichain::from_iter(
+                                progress_by_shard_idx.values().cloned().flatten(),
+                            ));
+                            cap_set.downgrade(lower_bound.iter().min().unwrap());
+
+                            if upper.is_empty() {
+                                return SourceStatus::Done;
                             }
-                            None => return SourceStatus::Done,
-                        },
-                        Some(Ok(ListenEvent::Updates(mut updates))) => {
+                        }
+                        Some(Ok((_shard_idx, ListenEvent::Updates(mut updates)))) => {
                             // This operator guarantees that its output has been advanced by `as_of.
                             // The persist SnapshotIter already has this contract, so nothing to do
                             // here.
-                            let cap = cap.delayed(&current_ts);
+
+                            if updates.is_empty() {
+                                continue;
+                            }
+
+                            // Determine the minimum timestamp and emit all
+                            // updates at that timestamp. We could be more
+                            // fine-grained and first partition the updates by
+                            // timestamp. But then we'd have multiple give_vec()
+                            // calls below.
+                            // TODO(aljoscha): I don't like having to iterate
+                            // through all updates in order to determine a
+                            // timestamp. Maybe persist `listen()` should emit a
+                            // timestamp for the batch, similar to how inputs
+                            // work in
+                            // timely.
+                            let ts = updates
+                                .iter()
+                                .map(|(_update, ts, _diff)| ts)
+                                .min()
+                                .expect("no updates");
+
+                            let cap = cap_set.delayed(ts);
                             let mut session = output.session(&cap);
                             session.give_vec(&mut updates);
                         }
@@ -179,9 +223,15 @@ where
             }
         });
 
-    let (ok_stream, err_stream) = timely_stream.ok_err(|x| match x {
-        ((Ok(SourceData(Ok(row))), Ok(())), ts, diff) => Ok((row, ts, diff)),
-        ((Ok(SourceData(Err(err))), Ok(())), ts, diff) => Err((err, ts, diff)),
+    let (ok_stream, err_stream) = timely_stream.ok_err(move |x| match x {
+        ((Ok(SourceData(Ok(row))), Ok(())), ts, diff) => {
+            info!("persist_source {worker_index}: Ok({row})");
+            Ok((row, ts, diff))
+        }
+        ((Ok(SourceData(Err(err))), Ok(())), ts, diff) => {
+            info!("{worker_index}: Err({err})");
+            Err((err, ts, diff))
+        }
         // TODO(petrosagg): error handling
         _ => panic!("decoding failed"),
     });

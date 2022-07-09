@@ -13,8 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use differential_dataflow::{Collection, Hashable};
-use mz_repr::{Diff, GlobalId, Row, Timestamp};
-use mz_timely_util::operators_async_ext::OperatorBuilderExt;
+use itertools::Itertools;
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::Scope;
@@ -22,11 +21,13 @@ use timely::progress::frontier::Antichain;
 use timely::progress::Timestamp as _;
 use timely::PartialOrder;
 
-use crate::storage_state::StorageState;
+use mz_repr::{Diff, GlobalId, Row, Timestamp};
+use mz_timely_util::operators_async_ext::OperatorBuilderExt;
 
-use crate::client::controller::CollectionMetadata;
+use crate::client::controller::{CollectionMetadata, Shard};
 use crate::client::errors::DataflowError;
 use crate::client::sources::SourceData;
+use crate::storage_state::StorageState;
 
 pub fn render<G>(
     scope: &mut G,
@@ -38,19 +39,18 @@ pub fn render<G>(
 ) where
     G: Scope<Timestamp = Timestamp>,
 {
-    let operator_name = format!("persist_sink({})", metadata.data_shard);
+    let operator_name = format!(
+        "persist_sink({})",
+        metadata
+            .shards
+            .iter()
+            .map(|Shard { data_shard, .. }| data_shard.to_string())
+            .join(",")
+    );
     let mut persist_op = OperatorBuilder::new(operator_name, scope.clone());
 
-    // We want exactly one worker (in the cluster) to send all the data to persist. It's fine
-    // if other workers from replicated clusters write the same data, though. In the real
-    // implementation, we would use a storage client that transparently handles writing to
-    // multiple shards. One shard would then only be written to by one worker but we get
-    // parallelism from the sharding.
-    // TODO(aljoscha): Storage must learn to keep track of collections, which consist of
-    // multiple persist shards. Then we should set it up such that each worker can write to one
-    // shard.
     let hashed_id = src_id.hashed();
-    let active_write_worker = (hashed_id as usize) % scope.peers() == scope.index();
+    let Shard { data_shard, .. } = &metadata.shards[scope.index() % metadata.shards.len()];
 
     let mut input = persist_op.new_input(&source_data.inner, Exchange::new(move |_| hashed_id));
 
@@ -72,7 +72,7 @@ pub fn render<G>(
                 .open(metadata.persist_location)
                 .await
                 .expect("could not open persist client")
-                .open_writer::<SourceData, (), Timestamp, Diff>(metadata.data_shard)
+                .open_writer::<SourceData, (), Timestamp, Diff>(data_shard.clone())
                 .await
                 .expect("could not open persist shard");
 
@@ -85,10 +85,7 @@ pub fn render<G>(
             while scheduler.notified().await {
                 let input_upper = frontiers.borrow()[0].clone();
 
-                if !active_write_worker
-                    || weak_token.upgrade().is_none()
-                    || current_upper.borrow().is_empty()
-                {
+                if weak_token.upgrade().is_none() || current_upper.borrow().is_empty() {
                     return;
                 }
 

@@ -183,7 +183,7 @@ where
 #[derive(Debug, PartialEq)]
 pub enum ListenEvent<K, V, T, D> {
     /// Progress of the shard.
-    Progress(Antichain<T>),
+    Progress((ShardId, Antichain<T>)),
     /// Data of the shard.
     Updates(Vec<((Result<K, String>, Result<V, String>), T, D)>),
 }
