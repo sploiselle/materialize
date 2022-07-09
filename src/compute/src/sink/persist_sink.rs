@@ -61,21 +61,16 @@ where
 
         let persist_clients = Arc::clone(&compute_state.persist_clients);
         let persist_location = self.storage_metadata.persist_location.clone();
-        let shard_id = self.storage_metadata.data_shard;
+
+        // TODO: support case where shards != workers
+        let shard_id = self.storage_metadata.shards
+            [scope.index() & self.storage_metadata.shards.len()]
+        .data_shard;
 
         let operator_name = format!("persist_sink({})", shard_id);
         let mut persist_op = OperatorBuilder::new(operator_name, scope.clone());
 
-        // We want exactly one worker (in the cluster) to send all the data to persist. It's fine
-        // if other workers from replicated clusters write the same data, though. In the real
-        // implementation, we would use a storage client that transparently handles writing to
-        // multiple shards. One shard would then only be written to by one worker but we get
-        // parallelism from the sharding.
-        // TODO(aljoscha): Storage must learn to keep track of collections, which consist of
-        // multiple persist shards. Then we should set it up such that each worker can write to one
-        // shard.
         let hashed_id = sink_id.hashed();
-        let active_write_worker = (hashed_id as usize) % scope.peers() == scope.index();
 
         let mut input =
             persist_op.new_input(&sinked_collection.inner, Exchange::new(move |_| hashed_id));
@@ -85,15 +80,9 @@ where
         let token = Rc::new(());
         let token_weak = Rc::downgrade(&token);
 
-        // Only the active_write_worker will ever produce data so all other workers have
-        // an empty frontier. It's necessary to insert all of these into `compute_state.
-        // sink_write_frontier` below so we properly clear out default frontiers of
-        // non-active workers.
-        let shared_frontier = Rc::new(RefCell::new(if active_write_worker {
-            Antichain::from_elem(TimelyTimestamp::minimum())
-        } else {
-            Antichain::new()
-        }));
+        let shared_frontier = Rc::new(RefCell::new(Antichain::from_elem(
+            TimelyTimestamp::minimum(),
+        )));
 
         compute_state
             .sink_write_frontiers
@@ -127,10 +116,7 @@ where
                         input_frontier.extend(frontier);
                     }
 
-                    if !active_write_worker
-                        || token_weak.upgrade().is_none()
-                        || shared_frontier.borrow().is_empty()
-                    {
+                    if token_weak.upgrade().is_none() || shared_frontier.borrow().is_empty() {
                         return;
                     }
 

@@ -298,7 +298,7 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
     }
 
     fn from_proto(value: ProtoCollectionMetadata) -> Result<Self, TryFromProtoError> {
-        let shards = Vec::with_capacity(value.shards.len());
+        let mut shards = Vec::with_capacity(value.shards.len());
         for shard in value.shards {
             shards.push(Shard::from_proto(shard)?);
         }
@@ -563,31 +563,22 @@ where
                 // Calculate the point at which we can resume ingestion computing the greatest
                 // antichain that is less or equal to all state and output shard uppers.
                 let mut resume_upper: Antichain<T> = Antichain::new();
-                let mut uppers = Vec::with_capacity(metadata.shards.len() * 2);
                 for Shard {
                     remap_shard,
                     data_shard,
-                } in metadata.shards
+                } in &metadata.shards
                 {
-                    let r = self
-                        .persist_client
-                        .open_writer::<(), PartitionId, T, MzOffset>(remap_shard)
-                        .await
-                        .unwrap()
-                        .upper()
-                        .elements();
-                    uppers.push(r);
-                    let d = self
-                        .persist_client
-                        .open_writer::<(), PartitionId, T, MzOffset>(data_shard)
-                        .await
-                        .unwrap()
-                        .upper()
-                        .elements();
-                    uppers.push(d);
-                }
-                for t in uppers.into_iter().flatten() {
-                    resume_upper.insert(t.clone());
+                    for shard in [remap_shard, data_shard] {
+                        let a = self
+                            .persist_client
+                            .open_writer::<(), PartitionId, T, MzOffset>(*shard)
+                            .await
+                            .unwrap();
+
+                        for t in a.upper().elements() {
+                            resume_upper.insert(t.clone());
+                        }
+                    }
                 }
 
                 // Check if this ingestion is using any operators that are stateful AND are not

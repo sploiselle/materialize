@@ -11,6 +11,7 @@
 use std::borrow::Borrow;
 use std::collections::hash_map::{self, HashMap};
 use std::collections::{BTreeMap, HashSet};
+use std::hash::Hash;
 use std::iter::Peekable;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use std::time::Duration;
 use anyhow::Context;
 use differential_dataflow::consolidation;
 use differential_dataflow::lattice::Lattice as _;
+use itertools::Itertools;
 use timely::progress::frontier::Antichain;
 use timely::progress::Timestamp as _;
 use timely::PartialOrder;
@@ -25,6 +27,7 @@ use tokio::sync::Mutex;
 use tokio_stream::{StreamExt, StreamMap};
 
 use mz_expr::PartitionId;
+use mz_ore::cast::CastFrom;
 use mz_ore::now::NowFn;
 use mz_persist_client::cache::PersistClientCache;
 use mz_persist_client::read::{Listen, ListenEvent, ReadHandle};
@@ -325,9 +328,9 @@ impl ReclockOperator {
         // Tail the listen stream until we reach the target upper frontier. Note that, in the
         // common case, we are also the writer, so we are waiting to read-back what we wrote
         while PartialOrder::less_than(&upper, target_upper) {
-            for event in self.listener.next().await {
+            for (shard_id, event) in self.listener.next().await {
                 match event {
-                    ListenEvent::Progress((shard_id, new_upper)) => {
+                    ListenEvent::Progress(new_upper) => {
                         consolidation::consolidate_updates(&mut pending_batch);
                         for (pid, ts, diff) in pending_batch.drain(..) {
                             let bindings = self.remap_trace.entry(pid.clone()).or_default();
@@ -389,7 +392,7 @@ impl ReclockOperator {
     /// chance of success.
     async fn append<P>(&mut self, updates: &[(P, MzOffset)]) -> Result<(), Upper<Timestamp>>
     where
-        P: Borrow<PartitionId>,
+        P: Borrow<PartitionId> + std::hash::Hash,
     {
         let next_ts = loop {
             match self.next_mint_timestamp() {
@@ -399,32 +402,59 @@ impl ReclockOperator {
         };
         let new_upper = Antichain::from_elem(next_ts + 1);
         loop {
-            let upper = self.upper.clone();
+            let upper = self.upper().clone();
             let new_upper = new_upper.clone();
-            let updates = updates
-                .iter()
-                .map(|(pid, diff)| (((), pid.borrow()), next_ts, diff));
-            match self
-                .write_handle
-                .compare_and_append(updates, upper, new_upper)
-                .await
-            {
-                Ok(Ok(Ok(()))) => break,
-                Ok(Ok(Err(actual_upper))) => return Err(actual_upper),
-                Ok(Err(invalid_use)) => panic!("compare_and_append failed: {invalid_use}"),
-                // An external error means that the operation might have suceeded or failed but we
-                // don't know. In either case it is safe to retry because:
-                // * If it succeeded, then on retry we'll get an `Upper(_)` error as if some other
-                //   process raced us (but we actually raced ourselves). Since the operator is
-                //   built to handle concurrent instances of itself this safe to do and will
-                //   correctly re-sync its state. Once it resyncs we'll re-enter `mint` and notice
-                //   that there are no updates to add (because we just added them and don't know
-                //   it!) and the reclock operation will proceed normally.
-                // * If it failed, then we'll succeed on retry and proceed normally.
-                Err(external_err) => {
-                    tracing::debug!("compare_and_append failed: {external_err}");
-                    continue;
+            let mut updates_by_shard_idx = Vec::new();
+            for i in 0..self.shards.len() {
+                updates_by_shard_idx.insert(i, vec![]);
+            }
+
+            for (pid, diff) in updates {
+                let pid_bytes = match pid.borrow() {
+                    PartitionId::Kafka(id) => *id,
+                    PartitionId::None => 0,
                 }
+                .to_be_bytes();
+                let pid_u32: u32 = u32::from_be_bytes(pid_bytes);
+                let shard_idx = usize::cast_from(pid_u32) % updates_by_shard_idx.len();
+                updates_by_shard_idx[shard_idx].push((((), pid.borrow()), next_ts, diff))
+            }
+
+            let mut outer_break = false;
+
+            for ((shard_id, state), updates) in self
+                .shards
+                .iter_mut()
+                .zip_eq(updates_by_shard_idx.into_iter())
+            {
+                match state
+                    .write_handle
+                    .compare_and_append(updates, upper.clone(), new_upper.clone())
+                    .await
+                {
+                    Ok(Ok(Ok(()))) => {
+                        outer_break = true;
+                        break;
+                    }
+                    Ok(Ok(Err(actual_upper))) => return Err(actual_upper),
+                    Ok(Err(invalid_use)) => panic!("compare_and_append failed: {invalid_use}"),
+                    // An external error means that the operation might have suceeded or failed but we
+                    // don't know. In either case it is safe to retry because:
+                    // * If it succeeded, then on retry we'll get an `Upper(_)` error as if some other
+                    //   process raced us (but we actually raced ourselves). Since the operator is
+                    //   built to handle concurrent instances of itself this safe to do and will
+                    //   correctly re-sync its state. Once it resyncs we'll re-enter `mint` and notice
+                    //   that there are no updates to add (because we just added them and don't know
+                    //   it!) and the reclock operation will proceed normally.
+                    // * If it failed, then we'll succeed on retry and proceed normally.
+                    Err(external_err) => {
+                        tracing::debug!("compare_and_append failed: {external_err}");
+                        continue;
+                    }
+                }
+            }
+            if outer_break {
+                break;
             }
         }
         // At this point we have successfully produced data in the reclock shard so we need to
@@ -442,7 +472,8 @@ impl ReclockOperator {
         if (now % self.update_interval_ms) != 0 {
             new_ts += self.update_interval_ms;
         }
-        let upper_ts = self.upper.as_option().expect("no more timestamps to mint");
+        let upper = self.upper();
+        let upper_ts = upper.as_option().expect("no more timestamps to mint");
         if upper_ts <= &new_ts {
             Ok(new_ts)
         } else {
@@ -464,7 +495,7 @@ impl ReclockOperator {
 
     /// Returns the since frontier for a given partition
     fn partition_since(&self, pid: &PartitionId) -> MzOffset {
-        if self.since.elements() == [Timestamp::minimum()] {
+        if self.since().elements() == [Timestamp::minimum()] {
             // If we never compacted in the DestTime domain then the SourceTime domain isn't
             // compated either. Therefore the since frontier is zero
             MzOffset::default()
@@ -479,7 +510,7 @@ impl ReclockOperator {
                 .copied()
                 .unwrap_or_default();
 
-            if self.since.less_than(&first_ts) {
+            if self.since().less_than(&first_ts) {
                 // If it is behind then the first binding will cover all offsets starting at zero,
                 // so the since frontier of the partition is also zero.
                 MzOffset::default()

@@ -50,7 +50,9 @@ pub fn render<G>(
     let mut persist_op = OperatorBuilder::new(operator_name, scope.clone());
 
     let hashed_id = src_id.hashed();
-    let Shard { data_shard, .. } = &metadata.shards[scope.index() % metadata.shards.len()];
+    let data_shard = (&metadata.shards[scope.index() % metadata.shards.len()])
+        .data_shard
+        .clone();
 
     let mut input = persist_op.new_input(&source_data.inner, Exchange::new(move |_| hashed_id));
 
