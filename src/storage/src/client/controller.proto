@@ -13,9 +13,15 @@ syntax = "proto3";
 
 package mz_storage.client.controller;
 
+message ProtoShard {
+    string data_shard = 1;
+    string remap_shard = 2;
+}
+
 message ProtoCollectionMetadata {
+    reserved 3, 4;
+    reserved "data_shard", "remap_shard";
     string blob_uri = 1;
     string consensus_uri = 2;
-    string data_shard = 3;
-    string remap_shard = 4;
+    repeated ProtoShard shards = 5;
 }

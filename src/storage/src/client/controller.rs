@@ -235,33 +235,33 @@ impl<T: Timestamp> ReadPolicy<T> {
     }
 }
 
-/// Metadata required by a storage instance to read a storage collection
 #[derive(Arbitrary, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
-pub struct CollectionMetadata {
-    /// The persist location where the shards are located
-    pub persist_location: PersistLocation,
+pub struct Shard {
     /// The persist shard id of the remap collection used to reclock this collection
     pub remap_shard: ShardId,
     /// The persist shard containing the contents of this storage collection
     pub data_shard: ShardId,
 }
 
-impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
-    fn into_proto(&self) -> ProtoCollectionMetadata {
-        ProtoCollectionMetadata {
-            blob_uri: self.persist_location.blob_uri.clone(),
-            consensus_uri: self.persist_location.consensus_uri.clone(),
+impl Shard {
+    fn new() -> Shard {
+        Shard {
+            remap_shard: ShardId::new(),
+            data_shard: ShardId::new(),
+        }
+    }
+}
+
+impl RustType<ProtoShard> for Shard {
+    fn into_proto(&self) -> ProtoShard {
+        ProtoShard {
             data_shard: self.data_shard.to_string(),
             remap_shard: self.remap_shard.to_string(),
         }
     }
 
-    fn from_proto(value: ProtoCollectionMetadata) -> Result<Self, TryFromProtoError> {
-        Ok(CollectionMetadata {
-            persist_location: PersistLocation {
-                blob_uri: value.blob_uri,
-                consensus_uri: value.consensus_uri,
-            },
+    fn from_proto(value: ProtoShard) -> Result<Self, TryFromProtoError> {
+        Ok(Shard {
             remap_shard: value
                 .remap_shard
                 .parse()
@@ -270,6 +270,43 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
                 .data_shard
                 .parse()
                 .map_err(TryFromProtoError::InvalidShardId)?,
+        })
+    }
+}
+
+/// Metadata required by a storage instance to read a storage collection
+#[derive(Arbitrary, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
+pub struct CollectionMetadata {
+    /// The persist location where the shards are located
+    pub persist_location: PersistLocation,
+    pub shards: Vec<Shard>,
+}
+
+impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
+    fn into_proto(&self) -> ProtoCollectionMetadata {
+        let shards = self
+            .shards
+            .iter()
+            .map(|shard| shard.into_proto())
+            .collect::<Vec<_>>();
+        ProtoCollectionMetadata {
+            blob_uri: self.persist_location.blob_uri.clone(),
+            consensus_uri: self.persist_location.consensus_uri.clone(),
+            shards,
+        }
+    }
+
+    fn from_proto(value: ProtoCollectionMetadata) -> Result<Self, TryFromProtoError> {
+        let shards = Vec::with_capacity(value.shards.len());
+        for shard in value.shards {
+            shards.push(Shard::from_proto(shard)?);
+        }
+        Ok(CollectionMetadata {
+            persist_location: PersistLocation {
+                blob_uri: value.blob_uri,
+                consensus_uri: value.consensus_uri,
+            },
+            shards,
         })
     }
 }
@@ -303,7 +340,7 @@ pub struct StorageControllerState<
     /// This is to prevent the re-binding of identifiers to other descriptions.
     pub(super) collections: BTreeMap<GlobalId, CollectionState<T>>,
     pub(super) stash: S,
-    pub(super) persist_handles: BTreeMap<GlobalId, PersistHandles<T>>,
+    pub(super) persist_handles: BTreeMap<GlobalId, BTreeMap<ShardId, PersistHandles<T>>>,
     stashed_response: Option<StorageResponse<T>>,
 }
 
@@ -478,25 +515,37 @@ where
         for (id, description) in collections {
             let metadata = CollectionMetadata {
                 persist_location: self.persist_location.clone(),
-                data_shard: ShardId::new(),
-                remap_shard: ShardId::new(),
+                shards: vec![Shard::new()],
             };
             let metadata = METADATA_COLLECTION
                 .insert_without_overwrite(&mut self.state.stash, &id, metadata)
                 .await?;
+            let mut persist_handles_by_shard = BTreeMap::default();
 
-            let (write, read) = self
-                .persist_client
-                .open(metadata.data_shard)
-                .await
-                .expect("invalid persist usage");
+            for Shard {
+                remap_shard: _,
+                data_shard,
+            } in &metadata.shards
+            {
+                let (write, read) = self
+                    .persist_client
+                    .open(*data_shard)
+                    .await
+                    .expect("invalid persist usage");
+                persist_handles_by_shard.insert(*data_shard, PersistHandles { read, write });
+            }
 
-            let collection_state =
-                CollectionState::new(description.clone(), read.since().clone(), metadata);
+            let since = persist_handles_by_shard
+                .values()
+                .map(|PersistHandles { read, write: _ }| read.since().clone())
+                .reduce(|accum, read| accum.meet(&read))
+                .expect("must have shards");
+
+            let collection_state = CollectionState::new(description.clone(), since, metadata);
 
             self.state
                 .persist_handles
-                .insert(id, PersistHandles { read, write });
+                .insert(id, persist_handles_by_shard);
 
             self.state.collections.insert(id, collection_state);
 
@@ -513,20 +562,30 @@ where
                 // Calculate the point at which we can resume ingestion computing the greatest
                 // antichain that is less or equal to all state and output shard uppers.
                 let mut resume_upper: Antichain<T> = Antichain::new();
-                let remap_write = self
-                    .persist_client
-                    .open_writer::<(), PartitionId, T, MzOffset>(metadata.remap_shard)
-                    .await
-                    .unwrap();
-                for t in remap_write.upper().elements() {
-                    resume_upper.insert(t.clone());
+                let mut uppers = Vec::with_capacity(metadata.shards.len() * 2);
+                for Shard {
+                    remap_shard,
+                    data_shard,
+                } in metadata.shards
+                {
+                    let r = self
+                        .persist_client
+                        .open_writer::<(), PartitionId, T, MzOffset>(remap_shard)
+                        .await
+                        .unwrap()
+                        .upper()
+                        .elements();
+                    uppers.push(r);
+                    let d = self
+                        .persist_client
+                        .open_writer::<(), PartitionId, T, MzOffset>(data_shard)
+                        .await
+                        .unwrap()
+                        .upper()
+                        .elements();
+                    uppers.push(d);
                 }
-                let data_write = self
-                    .persist_client
-                    .open_writer::<SourceData, (), T, Diff>(metadata.data_shard)
-                    .await
-                    .unwrap();
-                for t in data_write.upper().elements() {
+                for t in uppers.into_iter().flatten() {
                     resume_upper.insert(t.clone());
                 }
 
