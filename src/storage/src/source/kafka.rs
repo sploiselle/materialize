@@ -163,7 +163,12 @@ impl SourceReader for KafkaSourceReader {
                 .name("kafka-metadata".to_string())
                 .spawn(move || {
                     while let Some(partition_info) = partition_info.upgrade() {
-                        match get_kafka_partitions(&consumer, &topic, Duration::from_secs(30)) {
+                        println!("partitions for {:?}", source_id);
+                        match dbg!(get_kafka_partitions(
+                            &consumer,
+                            &topic,
+                            Duration::from_secs(30)
+                        )) {
                             Ok(info) => {
                                 *partition_info.lock().unwrap() = Some(info);
                                 thread::park_timeout(metadata_refresh_frequency);
@@ -203,7 +208,8 @@ impl SourceReader for KafkaSourceReader {
     fn get_next_message(
         &mut self,
     ) -> Result<NextMessage<Self::Key, Self::Value, Self::Diff>, SourceReaderError> {
-        let partition_info = self.partition_info.lock().unwrap().take();
+        println!("1 get_next_message id {:?}", self.id);
+        let partition_info = dbg!(self.partition_info.lock().unwrap().take());
         if let Some(partitions) = partition_info {
             for pid in partitions {
                 self.add_partition(PartitionId::Kafka(pid));
@@ -218,7 +224,8 @@ impl SourceReader for KafkaSourceReader {
         // Additionally, assigning topics and splitting them off into separate queues is not
         // atomic, so we expect to see at least some messages to show up when polling the consumer
         // directly.
-        if let Some(result) = self.consumer.poll(Duration::from_secs(0)) {
+        println!("get_next_message id {:?}", self.id);
+        if let Some(result) = dbg!(self.consumer.poll(Duration::from_secs(0))) {
             match result {
                 Err(e) => error!(
                     "kafka error when polling consumer for source: {} topic: {} : {}",
@@ -226,6 +233,7 @@ impl SourceReader for KafkaSourceReader {
                 ),
                 Ok(message) => {
                     let source_message = construct_source_message(&message, self.include_headers)?;
+                    println!("2 get_next_message {:?}", self.id);
                     next_message = self.handle_message(source_message);
                 }
             }
@@ -233,9 +241,10 @@ impl SourceReader for KafkaSourceReader {
 
         self.update_stats();
 
-        let consumer_count = self.get_partition_consumers_count();
+        let consumer_count = dbg!(self.get_partition_consumers_count());
         let mut attempts = 0;
         while attempts < consumer_count {
+            println!("3 get_next_message id {:?}, attempts {}", self.id, attempts);
             // First, see if we have a message already, either from polling the consumer, above, or
             // from polling the partition queues below.
             if let NextMessage::Ready(_) = next_message {
@@ -243,7 +252,7 @@ impl SourceReader for KafkaSourceReader {
                 break;
             }
 
-            let message = self.poll_from_next_queue()?;
+            let message = dbg!(self.poll_from_next_queue()?);
             attempts += 1;
 
             if let Some(message) = message {
@@ -260,7 +269,16 @@ impl KafkaSourceReader {
     /// In Kafka, partitions are assigned contiguously. This function consequently
     /// creates partition queues for every p <= pid
     fn add_partition(&mut self, pid: PartitionId) {
-        if !crate::source::responsible_for(&self.id, self.worker_id, self.worker_count, &pid) {
+        println!(
+            "add_partition id: {:?}, worker_id: {:?}, worker_count: {:?}, pid: {:?}",
+            self.id, self.worker_id, self.worker_count, &pid
+        );
+        if !dbg!(crate::source::responsible_for(
+            &self.id,
+            self.worker_id,
+            self.worker_count,
+            &pid
+        )) {
             return;
         }
         let pid = match pid {
@@ -427,6 +445,7 @@ impl KafkaSourceReader {
     ) -> Result<Option<SourceMessage<Option<Vec<u8>>, Option<Vec<u8>>, ()>>, anyhow::Error> {
         let mut partition_queue = self.partition_consumers.pop_front().unwrap();
 
+        println!("poll_from_next_queue");
         let message = match partition_queue.get_next_message()? {
             Err(e) => {
                 let pid = partition_queue.pid();
@@ -648,6 +667,7 @@ impl PartitionConsumer {
         Result<Option<SourceMessage<Option<Vec<u8>>, Option<Vec<u8>>, ()>>, KafkaError>,
         anyhow::Error,
     > {
+        println!("4 get_next_message");
         match self.partition_queue.poll(Duration::from_millis(0)) {
             Some(Ok(msg)) => {
                 let result = construct_source_message(&msg, self.include_headers)?;

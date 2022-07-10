@@ -568,16 +568,21 @@ where
                     data_shard,
                 } in &metadata.shards
                 {
-                    for shard in [remap_shard, data_shard] {
-                        let a = self
-                            .persist_client
-                            .open_writer::<(), PartitionId, T, MzOffset>(*shard)
-                            .await
-                            .unwrap();
-
-                        for t in a.upper().elements() {
-                            resume_upper.insert(t.clone());
-                        }
+                    let remap_write = self
+                        .persist_client
+                        .open_writer::<(), PartitionId, T, MzOffset>(*remap_shard)
+                        .await
+                        .unwrap();
+                    for t in remap_write.upper().elements() {
+                        resume_upper.insert(t.clone());
+                    }
+                    let data_write = self
+                        .persist_client
+                        .open_writer::<SourceData, (), T, Diff>(*data_shard)
+                        .await
+                        .unwrap();
+                    for t in data_write.upper().elements() {
+                        resume_upper.insert(t.clone());
                     }
                 }
 
@@ -672,56 +677,29 @@ where
                 None => continue,
             };
 
+            let shards = persist_handles.keys().cloned().collect::<Vec<_>>();
+            let PersistHandles { read: _, write } = persist_handles.get_mut(&shards[0]).unwrap();
+
             let new_upper = Antichain::from_elem(new_upper);
 
-            let shards = persist_handles.keys().cloned().collect::<Vec<_>>();
-            let mut updates_by_shard: HashMap<ShardId, Vec<_>> = HashMap::default();
-            for shard in &shards {
-                // All shards must be included in update to ensure their uppers
-                // advance, irrespective of their updates.
-                updates_by_shard.insert(shard.clone(), vec![]);
-            }
+            let updates = updates
+                .into_iter()
+                .map(|u| ((SourceData(Ok(u.row)), ()), u.timestamp, u.diff));
 
-            for u in updates {
-                let row = u.row.deref().data();
-                let mut shard_router = [0u8; 8];
-                shard_router[8 - std::cmp::min(row.len(), 8)..]
-                    .copy_from_slice(&row[..std::cmp::min(row.len(), 8)]);
-                let shard_idx = usize::from_be_bytes(shard_router) % shards.len();
-                updates_by_shard
-                    .get_mut(&shards[shard_idx])
-                    .expect("all shards accounted for")
-                    .push(((SourceData(Ok(u.row)), ()), u.timestamp, u.diff));
-            }
+            futs.push(async move {
+                let mut change_batch = ChangeBatch::new();
+                change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
+                change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
 
-            for (shard, persist_handle) in persist_handles.iter_mut() {
-                let update = updates_by_shard
-                    .remove(&shard)
-                    .expect("all shards included in updates");
-                if !update.is_empty() {
-                    println!("\nshard {:?}\nupdate {:?}", shard, update);
-                    println!("all shards {:?}", shards);
-                    println!("\n\n\n");
-                }
-                let upper = upper.clone();
-                let new_upper = new_upper.clone();
-                let write = &mut persist_handle.write;
+                write
+                    .compare_and_append(updates, upper, new_upper)
+                    .await
+                    .expect("cannot append updates")
+                    .expect("cannot append updates")
+                    .or(Err(StorageError::InvalidUpper(*id)))?;
 
-                futs.push(async move {
-                    let mut change_batch = ChangeBatch::new();
-                    change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
-                    change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
-
-                    write
-                        .compare_and_append(update, upper, new_upper)
-                        .await
-                        .expect("cannot append updates")
-                        .expect("cannot append updates")
-                        .or(Err(StorageError::InvalidUpper(*id)))?;
-
-                    Ok::<_, StorageError>((*id, change_batch))
-                })
-            }
+                Ok::<_, StorageError>((*id, change_batch))
+            })
         }
 
         let change_batches = futs.try_collect::<Vec<_>>().await?;

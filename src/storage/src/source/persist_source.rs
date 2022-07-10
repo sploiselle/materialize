@@ -166,21 +166,26 @@ where
                 while let Poll::Ready(item) = pinned_stream.as_mut().poll_next(&mut context) {
                     match item {
                         Some(Ok((shard_idx, ListenEvent::Progress(upper)))) => {
-                            println!("Poll::Ready shard_idx {shard_idx}: {:?}", upper);
-                            progress_by_shard_idx.insert(shard_idx, upper.clone());
-                            let lower_bound: Antichain<u64> = dbg!(Antichain::from_iter(
-                                progress_by_shard_idx.values().cloned().flatten(),
-                            ));
-                            cap_set.downgrade(lower_bound.iter().min().unwrap());
-
                             if upper.is_empty() {
-                                return SourceStatus::Done;
+                                progress_by_shard_idx.remove(&shard_idx);
+                                if progress_by_shard_idx.is_empty() {
+                                    return SourceStatus::Done;
+                                }
+                            } else {
+                                println!("Poll::Ready shard_idx {shard_idx}: {:?}", upper);
+                                progress_by_shard_idx.insert(shard_idx, upper.clone());
+                                let lower_bound: Antichain<u64> = dbg!(Antichain::from_iter(
+                                    progress_by_shard_idx.values().cloned().flatten(),
+                                ));
+                                cap_set.downgrade(lower_bound.iter().min().unwrap());
                             }
                         }
                         Some(Ok((_shard_idx, ListenEvent::Updates(mut updates)))) => {
                             // This operator guarantees that its output has been advanced by `as_of.
                             // The persist SnapshotIter already has this contract, so nothing to do
                             // here.
+
+                            println!("updates {:?}", updates);
 
                             if updates.is_empty() {
                                 continue;
@@ -229,7 +234,7 @@ where
             Ok((row, ts, diff))
         }
         ((Ok(SourceData(Err(err))), Ok(())), ts, diff) => {
-            info!("{worker_index}: Err({err})");
+            info!("persist_source {worker_index}: Err({err})");
             Err((err, ts, diff))
         }
         // TODO(petrosagg): error handling

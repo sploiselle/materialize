@@ -153,7 +153,7 @@ where
 /// values into a key/value reader whose key is always None
 pub struct DelimitedValueSource<S>(S);
 
-impl<S, D: timely::Data> SourceReader for DelimitedValueSource<S>
+impl<S, D: timely::Data + std::fmt::Debug> SourceReader for DelimitedValueSource<S>
 where
     S: SourceReader<Key = (), Value = Option<Vec<u8>>, Diff = D>,
 {
@@ -191,6 +191,7 @@ where
     fn get_next_message(
         &mut self,
     ) -> Result<NextMessage<Self::Key, Self::Value, Self::Diff>, SourceReaderError> {
+        println!("5 get_next_message");
         match self.0.get_next_message()? {
             NextMessage::Ready(SourceMessageType::Finalized(SourceMessage {
                 key: _,
@@ -390,9 +391,9 @@ impl From<anyhow::Error> for SourceReaderError {
 /// we are forced to treat things like file sources as "single-partition"
 #[async_trait(?Send)]
 pub trait SourceReader {
-    type Key: timely::Data + MaybeLength;
-    type Value: timely::Data + MaybeLength;
-    type Diff: timely::Data;
+    type Key: timely::Data + MaybeLength + std::fmt::Debug;
+    type Value: timely::Data + MaybeLength + std::fmt::Debug;
+    type Diff: timely::Data + std::fmt::Debug;
 
     /// Create a new source reader.
     ///
@@ -428,17 +429,30 @@ pub trait SourceReader {
         // [SourceReader::next] directly this provided implementation should be removed and the
         // method should become a required method.
         loop {
+            println!("7 get_next_message");
             match self.get_next_message() {
-                Ok(NextMessage::Ready(msg)) => return Some(Ok(msg)),
+                Ok(NextMessage::Ready(msg)) => {
+                    println!("7 ready");
+                    return Some(Ok(msg));
+                }
                 Err(err) => return Some(Err(err)),
                 // There was a temporary hiccup in getting messages, check again asap.
                 Ok(NextMessage::TransientDelay) => {
+                    println!("7 delay");
                     tokio::time::sleep(Duration::from_millis(1)).await
                 }
                 // There were no new messages, check again after a delay
-                Ok(NextMessage::Pending) => tokio::time::sleep(timestamp_frequency).await,
-                Ok(NextMessage::Finished) => return None,
+                Ok(NextMessage::Pending) => {
+                    println!("7 pending {:?}", timestamp_frequency);
+                    tokio::time::sleep(timestamp_frequency).await;
+                    println!("7 pending done sleeping");
+                }
+                Ok(NextMessage::Finished) => {
+                    println!("7 done");
+                    return None;
+                }
             }
+            println!("7 loop");
         }
     }
 
@@ -453,6 +467,7 @@ pub trait SourceReader {
     fn get_next_message(
         &mut self,
     ) -> Result<NextMessage<Self::Key, Self::Value, Self::Diff>, SourceReaderError> {
+        println!("6 get_next_message");
         Ok(NextMessage::Pending)
     }
 
@@ -470,14 +485,21 @@ pub trait SourceReader {
         Self: Sized + 'a,
     {
         Box::pin(async_stream::stream!({
+            println!("into stream");
             while let Some(msg) = self.next(timestamp_frequency).await {
+                println!("message");
                 yield msg;
             }
         }))
     }
 }
 
-pub enum NextMessage<Key, Value, Diff> {
+pub enum NextMessage<Key, Value, Diff>
+where
+    Key: std::fmt::Debug,
+    Value: std::fmt::Debug,
+    Diff: std::fmt::Debug,
+{
     Ready(SourceMessageType<Key, Value, Diff>),
     Pending,
     TransientDelay,
@@ -487,7 +509,12 @@ pub enum NextMessage<Key, Value, Diff> {
 /// A wrapper around [`SourceMessage`] that allows
 /// [`SourceReader`]'s to communicate if a message
 /// if the final message a specific offset
-pub enum SourceMessageType<Key, Value, Diff> {
+pub enum SourceMessageType<Key, Value, Diff>
+where
+    Key: std::fmt::Debug,
+    Value: std::fmt::Debug,
+    Diff: std::fmt::Debug,
+{
     /// Communicate that this [`SourceMessage`] is the final
     /// message its its offset.
     Finalized(SourceMessage<Key, Value, Diff>),
@@ -498,7 +525,12 @@ pub enum SourceMessageType<Key, Value, Diff> {
 
 /// Source-agnostic wrapper for messages. Each source must implement a
 /// conversion to Message.
-pub struct SourceMessage<Key, Value, Diff> {
+pub struct SourceMessage<Key, Value, Diff>
+where
+    Key: std::fmt::Debug,
+    Value: std::fmt::Debug,
+    Diff: std::fmt::Debug,
+{
     /// Partition from which this message originates
     pub partition: PartitionId,
     /// Materialize offset of the message (1-indexed)

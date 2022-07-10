@@ -38,6 +38,7 @@ use mz_repr::Timestamp;
 use crate::client::controller::{CollectionMetadata, Shard};
 use crate::client::sources::MzOffset;
 
+#[derive(Debug)]
 pub struct RemapShardState {
     /// Since frontier of the partial remap trace
     since: Antichain<Timestamp>,
@@ -159,9 +160,9 @@ impl ReclockOperator {
 
     fn upper(&self) -> Antichain<Timestamp> {
         let mut upper_agg = Antichain::from_elem(Timestamp::minimum());
-        self.shards
-            .values()
-            .map(|state| upper_agg.join_assign(&state.upper));
+        for state in self.shards.values() {
+            upper_agg.join_assign(&state.upper)
+        }
         upper_agg
     }
 
@@ -186,6 +187,7 @@ impl ReclockOperator {
         &'a mut self,
         batch: &'a mut HashMap<PartitionId, Vec<(M, MzOffset)>>,
     ) -> Result<ReclockIter<'a, M>, (PartitionId, MzOffset)> {
+        println!("reclock");
         let mut batch_upper = HashMap::with_capacity(batch.len());
         for (pid, messages) in batch.iter_mut() {
             messages.sort_unstable_by(|a, b| a.1.cmp(&b.1));
@@ -228,6 +230,7 @@ impl ReclockOperator {
         let mut partitions = HashSet::new();
         partitions.extend(self.source_upper.keys());
         partitions.extend(source_frontier.keys());
+        println!("reclock_frontier partitions {:?}", partitions);
         // To refine it we have to go through all the partitions we know about and:
         for pid in partitions {
             let offset = source_frontier.get(pid).copied().unwrap_or_default();
@@ -302,7 +305,12 @@ impl ReclockOperator {
     /// Syncs the state of this operator to match that of the persist shard until the provided
     /// frontier
     async fn sync(&mut self, target_upper: &Antichain<Timestamp>) {
-        let upper = self.upper();
+        let mut upper = self.upper();
+        let mut progress_by_shard = std::collections::BTreeMap::new();
+        for remap_shard in self.shards.keys() {
+            progress_by_shard.insert(remap_shard.clone(), upper.clone());
+        }
+
         let mut pending_batch = vec![];
 
         // If this is the first sync and the collection is non-empty load the initial snapshot
@@ -339,6 +347,10 @@ impl ReclockOperator {
                         }
                         let state = self.shards.get_mut(&shard_id).expect("known to exist");
                         state.upper = new_upper;
+                        progress_by_shard.insert(shard_id, state.upper.clone());
+                        upper = dbg!(Antichain::from_iter(
+                            progress_by_shard.values().cloned().flatten(),
+                        ));
                     }
                     ListenEvent::Updates(updates) => {
                         for ((_, pid), ts, diff) in updates {
@@ -392,14 +404,18 @@ impl ReclockOperator {
     /// chance of success.
     async fn append<P>(&mut self, updates: &[(P, MzOffset)]) -> Result<(), Upper<Timestamp>>
     where
-        P: Borrow<PartitionId> + std::hash::Hash,
+        P: Borrow<PartitionId> + std::hash::Hash + std::fmt::Debug,
     {
+        println!("shards {:?}", self.shards.keys());
+        println!("reclock append");
+        dbg!(updates);
         let next_ts = loop {
             match self.next_mint_timestamp() {
                 Ok(ts) => break ts,
                 Err(sleep_duration) => tokio::time::sleep(sleep_duration).await,
             }
         };
+        println!("append progress");
         let new_upper = Antichain::from_elem(next_ts + 1);
         loop {
             let upper = self.upper().clone();
@@ -422,7 +438,7 @@ impl ReclockOperator {
 
             let mut outer_break = false;
 
-            for ((shard_id, state), updates) in self
+            for ((_shard_id, state), updates) in self
                 .shards
                 .iter_mut()
                 .zip_eq(updates_by_shard_idx.into_iter())
