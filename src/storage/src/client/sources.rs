@@ -55,6 +55,11 @@ pub struct IngestionDescription<S = ()> {
     pub typ: RelationType,
 }
 
+#[derive(Arbitrary, Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct StorageMetadataInput {
+    pub partitions: usize,
+}
+
 impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMetadata> {
     fn into_proto(&self) -> ProtoIngestionDescription {
         // we have to turn a BTreeMap into a vec here
@@ -1297,6 +1302,7 @@ pub struct SourceDesc {
     pub envelope: SourceEnvelope,
     pub metadata_columns: Vec<IncludedColumnSource>,
     pub ts_frequency: Duration,
+    pub partitions: usize,
 }
 
 impl RustType<ProtoSourceDesc> for SourceDesc {
@@ -1307,6 +1313,7 @@ impl RustType<ProtoSourceDesc> for SourceDesc {
             envelope: Some(self.envelope.into_proto()),
             metadata_columns: self.metadata_columns.into_proto(),
             ts_frequency: Some(self.ts_frequency.into_proto()),
+            partitions: self.partitions as u64,
         }
     }
 
@@ -1325,6 +1332,7 @@ impl RustType<ProtoSourceDesc> for SourceDesc {
             ts_frequency: proto
                 .ts_frequency
                 .into_rust_if_some("ProtoSourceDesc::ts_frequency")?,
+            partitions: proto.partitions as usize,
         })
     }
 }

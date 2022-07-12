@@ -149,7 +149,8 @@ use mz_storage::client::connections::ConnectionContext;
 use mz_storage::client::controller::{CollectionDescription, ReadPolicy};
 use mz_storage::client::sinks::{SinkAsOf, SinkConnection, SinkDesc, TailSinkConnection};
 use mz_storage::client::sources::{
-    IngestionDescription, PostgresSourceConnection, SourceConnection, Timeline,
+    IngestionDescription, PostgresSourceConnection, SourceConnection, StorageMetadataInput,
+    Timeline,
 };
 use mz_storage::client::Update;
 use mz_transform::Optimizer;
@@ -772,13 +773,20 @@ impl<S: Append + 'static> Coordinator<S> {
                     let mut ingestion = IngestionDescription {
                         desc: source.source_desc.clone(),
                         source_imports: BTreeMap::new(),
-                        storage_metadata: (),
+                        storage_metadata: StorageMetadataInput {
+                            partitions: source.source_desc.partitions,
+                        },
                         typ: source.desc.typ().clone(),
                     };
 
                     for id in entry.uses() {
-                        if self.catalog.state().get_entry(id).source().is_some() {
-                            ingestion.source_imports.insert(*id, ());
+                        if let Some(source) = self.catalog.state().get_entry(id).source() {
+                            ingestion.source_imports.insert(
+                                *id,
+                                StorageMetadataInput {
+                                    partitions: source.source_desc.partitions,
+                                },
+                            );
                         }
                     }
 
@@ -3037,13 +3045,20 @@ impl<S: Append + 'static> Coordinator<S> {
                 let mut ingestion = IngestionDescription {
                     desc: source.source_desc.clone(),
                     source_imports: BTreeMap::new(),
-                    storage_metadata: (),
+                    storage_metadata: StorageMetadataInput {
+                        partitions: source.source_desc.partitions,
+                    },
                     typ: source.desc.typ().clone(),
                 };
 
                 for id in self.catalog.state().get_entry(&source_id).uses() {
-                    if self.catalog.state().get_entry(id).source().is_some() {
-                        ingestion.source_imports.insert(*id, ());
+                    if let Some(source) = self.catalog.state().get_entry(id).source() {
+                        ingestion.source_imports.insert(
+                            *id,
+                            StorageMetadataInput {
+                                partitions: source.source_desc.partitions,
+                            },
+                        );
                     }
                 }
 

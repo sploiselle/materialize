@@ -27,6 +27,7 @@ use mz_sql_parser::ast::{
 use prost::Message;
 use protobuf_native::compiler::{SourceTreeDescriptorDatabase, VirtualSourceTree};
 use protobuf_native::MessageLite;
+use rdkafka::consumer::Consumer;
 use tracing::info;
 use uuid::Uuid;
 
@@ -115,6 +116,22 @@ pub async fn purify_create_source(
             )
             .await
             .map_err(|e| anyhow!("Failed to create and connect Kafka consumer: {}", e))?;
+
+            let partitions = dbg!(mz_kafka_util::client::get_partitions(
+                &consumer.client(),
+                topic,
+                std::time::Duration::from_secs(10),
+            )
+            .map_err(|e| anyhow!("Failed to determine Kafka partitions: {}", e))?);
+            with_options.push(WithOption {
+                key: Ident::new("partitions"),
+                value: Some(WithOptionValue::Value(Value::Array(
+                    partitions
+                        .iter()
+                        .map(|p| Value::Number(p.to_string()))
+                        .collect(),
+                ))),
+            });
 
             // Translate `kafka_time_offset` to `start_offset`.
             match kafka_util::lookup_start_offsets(

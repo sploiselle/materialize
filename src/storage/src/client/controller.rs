@@ -61,6 +61,8 @@ use crate::client::{
     StorageResponse, Update,
 };
 
+use super::sources::StorageMetadataInput;
+
 mod hosts;
 mod rehydration;
 
@@ -75,7 +77,7 @@ pub struct CollectionDescription {
     /// The schema of this collection
     pub desc: RelationDesc,
     /// The description of the source to ingest into this collection, if any.
-    pub ingestion: Option<IngestionDescription<()>>,
+    pub ingestion: Option<IngestionDescription<StorageMetadataInput>>,
     /// The address of a `storaged` process on which to install the source.
     ///
     /// If `None`, the controller manages the lifetime of the `storaged`
@@ -516,7 +518,14 @@ where
         for (id, description) in collections {
             let metadata = CollectionMetadata {
                 persist_location: self.persist_location.clone(),
-                shards: vec![Shard::new()],
+                shards: vec![
+                    Shard::new();
+                    dbg!(description
+                        .ingestion
+                        .as_ref()
+                        .map(|desc| desc.storage_metadata.partitions)
+                        .unwrap_or(1))
+                ],
             };
             let metadata = METADATA_COLLECTION
                 .insert_without_overwrite(&mut self.state.stash, &id, metadata)
@@ -678,6 +687,7 @@ where
             };
 
             let shards = persist_handles.keys().cloned().collect::<Vec<_>>();
+            assert!(shards.len() == 1);
             let PersistHandles { read: _, write } = persist_handles.get_mut(&shards[0]).unwrap();
 
             let new_upper = Antichain::from_elem(new_upper);

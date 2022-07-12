@@ -179,6 +179,7 @@ message ProtoSourceDesc {
     ProtoSourceEnvelope envelope = 3;
     repeated ProtoIncludedColumnSource metadata_columns = 4;
     mz_proto.ProtoDuration ts_frequency = 5;
+    uint64 partitions = 6;
 }
 
 message ProtoSourceConnection {
@@ -250,4 +251,5 @@ message ProtoIngestionDescription {
     ProtoSourceDesc desc = 2;
     mz_storage.client.controller.ProtoCollectionMetadata storage_metadata = 3;
     mz_repr.relation_and_scalar.ProtoRelationType typ = 4;
+
 }

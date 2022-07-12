@@ -180,12 +180,12 @@ where
                                 cap_set.downgrade(lower_bound.iter().min().unwrap());
                             }
                         }
-                        Some(Ok((_shard_idx, ListenEvent::Updates(mut updates)))) => {
+                        Some(Ok((shard_idx, ListenEvent::Updates(mut updates)))) => {
                             // This operator guarantees that its output has been advanced by `as_of.
                             // The persist SnapshotIter already has this contract, so nothing to do
                             // here.
 
-                            println!("updates {:?}", updates);
+                            println!("shard_idx {shard_idx}: updates {:?}", updates);
 
                             if updates.is_empty() {
                                 continue;

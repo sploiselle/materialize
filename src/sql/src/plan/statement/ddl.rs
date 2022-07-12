@@ -931,6 +931,16 @@ pub fn plan_create_source(
             _ => Timeline::EpochMilliseconds,
         }
     };
+    let partitions = match with_options.remove("partitions") {
+        None => 1,
+        Some(v) => match v {
+            SqlValueOrSecret::Value(v) => match v {
+                Value::Array(a) => a.len(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        },
+    };
     let source = Source {
         create_sql,
         source_desc: SourceDesc {
@@ -939,6 +949,7 @@ pub fn plan_create_source(
             envelope,
             metadata_columns: metadata_column_types,
             ts_frequency,
+            partitions,
         },
         desc,
     };

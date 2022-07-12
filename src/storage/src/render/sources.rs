@@ -108,6 +108,7 @@ where
         envelope,
         metadata_columns,
         ts_frequency,
+        partitions: _,
     } = description.desc;
 
     // All sources should push their various error streams into this vector,
