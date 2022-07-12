@@ -191,7 +191,6 @@ where
     fn get_next_message(
         &mut self,
     ) -> Result<NextMessage<Self::Key, Self::Value, Self::Diff>, SourceReaderError> {
-        println!("5 get_next_message");
         match self.0.get_next_message()? {
             NextMessage::Ready(SourceMessageType::Finalized(SourceMessage {
                 key: _,
@@ -429,30 +428,25 @@ pub trait SourceReader {
         // [SourceReader::next] directly this provided implementation should be removed and the
         // method should become a required method.
         loop {
-            println!("7 get_next_message");
             match self.get_next_message() {
                 Ok(NextMessage::Ready(msg)) => {
-                    println!("7 ready");
                     return Some(Ok(msg));
                 }
                 Err(err) => return Some(Err(err)),
                 // There was a temporary hiccup in getting messages, check again asap.
                 Ok(NextMessage::TransientDelay) => {
-                    println!("7 delay");
                     tokio::time::sleep(Duration::from_millis(1)).await
                 }
                 // There were no new messages, check again after a delay
                 Ok(NextMessage::Pending) => {
-                    println!("7 pending {:?}", timestamp_frequency);
+                    println!("NextMessage::Pending; sleeping");
                     tokio::time::sleep(timestamp_frequency).await;
-                    println!("7 pending done sleeping");
+                    println!("NextMessage::Pending; awake");
                 }
                 Ok(NextMessage::Finished) => {
-                    println!("7 done");
                     return None;
                 }
             }
-            println!("7 loop");
         }
     }
 
@@ -467,7 +461,6 @@ pub trait SourceReader {
     fn get_next_message(
         &mut self,
     ) -> Result<NextMessage<Self::Key, Self::Value, Self::Diff>, SourceReaderError> {
-        println!("6 get_next_message");
         Ok(NextMessage::Pending)
     }
 
@@ -485,9 +478,7 @@ pub trait SourceReader {
         Self: Sized + 'a,
     {
         Box::pin(async_stream::stream!({
-            println!("into stream");
             while let Some(msg) = self.next(timestamp_frequency).await {
-                println!("message");
                 yield msg;
             }
         }))

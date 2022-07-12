@@ -67,14 +67,23 @@ where
         shard_counter += scope.peers();
     }
 
+    println!(
+        "\n\navailable shards {}: {:?}",
+        metadata.shards.len(),
+        metadata.shards
+    );
+
+    println!(
+        "\n\nresponsible_shards {}: {:?}",
+        responsible_shards.len(),
+        responsible_shards
+    );
+
     let mut progress_by_shard_idx = std::collections::BTreeMap::new();
 
     for i in 0..responsible_shards.len() {
         progress_by_shard_idx.insert(i, as_of.clone());
     }
-
-    println!("{}: persist source as of {:?}", worker_index, as_of);
-    println!("{}: responsible for {:?}", worker_index, responsible_shards);
 
     // This source is split into two parts: a first part that sets up `async_stream` and a timely
     // source operator that the continuously reads from that stream.
@@ -87,6 +96,7 @@ where
     let async_stream = async_stream::try_stream!({
         let mut listens = Vec::with_capacity(responsible_shards.len());
         for (idx, shard_id) in responsible_shards.into_iter().enumerate() {
+            println!("READING FROM {:?}", shard_id);
             let mut read = persist_clients
                 .lock()
                 .await
@@ -100,11 +110,6 @@ where
             /// Aggressively downgrade `since`, to not hold back compaction.
             read.downgrade_since(as_of.clone()).await;
 
-            println!(
-                "{}: snapshot for {:?} as of {:?}",
-                worker_index, shard_id, as_of
-            );
-
             let mut snapshot_iter = read
                 .snapshot(as_of.clone())
                 .await
@@ -114,8 +119,6 @@ where
             while let Some(next) = snapshot_iter.next().await {
                 yield (idx, ListenEvent::Updates(next));
             }
-
-            println!("{}: cleared snapshot for {:?}", worker_index, shard_id);
 
             // Then, listen continously and yield any new updates. This loop is expected to never
             // finish.
@@ -172,11 +175,10 @@ where
                                     return SourceStatus::Done;
                                 }
                             } else {
-                                println!("Poll::Ready shard_idx {shard_idx}: {:?}", upper);
                                 progress_by_shard_idx.insert(shard_idx, upper.clone());
-                                let lower_bound: Antichain<u64> = dbg!(Antichain::from_iter(
+                                let lower_bound: Antichain<u64> = Antichain::from_iter(
                                     progress_by_shard_idx.values().cloned().flatten(),
-                                ));
+                                );
                                 cap_set.downgrade(lower_bound.iter().min().unwrap());
                             }
                         }

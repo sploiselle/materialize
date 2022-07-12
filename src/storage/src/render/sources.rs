@@ -125,13 +125,13 @@ where
     // support single-threaded ingestion only. Note that in all cases we want all
     // readers of the same source or same partition to reside on the same worker,
     // and only load-balance responsibility across distinct sources.
-    let active_read_worker = dbg!(if let SourceConnection::Kafka(_) = connection {
+    let active_read_worker = if let SourceConnection::Kafka(_) = connection {
         true
     } else {
         // TODO: This feels icky, but getting rid of hardcoding this difference between
         // Kafka and all other sources seems harder.
         crate::source::responsible_for(&id, scope.index(), scope.peers(), &PartitionId::None)
-    });
+    };
 
     let source_name = format!("{}-{}", connection.name(), id);
     let base_source_config = RawSourceCreationConfig {
@@ -249,34 +249,26 @@ where
             // connection, render the _decode_ part of the pipeline, that turns a raw data
             // stream into a `DecodeResult`.
             let (results, extra_token) = match ok_source {
-                SourceType::Delimited(source) => {
-                    println!("SourceType::Delimited");
-
-                    render_decode_delimited(
-                        &source,
-                        key_encoding,
-                        value_encoding,
-                        dataflow_debug_name,
-                        metadata_columns,
-                        &mut linear_operators,
-                        storage_state.decode_metrics.clone(),
-                        &storage_state.connection_context,
-                    )
-                }
-                SourceType::ByteStream(source) => {
-                    println!("SourceType::ByteStream");
-                    render_decode(
-                        &source,
-                        value_encoding,
-                        dataflow_debug_name,
-                        metadata_columns,
-                        &mut linear_operators,
-                        storage_state.decode_metrics.clone(),
-                        &storage_state.connection_context,
-                    )
-                }
+                SourceType::Delimited(source) => render_decode_delimited(
+                    &source,
+                    key_encoding,
+                    value_encoding,
+                    dataflow_debug_name,
+                    metadata_columns,
+                    &mut linear_operators,
+                    storage_state.decode_metrics.clone(),
+                    &storage_state.connection_context,
+                ),
+                SourceType::ByteStream(source) => render_decode(
+                    &source,
+                    value_encoding,
+                    dataflow_debug_name,
+                    metadata_columns,
+                    &mut linear_operators,
+                    storage_state.decode_metrics.clone(),
+                    &storage_state.connection_context,
+                ),
                 SourceType::AppendRow(source) => {
-                    println!("SourceType::AppendRow");
                     (
                         source.map(
                             |SourceOutput {
@@ -302,20 +294,17 @@ where
                         None,
                     )
                 }
-                SourceType::Row(source) => {
-                    println!("SourceType::Row");
-                    (
-                        source.map(|r| DecodeResult {
-                            key: None,
-                            value: Some(Ok((r.value, r.diff))),
-                            position: r.position,
-                            upstream_time_millis: r.upstream_time_millis,
-                            partition: r.partition,
-                            metadata: Row::default(),
-                        }),
-                        None,
-                    )
-                }
+                SourceType::Row(source) => (
+                    source.map(|r| DecodeResult {
+                        key: None,
+                        value: Some(Ok((r.value, r.diff))),
+                        position: r.position,
+                        upstream_time_millis: r.upstream_time_millis,
+                        partition: r.partition,
+                        metadata: Row::default(),
+                    }),
+                    None,
+                ),
             };
             if let Some(tok) = extra_token {
                 needed_tokens.push(Rc::new(tok));
@@ -385,7 +374,7 @@ where
                     let flattened_stream = flatten_results_prepend_keys(none_envelope, results);
 
                     let flattened_stream = flattened_stream.pass_through("decode", 1).map(
-                        |(val, time, diff)| match dbg!(val) {
+                        |(val, time, diff)| match val {
                             Ok((val, diff)) => (Ok(val), time, diff),
                             Err(e) => (Err(e), time, diff),
                         },

@@ -203,7 +203,7 @@ impl DataDecoder {
                 format.decode(data)
             }
             DataDecoderInner::Avro(avro) => avro.decode(bytes),
-            DataDecoderInner::Csv(csv) => dbg!(csv.decode(bytes)),
+            DataDecoderInner::Csv(csv) => csv.decode(bytes),
             DataDecoderInner::PreDelimited(format) => {
                 let result = format.decode(*bytes);
                 *bytes = &[];
@@ -333,7 +333,7 @@ fn try_decode(
     value: Option<&Vec<u8>>,
 ) -> Option<Result<Row, DecodeError>> {
     let value_buf = &mut value?.as_slice();
-    let value = dbg!(decoder.next(value_buf));
+    let value = decoder.next(value_buf);
     if value.is_ok() && !value_buf.is_empty() {
         let err = format!(
             "Unexpected bytes remaining for decoded value: {:?}",
@@ -588,7 +588,7 @@ where
                     // and break manually.
                     loop {
                         let old_value_cursor = *value_bytes_remaining;
-                        let value = match dbg!(value_decoder.next(value_bytes_remaining)) {
+                        let value = match value_decoder.next(value_bytes_remaining) {
                             Err(e) => Err(e),
                             Ok(None) => {
                                 let leftover = value_bytes_remaining.to_vec();
@@ -621,7 +621,7 @@ where
                         if value_bytes_remaining.is_empty() {
                             session.give(DecodeResult {
                                 key: None,
-                                value: dbg!(Some(value.map(|r| (r, 1)))),
+                                value: Some(value.map(|r| (r, 1))),
                                 position: position.into(),
                                 upstream_time_millis: *upstream_time_millis,
                                 partition: partition.clone(),
@@ -632,7 +632,7 @@ where
                         } else {
                             session.give(DecodeResult {
                                 key: None,
-                                value: dbg!(Some(value.map(|r| (r, 1)))),
+                                value: Some(value.map(|r| (r, 1))),
                                 position: position.into(),
                                 upstream_time_millis: *upstream_time_millis,
                                 partition: partition.clone(),

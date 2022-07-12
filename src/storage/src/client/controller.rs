@@ -516,16 +516,21 @@ where
 
         // Install collection state for each bound description.
         for (id, description) in collections {
+            let mut shards = vec![];
+            for _ in 0..dbg!(description
+                .ingestion
+                .as_ref()
+                .map(|desc| desc.storage_metadata.partitions)
+                .unwrap_or(1))
+            {
+                shards.push(Shard::new())
+            }
+            // for _ in 0..1 {
+            //     shards.push(Shard::new())
+            // }
             let metadata = CollectionMetadata {
                 persist_location: self.persist_location.clone(),
-                shards: vec![
-                    Shard::new();
-                    dbg!(description
-                        .ingestion
-                        .as_ref()
-                        .map(|desc| desc.storage_metadata.partitions)
-                        .unwrap_or(1))
-                ],
+                shards,
             };
             let metadata = METADATA_COLLECTION
                 .insert_without_overwrite(&mut self.state.stash, &id, metadata)

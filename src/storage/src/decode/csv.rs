@@ -95,20 +95,18 @@ impl CsvDecoderState {
                 // Success cases
                 csv_core::ReadRecordResult::Record | csv_core::ReadRecordResult::End => {
                     let result = {
-                        println!("\n\nself.ends_cursor {}", self.ends_cursor);
-                        println!("self.n_cols {}", self.n_cols);
                         let ends_valid = dbg!(self.ends_cursor - 1);
                         if ends_valid == 0 {
                             break Ok(None);
                         }
                         if ends_valid != self.n_cols {
                             self.events_error += 1;
-                            dbg!(Err(DecodeError::Text(format!(
+                            Err(DecodeError::Text(format!(
                                 "CSV error at record number {}: expected {} columns, got {}.",
                                 self.total_events(),
                                 self.n_cols,
                                 ends_valid
-                            ))))
+                            )))
                         } else {
                             match std::str::from_utf8(&self.output[0..self.output_cursor]) {
                                 Ok(output) => {
