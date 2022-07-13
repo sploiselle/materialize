@@ -161,6 +161,7 @@ message ProtoSourceDesc {
     ProtoSourceEnvelope envelope = 3;
     repeated ProtoIncludedColumnSource metadata_columns = 4;
     mz_proto.ProtoDuration ts_frequency = 5;
+    uint64 partitions = 6; 
 }
 
 message ProtoSourceConnection {

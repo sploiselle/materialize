@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -40,6 +42,7 @@ use timely::progress::frontier::{AntichainRef, MutableAntichain};
 use timely::progress::{Antichain, ChangeBatch, Timestamp};
 use tokio::sync::Mutex;
 use tokio_stream::StreamMap;
+use uuid::Uuid;
 
 use mz_build_info::BuildInfo;
 use mz_expr::PartitionId;
@@ -61,6 +64,8 @@ use crate::client::{
     StorageResponse, Update,
 };
 
+use super::sources::StorageMetadataInput;
+
 mod hosts;
 mod rehydration;
 
@@ -75,7 +80,7 @@ pub struct CollectionDescription {
     /// The schema of this collection
     pub desc: RelationDesc,
     /// The description of the source to ingest into this collection, if any.
-    pub ingestion: Option<IngestionDescription<()>>,
+    pub ingestion: Option<IngestionDescription<StorageMetadataInput>>,
     /// The address of a `storaged` process on which to install the source.
     ///
     /// If `None`, the controller manages the lifetime of the `storaged`
@@ -243,8 +248,8 @@ pub struct CollectionMetadata {
     pub persist_location: PersistLocation,
     /// The persist shard id of the remap collection used to reclock this collection
     pub remap_shard: ShardId,
-    /// The persist shard containing the contents of this storage collection
-    pub data_shard: ShardId,
+    /// The persist shards containing the contents of this storage collection
+    pub data_shards: Vec<ShardId>,
 }
 
 impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
@@ -252,12 +257,20 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
         ProtoCollectionMetadata {
             blob_uri: self.persist_location.blob_uri.clone(),
             consensus_uri: self.persist_location.consensus_uri.clone(),
-            data_shard: self.data_shard.to_string(),
+            data_shards: self
+                .data_shards
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
             remap_shard: self.remap_shard.to_string(),
         }
     }
 
     fn from_proto(value: ProtoCollectionMetadata) -> Result<Self, TryFromProtoError> {
+        let mut data_shards = Vec::with_capacity(value.data_shards.len());
+        for s in value.data_shards {
+            data_shards.push(s.parse().map_err(TryFromProtoError::InvalidShardId)?);
+        }
         Ok(CollectionMetadata {
             persist_location: PersistLocation {
                 blob_uri: value.blob_uri,
@@ -267,10 +280,7 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
                 .remap_shard
                 .parse()
                 .map_err(TryFromProtoError::InvalidShardId)?,
-            data_shard: value
-                .data_shard
-                .parse()
-                .map_err(TryFromProtoError::InvalidShardId)?,
+            data_shards,
         })
     }
 }
@@ -304,7 +314,7 @@ pub struct StorageControllerState<
     /// This is to prevent the re-binding of identifiers to other descriptions.
     pub(super) collections: BTreeMap<GlobalId, CollectionState<T>>,
     pub(super) stash: S,
-    pub(super) persist_handles: BTreeMap<GlobalId, PersistHandles<T>>,
+    pub(super) persist_handles: BTreeMap<GlobalId, BTreeMap<ShardId, PersistHandles<T>>>,
     stashed_response: Option<StorageResponse<T>>,
 }
 
@@ -477,27 +487,47 @@ where
 
         // Install collection state for each bound description.
         for (id, description) in collections {
+            let mut data_shards = vec![];
+            for _ in 0..dbg!(description
+                .ingestion
+                .as_ref()
+                .map(|desc| desc.storage_metadata.partitions)
+                .unwrap_or(1))
+            {
+                data_shards.push(ShardId::new())
+            }
+
             let metadata = CollectionMetadata {
                 persist_location: self.persist_location.clone(),
-                data_shard: ShardId::new(),
+                data_shards: dbg!(data_shards),
                 remap_shard: ShardId::new(),
             };
             let metadata = METADATA_COLLECTION
                 .insert_without_overwrite(&mut self.state.stash, &id, metadata)
                 .await?;
 
-            let (write, read) = self
-                .persist_client
-                .open(metadata.data_shard)
-                .await
-                .expect("invalid persist usage");
+            let mut persist_handles_by_shard = BTreeMap::default();
 
-            let collection_state =
-                CollectionState::new(description.clone(), read.since().clone(), metadata);
+            for shard_id in &metadata.data_shards {
+                let (write, read) = self
+                    .persist_client
+                    .open(*shard_id)
+                    .await
+                    .expect("invalid persist usage");
+                persist_handles_by_shard.insert(*shard_id, PersistHandles { read, write });
+            }
+
+            let since = persist_handles_by_shard
+                .values()
+                .map(|PersistHandles { read, write: _ }| read.since().clone())
+                .reduce(|accum, read| accum.meet(&read))
+                .expect("must have shards");
+
+            let collection_state = CollectionState::new(description.clone(), since, metadata);
 
             self.state
                 .persist_handles
-                .insert(id, PersistHandles { read, write });
+                .insert(id, persist_handles_by_shard);
 
             self.state.collections.insert(id, collection_state);
 
@@ -522,12 +552,24 @@ where
                 for t in remap_write.upper().elements() {
                     resume_upper.insert(t.clone());
                 }
-                let data_write = self
-                    .persist_client
-                    .open_writer::<SourceData, (), T, Diff>(metadata.data_shard)
-                    .await
-                    .unwrap();
-                for t in data_write.upper().elements() {
+
+                let mut uppers = Vec::with_capacity(metadata.data_shards.len());
+
+                for shard_id in metadata.data_shards {
+                    let writer = self
+                        .persist_client
+                        .open_writer::<SourceData, (), T, Diff>(shard_id)
+                        .await
+                        .unwrap();
+                    uppers.push(writer.upper().clone());
+                }
+
+                let collection_upper = uppers
+                    .into_iter()
+                    .reduce(|accum, upper| accum.join(&upper))
+                    .expect("at least one shard");
+
+                for t in collection_upper.elements() {
                     resume_upper.insert(t.clone());
                 }
 
@@ -600,7 +642,10 @@ where
 
         let mut appends_by_id = HashMap::new();
         for (id, (updates, upper)) in updates_by_id {
-            let current_upper = self.state.persist_handles[&id].write.upper().clone();
+            let mut current_upper = Antichain::from_elem(T::minimum());
+            for PersistHandles { read: _, write } in self.state.persist_handles[&id].values() {
+                current_upper.join_assign(write.upper());
+            }
             appends_by_id.insert(id, (updates.into_iter().flatten(), current_upper, upper));
         }
 
@@ -613,11 +658,15 @@ where
         // Instead, we first group the update by ID above and then iterate
         // through all available write handles and see if there are any updates
         // for it. If yes, we send them all in one go.
-        for (id, persist_handle) in self.state.persist_handles.iter_mut() {
+        for (id, persist_handles) in self.state.persist_handles.iter_mut() {
             let (updates, upper, new_upper) = match appends_by_id.remove(id) {
                 Some(updates) => updates,
                 None => continue,
             };
+
+            let shards = persist_handles.keys().cloned().collect::<Vec<_>>();
+            assert!(shards.len() == 1);
+            let PersistHandles { read: _, write } = persist_handles.get_mut(&shards[0]).unwrap();
 
             let new_upper = Antichain::from_elem(new_upper);
 
@@ -625,19 +674,17 @@ where
                 .into_iter()
                 .map(|u| ((SourceData(Ok(u.row)), ()), u.timestamp, u.diff));
 
-            let write = &mut persist_handle.write;
-
             futs.push(async move {
+                let mut change_batch = ChangeBatch::new();
+                change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
+                change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
+
                 write
-                    .compare_and_append(updates, upper.clone(), new_upper.clone())
+                    .compare_and_append(updates, upper, new_upper)
                     .await
                     .expect("cannot append updates")
                     .expect("cannot append updates")
                     .or(Err(StorageError::InvalidUpper(*id)))?;
-
-                let mut change_batch = ChangeBatch::new();
-                change_batch.extend(new_upper.iter().cloned().map(|t| (t, 1)));
-                change_batch.extend(upper.iter().cloned().map(|t| (t, -1)));
 
                 Ok::<_, StorageError>((*id, change_batch))
             })
@@ -655,19 +702,21 @@ where
         id: GlobalId,
         as_of: Self::Timestamp,
     ) -> Result<Vec<(Row, Diff)>, StorageError> {
-        let as_of = Antichain::from_elem(as_of);
-        let mut snapshot = self.state.persist_handles[&id]
-            .read
-            .snapshot(as_of)
-            .await
-            .map_err(|_| StorageError::ReadBeforeSince(id))?;
-
         let mut contents = Vec::new();
+        let as_of = Antichain::from_elem(as_of);
 
-        while let Some(updates) = snapshot.next().await {
-            for ((source_data, _pid), _ts, diff) in updates {
-                let row = source_data.expect("cannot read snapshot").0?;
-                contents.push((row, diff));
+        // TODO: parallelize reads
+        for (_shard_id, PersistHandles { read, write }) in &self.state.persist_handles[&id] {
+            let mut snapshot = read
+                .snapshot(as_of.clone())
+                .await
+                .map_err(|_| StorageError::ReadBeforeSince(id))?;
+
+            while let Some(updates) = snapshot.next().await {
+                for ((source_data, _pid), _ts, diff) in updates {
+                    let row = source_data.expect("cannot read snapshot").0?;
+                    contents.push((row, diff));
+                }
             }
         }
 
@@ -788,7 +837,9 @@ where
             }
 
             let fut = async move {
-                persist_handle.read.downgrade_since(frontier.clone()).await;
+                for (_, PersistHandles { read, write: _ }) in persist_handle.iter_mut() {
+                    read.downgrade_since(frontier.clone()).await
+                }
                 (*id, frontier)
             };
 

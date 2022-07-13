@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use differential_dataflow::{Collection, Hashable};
+use itertools::Itertools;
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 use timely::dataflow::Scope;
@@ -61,9 +62,24 @@ where
 
         let persist_clients = Arc::clone(&compute_state.persist_clients);
         let persist_location = self.storage_metadata.persist_location.clone();
-        let shard_id = self.storage_metadata.data_shard;
 
-        let operator_name = format!("persist_sink({})", shard_id);
+        let worker_index = scope.index();
+        let total_shards = self.storage_metadata.data_shards.len();
+        let mut shard_counter = scope.index();
+
+        let mut responsible_shards = vec![];
+        while shard_counter < total_shards {
+            responsible_shards.push(self.storage_metadata.data_shards[shard_counter]);
+            shard_counter += scope.peers();
+        }
+
+        let operator_name = format!(
+            "persist_sink({})",
+            responsible_shards
+                .iter()
+                .map(|shard| shard.to_string())
+                .join(",")
+        );
         let mut persist_op = OperatorBuilder::new(operator_name, scope.clone());
 
         // We want exactly one worker (in the cluster) to send all the data to persist. It's fine
@@ -108,18 +124,38 @@ where
             move |_capabilities, frontiers, scheduler| async move {
                 let mut buffer = Vec::new();
                 let mut err_buffer = Vec::new();
-                let mut stash: HashMap<_, Vec<_>> = HashMap::new();
+                let mut stash: HashMap<_, HashMap<usize, Vec<_>>> = HashMap::new();
 
-                // TODO(aljoscha): We need to figure out what to do with error results from these calls.
-                let mut write = persist_clients
+                let mut write_handles = vec![];
+
+                let persist_client = persist_clients
                     .lock()
                     .await
                     .open(persist_location)
                     .await
-                    .expect("could not open persist client")
-                    .open_writer::<SourceData, (), Timestamp, Diff>(shard_id)
-                    .await
-                    .expect("could not open persist shard");
+                    .expect("could not open persist client");
+
+                for data_shard in responsible_shards {
+                    println!("data_shard {:?}", data_shard);
+                    let write = persist_client
+                        .open_writer::<SourceData, (), Timestamp, Diff>(data_shard.clone())
+                        .await
+                        .expect("could not open persist shard");
+                    // upper.join_assign(write.upper());
+                    let u = dbg!(write.upper().clone());
+                    write_handles.push((write, u));
+                }
+
+                // // TODO(aljoscha): We need to figure out what to do with error results from these calls.
+                // let mut write = persist_clients
+                //     .lock()
+                //     .await
+                //     .open(persist_location)
+                //     .await
+                //     .expect("could not open persist client")
+                //     .open_writer::<SourceData, (), Timestamp, Diff>(shard_id)
+                //     .await
+                //     .expect("could not open persist shard");
 
                 while scheduler.notified().await {
                     let mut input_frontier = Antichain::new();
@@ -127,7 +163,7 @@ where
                         input_frontier.extend(frontier);
                     }
 
-                    if !active_write_worker
+                    if write_handles.is_empty()
                         || token_weak.upgrade().is_none()
                         || shared_frontier.borrow().is_empty()
                     {
@@ -140,11 +176,23 @@ where
                         for ((key, value), ts, diff) in buffer.drain(..) {
                             assert!(key.is_none(), "persist_source does not support keys");
                             let row = value.expect("persist_source must have values");
-                            stash.entry(ts).or_default().push((
-                                (SourceData(Ok(row)), ()),
-                                ts,
-                                diff,
-                            ));
+
+                            let write_handle_idx = row.hashed() as usize % write_handles.len();
+                            let (write, _upper) = &write_handles[write_handle_idx];
+
+                            stash
+                                .entry(ts)
+                                .or_insert_with(|| {
+                                    let mut writes_per_handle = HashMap::new();
+                                    for (i, (write, _upper)) in write_handles.iter_mut().enumerate()
+                                    {
+                                        writes_per_handle.insert(i, vec![]);
+                                    }
+                                    writes_per_handle
+                                })
+                                .get_mut(&write_handle_idx)
+                                .unwrap()
+                                .push(((SourceData(Ok(row)), ()), ts, diff));
                         }
                     });
 
@@ -152,11 +200,20 @@ where
                         data.swap(&mut err_buffer);
 
                         for (error, ts, diff) in err_buffer.drain(..) {
-                            stash.entry(ts).or_default().push((
-                                (SourceData(Err(error)), ()),
-                                ts,
-                                diff,
-                            ));
+                            let write_handle_idx = error.hashed() as usize % write_handles.len();
+
+                            stash
+                                .entry(ts)
+                                .or_insert_with(|| {
+                                    let mut writes_per_handle = HashMap::new();
+                                    for i in 0..write_handles.len() {
+                                        writes_per_handle.insert(i, vec![]);
+                                    }
+                                    writes_per_handle
+                                })
+                                .get_mut(&write_handle_idx)
+                                .unwrap()
+                                .push(((SourceData(Err(error)), ()), ts, diff));
                         }
                     });
 
@@ -170,11 +227,15 @@ where
                         // also advances the frontier.
                         let lower = shared_frontier.borrow().clone();
                         // TODO(aljoscha): Figure out how errors from this should be reported.
-                        write
-                            .append(updates, lower, input_frontier.clone())
-                            .await
-                            .expect("cannot append updates")
-                            .expect("invalid/outdated upper");
+                        for (write_handle_idx, updates) in updates {
+                            let (write_handle, _upper) =
+                                write_handles.get_mut(*write_handle_idx).unwrap();
+                            write_handle
+                                .append(updates, lower.clone(), input_frontier.clone())
+                                .await
+                                .expect("cannot append updates")
+                                .expect("invalid/outdated upper");
+                        }
 
                         *shared_frontier.borrow_mut() = input_frontier.clone();
                     } else {
