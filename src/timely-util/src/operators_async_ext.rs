@@ -196,7 +196,7 @@ macro_rules! async_op {
                 // rebind to mutable references to make sure they can't be accidentally dropped
                 #[allow(unused_mut)]
                 let mut $capabilities = &mut capabilities;
-                let $frontiers = (*frontiers.borrow()).clone();
+                let $frontiers = std::cell::RefCell::borrow(&*frontiers).clone();
 
                 if !async { $body }.await && $frontiers.iter().all(|f| f.is_empty()) {
                     break;

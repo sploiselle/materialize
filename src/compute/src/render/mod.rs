@@ -163,7 +163,7 @@ pub fn build_compute_dataflow<A: Allocate>(
             for (source_id, (source, _monotonic)) in dataflow.source_imports.iter() {
                 // Note: For correctness, we require that sources only emit times advanced by
                 // `dataflow.as_of`. `persist_source` is documented to provide this guarantee.
-                let (ok_stream, err_stream, token) = persist_source::persist_source(
+                let (ok_stream, err_stream, token) = persist_source::persist_source_listen_split(
                     region,
                     Arc::clone(&compute_state.persist_clients),
                     source.storage_metadata.clone(),

@@ -61,6 +61,13 @@ message ProtoStateRollup {
     repeated ProtoWriterState writers = 9;
 }
 
+message ProtoReadEnrichedHollowBatch {
+    string shard_id = 1;
+    ProtoU64Antichain as_of = 2;
+    ProtoU64Antichain frontier = 3;
+    ProtoHollowBatch batch = 4;
+}
+
 message ProtoSnapshotSplit {
     string reader_id = 4;
     string shard_id = 1;

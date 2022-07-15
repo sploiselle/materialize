@@ -331,7 +331,7 @@ where
                             let upper_ts = resume_upper.as_option().copied().unwrap();
                             let as_of = Antichain::from_elem(upper_ts.saturating_sub(1));
                             let (tx_source_ok_stream, tx_source_err_stream, tx_token) =
-                                persist_source::persist_source(
+                                persist_source::persist_source_listen_split(
                                     scope,
                                     persist_clients,
                                     tx_storage_metadata,

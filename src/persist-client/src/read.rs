@@ -34,11 +34,11 @@ use mz_persist::retry::Retry;
 use mz_persist_types::{Codec, Codec64};
 
 use crate::error::InvalidUsage;
-use crate::r#impl::encoding::SerdeSnapshotSplit;
+use crate::r#impl::encoding::{SerdeReadEnrichedHollowBatch, SerdeSnapshotSplit};
 use crate::r#impl::machine::{retry_external, Machine};
 use crate::r#impl::metrics::Metrics;
 use crate::r#impl::paths::PartialBlobKey;
-use crate::r#impl::state::Since;
+use crate::r#impl::state::{HollowBatch, Since};
 use crate::{PersistConfig, ShardId};
 
 /// An opaque identifier for a reader of a persist durable TVC (aka shard).
@@ -60,6 +60,126 @@ impl std::fmt::Debug for ReaderId {
 impl ReaderId {
     pub(crate) fn new() -> Self {
         ReaderId(*Uuid::new_v4().as_bytes())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T: Timestamp + Codec64",
+    deserialize = "T: Timestamp + Codec64"
+))]
+#[serde(
+    into = "SerdeReadEnrichedHollowBatch",
+    from = "SerdeReadEnrichedHollowBatch"
+)]
+/// A `HollowBatch` plus the metadata necessary to apply the appropriate read
+/// style's semantics (i.e. snapshotting or listening).
+pub struct ReaderEnrichedHollowBatch<T> {
+    pub(crate) shard_id: ShardId,
+    pub(crate) as_of: Antichain<T>,
+    pub(crate) frontier: Option<Antichain<T>>,
+    pub(crate) batch: HollowBatch<T>,
+}
+
+impl<T> ReaderEnrichedHollowBatch<T>
+where
+    T: Timestamp + Lattice + Codec64,
+{
+    /// Signals whether or not `self` should downgrade the `Capability` its
+    /// presented alongside.
+    pub fn generate_progress(&self) -> Option<Antichain<T>> {
+        // As-is only `Listen`-style readers have a `frontier` of `Some`. (TODO:
+        // make this more well structured)
+        match self.frontier {
+            Some(_) => Some(self.batch.desc.upper().clone()),
+            None => None,
+        }
+    }
+}
+
+/// Fetches and filters the embedded `HollowBatch`.
+///
+/// See [ReadHandle::hollow_batch] for details.
+#[derive(Debug)]
+pub struct HollowBatchFetcher<K, V, T, D> {
+    metrics: Arc<Metrics>,
+    shard_id: ShardId,
+    as_of: Antichain<T>,
+    frontier: Option<Antichain<T>>,
+    batch: HollowBatch<T>,
+    blob: Arc<dyn Blob + Send + Sync>,
+    _phantom: PhantomData<(K, V, T, D)>,
+}
+
+impl<K, V, T, D> HollowBatchFetcher<K, V, T, D>
+where
+    K: Debug + Codec,
+    V: Debug + Codec,
+    T: Timestamp + Lattice + Codec64,
+    D: Semigroup + Codec64,
+{
+    /// The frontier at which we're outputting the contents of the shard.
+    pub fn as_of(&self) -> &Antichain<T> {
+        &self.as_of
+    }
+
+    /// Fetches a `HollowBatch` from S3 and applies the appropriate
+    /// `as_of`/`frontier` filtering.
+    #[instrument(level = "debug", name = "snap::next", skip_all, fields(shard = %self.shard_id))]
+    pub async fn fetch(&mut self) -> Vec<ListenEvent<K, V, T, D>> {
+        trace!("HollowBatchFetcher::fetch");
+        let mut ret = Vec::with_capacity(self.batch.keys.len() * 2 + 1);
+
+        let batch = &self.batch;
+
+        let mut updates = Vec::new();
+        for key in batch.keys.iter() {
+            fetch_batch_part(
+                &self.shard_id,
+                self.blob.as_ref(),
+                &self.metrics,
+                &key,
+                &batch.desc.clone(),
+                |k, v, mut t, d| {
+                    match &self.frontier {
+                        // These are listen events
+                        Some(frontier) => {
+                            // This time is covered by a snapshot
+                            if !self.as_of.less_than(&t) {
+                                return;
+                            }
+
+                            if !frontier.less_equal(&t) {
+                                return;
+                            }
+                        }
+                        // These are snapshot events
+                        None => {
+                            // This time is covered by a listen
+                            if self.as_of.less_than(&t) {
+                                return;
+                            }
+                            t.advance_by(self.as_of.borrow())
+                        }
+                    }
+
+                    let k = self.metrics.codecs.key.decode(|| K::decode(k));
+                    let v = self.metrics.codecs.val.decode(|| V::decode(v));
+                    let d = D::decode(d);
+                    updates.push(((k, v), t, d));
+                },
+            )
+            .await;
+        }
+
+        if !updates.is_empty() {
+            ret.push(ListenEvent::Updates(updates));
+        }
+        if self.frontier.is_some() {
+            ret.push(ListenEvent::Progress(batch.desc.upper().clone()));
+        }
+
+        ret
     }
 }
 
@@ -440,6 +560,34 @@ where
         // because Listen replays them at the original fidelity.
         (updates, frontier)
     }
+
+    /// Returns a `HollowBatch` enriched with this metadata appropriate for
+    /// listening-style behavior.
+    #[instrument(level = "debug", name = "listen::next", skip_all, fields(shard = %self.handle.machine.shard_id()))]
+    pub async fn listen_hollow_batch(&mut self) -> ReaderEnrichedHollowBatch<T> {
+        trace!("Listen::listen_hollow_batch frontier={:?} ", self.frontier);
+        // Hack: Keep this method `&self` instead of `&mut self` by cloning the
+        // cached copy of the state, updating it, and throwing it away
+        // afterward.
+        let batch = self
+            .handle
+            .machine
+            .clone()
+            .next_listen_batch(&self.frontier)
+            .await;
+        let new_frontier = batch.desc.upper().clone();
+        let r = ReaderEnrichedHollowBatch {
+            shard_id: self.handle.machine.shard_id(),
+            as_of: self.as_of.clone(),
+            // The HollowBatch should behave as if the frontier of the machine
+            // it's operating from is the upper of the _last_ batch.
+            frontier: Some(self.frontier.clone()),
+            batch,
+        };
+
+        self.frontier = new_frontier;
+        r
+    }
 }
 
 /// A "capability" granting the ability to read the state of some shard at times
@@ -675,6 +823,56 @@ where
             explicitly_expired: false,
         };
         let iter = SnapshotIter::new(handle, split);
+        Ok(iter)
+    }
+
+    /// Returns a `HollowBatch` enriched with this metadata appropriate for
+    /// snapshot-style behavior.
+    #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
+    pub async fn snapshot_hollow_batch(
+        &self,
+        as_of: Antichain<T>,
+    ) -> Result<Vec<ReaderEnrichedHollowBatch<T>>, Since<T>> {
+        trace!("ReadHandle::snapshot_hollow_batch as_of={:?}", as_of);
+        // Hack: Keep this method `&self` instead of `&mut self` by cloning the
+        // cached copy of the state, updating it, and throwing it away
+        // afterward.
+        let batches = self.machine.clone().snapshot(&as_of).await?;
+        Ok(batches
+            .into_iter()
+            .filter(|batch| batch.len > 0)
+            .map(|batch| ReaderEnrichedHollowBatch {
+                shard_id: self.machine.shard_id(),
+                as_of: as_of.clone(),
+                frontier: None,
+                batch,
+            })
+            .collect::<Vec<_>>())
+    }
+
+    /// Trade in an exchange-able [SnapshotSplit] for an iterator over the data
+    /// it represents.
+    #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
+    pub async fn hollow_batch_fetcher(
+        &self,
+        split: ReaderEnrichedHollowBatch<T>,
+    ) -> Result<HollowBatchFetcher<K, V, T, D>, InvalidUsage<T>> {
+        trace!("ReadHandle::snapshot split={:?}", split);
+        if split.shard_id != self.machine.shard_id() {
+            return Err(InvalidUsage::SnapshotNotFromThisShard {
+                snapshot_shard: split.shard_id,
+                handle_shard: self.machine.shard_id(),
+            });
+        }
+        let iter = HollowBatchFetcher {
+            metrics: Arc::clone(&self.metrics),
+            shard_id: split.shard_id,
+            as_of: split.as_of,
+            frontier: split.frontier,
+            batch: split.batch,
+            blob: Arc::clone(&self.blob),
+            _phantom: PhantomData,
+        };
         Ok(iter)
     }
 
@@ -1026,12 +1224,14 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_split_exchange_data() {
-        // The whole point of SnapshotSplit is that it can be exchanged between
+    fn split_exchange_data() {
+        // The whole point of SnapshotSplit and ListenSplit is that it can be exchanged between
         // timely workers, including over the network. Enforce then that it
         // implements ExchangeData.
         fn is_exchange_data<T: ExchangeData>() {}
         is_exchange_data::<SnapshotSplit<u64>>();
         is_exchange_data::<SnapshotSplit<i64>>();
+        is_exchange_data::<ReaderEnrichedHollowBatch<u64>>();
+        is_exchange_data::<ReaderEnrichedHollowBatch<i64>>();
     }
 }
