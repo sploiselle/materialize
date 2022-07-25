@@ -34,7 +34,9 @@ use mz_persist::retry::Retry;
 use mz_persist_types::{Codec, Codec64};
 
 use crate::error::InvalidUsage;
-use crate::r#impl::encoding::{SerdeReadEnrichedHollowBatch, SerdeSnapshotSplit};
+use crate::r#impl::encoding::{
+    SerdeHollowBatchReaderMetadata, SerdeReadEnrichedHollowBatch, SerdeSnapshotSplit,
+};
 use crate::r#impl::machine::{retry_external, Machine};
 use crate::r#impl::metrics::Metrics;
 use crate::r#impl::paths::PartialBlobKey;
@@ -63,6 +65,32 @@ impl ReaderId {
     }
 }
 
+/// TODO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T: Timestamp + Codec64",
+    deserialize = "T: Timestamp + Codec64"
+))]
+#[serde(
+    into = "SerdeHollowBatchReaderMetadata",
+    from = "SerdeHollowBatchReaderMetadata"
+)]
+pub enum HollowBatchReaderMetadata<T> {
+    /// When fetching the `HollowBatch`, treat it as if it originated from a snapshot.
+    Snapshot {
+        /// Return all values with time leq `as_of`.
+        as_of: Antichain<T>,
+    },
+    /// When fetching the `HollowBatch`, treat it as if it originated from a
+    /// listen.
+    Listen {
+        /// Return all values with time in advance of `as_of`.
+        as_of: Antichain<T>,
+        /// Return all values with time leq `frontier`.
+        frontier: Antichain<T>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "T: Timestamp + Codec64",
@@ -76,8 +104,7 @@ impl ReaderId {
 /// style's semantics (i.e. snapshotting or listening).
 pub struct ReaderEnrichedHollowBatch<T> {
     pub(crate) shard_id: ShardId,
-    pub(crate) as_of: Antichain<T>,
-    pub(crate) frontier: Option<Antichain<T>>,
+    pub(crate) reader_metadata: HollowBatchReaderMetadata<T>,
     pub(crate) batch: HollowBatch<T>,
 }
 
@@ -88,11 +115,9 @@ where
     /// Signals whether or not `self` should downgrade the `Capability` its
     /// presented alongside.
     pub fn generate_progress(&self) -> Option<Antichain<T>> {
-        // As-is only `Listen`-style readers have a `frontier` of `Some`. (TODO:
-        // make this more well structured)
-        match self.frontier {
-            Some(_) => Some(self.batch.desc.upper().clone()),
-            None => None,
+        match self.reader_metadata {
+            HollowBatchReaderMetadata::Listen { .. } => Some(self.batch.desc.upper().clone()),
+            HollowBatchReaderMetadata::Snapshot { .. } => None,
         }
     }
 }
@@ -578,10 +603,12 @@ where
         let new_frontier = batch.desc.upper().clone();
         let r = ReaderEnrichedHollowBatch {
             shard_id: self.handle.machine.shard_id(),
-            as_of: self.as_of.clone(),
-            // The HollowBatch should behave as if the frontier of the machine
-            // it's operating from is the upper of the _last_ batch.
-            frontier: Some(self.frontier.clone()),
+            reader_metadata: HollowBatchReaderMetadata::Listen {
+                as_of: self.as_of.clone(),
+                // The HollowBatch should behave as if the frontier of the machine
+                // it's operating from is the upper of the _last_ batch.
+                frontier: self.frontier.clone(),
+            },
             batch,
         };
 
@@ -843,8 +870,9 @@ where
             .filter(|batch| batch.len > 0)
             .map(|batch| ReaderEnrichedHollowBatch {
                 shard_id: self.machine.shard_id(),
-                as_of: as_of.clone(),
-                frontier: None,
+                reader_metadata: HollowBatchReaderMetadata::Snapshot {
+                    as_of: as_of.clone(),
+                },
                 batch,
             })
             .collect::<Vec<_>>())
@@ -855,25 +883,68 @@ where
     #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
     pub async fn hollow_batch_fetcher(
         &self,
-        split: ReaderEnrichedHollowBatch<T>,
-    ) -> Result<HollowBatchFetcher<K, V, T, D>, InvalidUsage<T>> {
-        trace!("ReadHandle::snapshot split={:?}", split);
-        if split.shard_id != self.machine.shard_id() {
+        batch: ReaderEnrichedHollowBatch<T>,
+    ) -> Result<Vec<ListenEvent<K, V, T, D>>, InvalidUsage<T>> {
+        trace!("ReadHandle::hollow_batch_fetcher");
+        if batch.shard_id != self.machine.shard_id() {
             return Err(InvalidUsage::SnapshotNotFromThisShard {
-                snapshot_shard: split.shard_id,
+                snapshot_shard: batch.shard_id,
                 handle_shard: self.machine.shard_id(),
             });
         }
-        let iter = HollowBatchFetcher {
-            metrics: Arc::clone(&self.metrics),
-            shard_id: split.shard_id,
-            as_of: split.as_of,
-            frontier: split.frontier,
-            batch: split.batch,
-            blob: Arc::clone(&self.blob),
-            _phantom: PhantomData,
-        };
-        Ok(iter)
+
+        let mut ret = Vec::with_capacity(batch.batch.keys.len() * 2 + 1);
+
+        let mut updates = Vec::new();
+        for key in batch.batch.keys.iter() {
+            fetch_batch_part(
+                &batch.shard_id,
+                self.blob.as_ref(),
+                &self.metrics,
+                &key,
+                &batch.batch.desc.clone(),
+                |k, v, mut t, d| {
+                    match &batch.reader_metadata {
+                        HollowBatchReaderMetadata::Listen { as_of, frontier } => {
+                            // This time is covered by a snapshot
+                            if !as_of.less_than(&t) {
+                                return;
+                            }
+
+                            if !frontier.less_equal(&t) {
+                                return;
+                            }
+                        }
+                        HollowBatchReaderMetadata::Snapshot { as_of } => {
+                            // This time is covered by a listen
+                            if as_of.less_than(&t) {
+                                return;
+                            }
+                            t.advance_by(as_of.borrow())
+                        }
+                    }
+
+                    let k = self.metrics.codecs.key.decode(|| K::decode(k));
+                    let v = self.metrics.codecs.val.decode(|| V::decode(v));
+                    let d = D::decode(d);
+                    updates.push(((k, v), t, d));
+                },
+            )
+            .await;
+        }
+
+        if !updates.is_empty() {
+            ret.push(ListenEvent::Updates(updates));
+        }
+
+        if matches!(
+            batch.reader_metadata,
+            HollowBatchReaderMetadata::Listen { .. }
+        ) {
+            ret.push(ListenEvent::Progress(batch.batch.desc.upper().clone()));
+        }
+
+        Ok(ret)
     }
 
     /// Returns an independent [ReadHandle] with a new [ReaderId] but the same

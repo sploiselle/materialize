@@ -61,11 +61,45 @@ message ProtoStateRollup {
     repeated ProtoWriterState writers = 9;
 }
 
+// message ProtoComputeResponse {
+//     message ProtoPeekResponseKind {
+//         mz_proto.ProtoU128 id = 1;
+//         ProtoPeekResponse resp = 2;
+//     map<string, string> otel_ctx = 3;
+//     }
+// 
+//     message ProtoTailResponseKind {
+//         mz_repr.global_id.ProtoGlobalId id = 1;
+//         ProtoTailResponse resp = 2;
+//     }
+// 
+//     oneof kind {
+//         mz_storage.protocol.client.ProtoFrontierUppersKind frontier_uppers = 1;
+//         ProtoPeekResponseKind peek_response = 2;
+//         ProtoTailResponseKind tail_response = 3;
+//     }
+// }
+
+message ProtoHollowBatchReaderMetadata {
+    message ProtoHollowBatchReaderMetadataSnapshot {
+        ProtoU64Antichain as_of = 1;
+    }
+
+    message ProtoHollowBatchReaderMetadataListen {
+        ProtoU64Antichain as_of = 1;
+        ProtoU64Antichain frontier = 2;
+    }
+
+    oneof kind {
+        ProtoHollowBatchReaderMetadataSnapshot snapshot = 1;
+        ProtoHollowBatchReaderMetadataListen listen = 2;
+    }
+}
+
 message ProtoReadEnrichedHollowBatch {
     string shard_id = 1;
-    ProtoU64Antichain as_of = 2;
-    ProtoU64Antichain frontier = 3;
-    ProtoHollowBatch batch = 4;
+    ProtoHollowBatchReaderMetadata reader_metadata = 2;
+    ProtoHollowBatch batch = 3;
 }
 
 message ProtoSnapshotSplit {

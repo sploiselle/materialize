@@ -377,12 +377,11 @@ where
             while let Some((cap, data)) = input.next() {
                 let mut cap = cap.retain();
                 for (_idx, batch) in data.iter() {
-                    let mut fetcher = read
+                    for update in read
                         .hollow_batch_fetcher(batch.clone())
                         .await
-                        .expect("listen iter cannot fail");
-
-                    for update in fetcher.fetch().await {
+                        .expect("listen iter cannot fail")
+                    {
                         match dbg!(update) {
                             ListenEvent::Progress(upper) => match upper.into_option() {
                                 Some(ts) => {
