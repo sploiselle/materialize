@@ -263,7 +263,6 @@ where
         crate::source::util::source(scope, "persist_source".to_string(), move |info| {
             let waker_activator = Arc::new(scope.sync_activator_for(&info.address[..]));
             let waker = futures_util::task::waker(waker_activator);
-            let activator = scope.activator_for(&info.address[..]);
 
             // There is a bit of a mismatch: listening on a ReadHandle will give us an Antichain<T>
             // as a frontier in `Progress` messages while a timely source usually only has a single
@@ -277,9 +276,6 @@ where
 
             move |cap, output| {
                 let mut context = Context::from_waker(&waker);
-                // Bound execution of operator to prevent a single operator from hogging
-                // the CPU if there are many messages to process
-                let timer = Instant::now();
 
                 let mut i = 0;
 
@@ -310,11 +306,6 @@ where
                         }
                         None => return SourceStatus::Done,
                     }
-
-                    if timer.elapsed() > YIELD_INTERVAL {
-                        activator.activate();
-                        break;
-                    }
                 }
 
                 SourceStatus::Alive
@@ -322,11 +313,16 @@ where
         });
 
     let mut builder = OperatorBuilder::new("partitioned reader".to_string(), scope.clone());
+    let operator_info = builder.operator_info();
     let dist = |&(i, _): &(usize, ReaderEnrichedHollowBatch<u64>)| i as u64;
     let mut input = builder.new_input(&inner, Exchange::new(dist));
     let (mut output, output_stream) = builder.new_output();
 
     let mut current_ts = 0;
+
+    // // Bound execution of operator to prevent a single operator from hogging
+    // // the CPU if there are many messages to process
+    let activator = scope.activator_for(&operator_info.address[..]);
 
     builder.build_async(
         scope.clone(),
@@ -349,6 +345,9 @@ where
             initial_capabilities.clear();
 
             let mut output_handle = output.activate();
+
+            let timer = Instant::now();
+
             while let Some((cap, data)) = input.next() {
                 let mut cap = cap.retain();
                 for (_idx, batch) in data.iter() {
@@ -376,6 +375,11 @@ where
                                 let mut session = output_handle.session(&cap);
                                 session.give_vec(&mut updates);
                             }
+                        }
+
+                        if timer.elapsed() > YIELD_INTERVAL {
+                            activator.activate();
+                            break;
                         }
                     }
                 }
