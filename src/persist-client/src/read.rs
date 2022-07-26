@@ -372,6 +372,123 @@ where
     }
 }
 
+/// A snapshot of all times up to `as_of`, followed by a listen of all updates.
+#[derive(Debug)]
+pub struct Subscribe<K, V, T, D>
+where
+    T: Timestamp + Lattice + Codec64,
+    // These are only here so we can use them in the auto-expiring `Drop` impl.
+    K: Debug + Codec,
+    V: Debug + Codec,
+    D: Semigroup + Codec64,
+{
+    handle: ReadHandle<K, V, T, D>,
+    as_of: Antichain<T>,
+    snapshot_mode: bool,
+
+    since: Antichain<T>,
+    frontier: Antichain<T>,
+}
+
+impl<K, V, T, D> Subscribe<K, V, T, D>
+where
+    K: Debug + Codec,
+    V: Debug + Codec,
+    T: Timestamp + Lattice + Codec64,
+    D: Semigroup + Codec64,
+{
+    async fn new(handle: ReadHandle<K, V, T, D>, as_of: Antichain<T>) -> Self {
+        let mut ret = Subscribe {
+            handle,
+            since: as_of.clone(),
+            frontier: as_of.clone(),
+            as_of,
+            snapshot_mode: true,
+        };
+
+        // This subscription only needs to distinguish things after its frontier
+        // (initially as_of although the frontier is inclusive and the as_of
+        // isn't). Be a good citizen and downgrade early.
+        ret.handle.downgrade_since(ret.since.clone()).await;
+        ret
+    }
+
+    /// Returns a `HollowBatch` enriched with this metadata appropriate for
+    /// snapshot-style behavior.
+    #[instrument(level = "debug", skip_all, fields(shard = %self.handle.machine.shard_id()))]
+    pub async fn next(&mut self) -> Result<Vec<ReaderEnrichedHollowBatch<T>>, Since<T>> {
+        trace!(
+            "Subscribe::next as_of={:?}, frontier={:?}",
+            self.as_of,
+            self.frontier
+        );
+
+        if self.snapshot_mode {
+            // Snapshot mode
+            let batches = self.handle.machine.snapshot(&self.as_of).await?;
+            let enriched_batches = batches
+                .into_iter()
+                .filter(|batch| batch.len > 0)
+                .map(|batch| ReaderEnrichedHollowBatch {
+                    shard_id: self.handle.machine.shard_id(),
+                    reader_metadata: HollowBatchReaderMetadata::Snapshot {
+                        as_of: self.as_of.clone(),
+                    },
+                    batch,
+                })
+                .collect::<Vec<_>>();
+            self.snapshot_mode = false;
+            Ok(enriched_batches)
+        } else {
+            // Listen mode
+            let batch = self.handle.machine.next_listen_batch(&self.frontier).await;
+            let new_frontier = batch.desc.upper().clone();
+            // We will have a new frontier, so this is an opportunity to downgrade our
+            // since capability. Go through `maybe_heartbeat` so we can rate limit
+            // this along with our heartbeats.
+            //
+            // HACK! Everything would be simpler if we could downgrade since to the
+            // new frontier, but we can't. The next call needs to be able to
+            // distinguish between the times T at the frontier (to emit updates with
+            // these times) and T-1 (to filter them). Advancing the since to
+            // frontier would erase the ability to distinguish between them. Ideally
+            // we'd use what is conceptually "frontier - 1" (the greatest elements
+            // that are still strictly less than frontier), but the trait bounds on
+            // T don't give us a way to compute that directly. Instead, we sniff out
+            // any elements in lower that are strictly less_than frontier to compute
+            // a new since. For totally ordered times (currently always the case in
+            // mz) lower will always have a single element and it will be less_than
+            // upper, but the following logic is (hopefully) correct for partially
+            // order times as well. We could also abuse the fact that every time we
+            // actually emit is guaranteed by definition to be less_than upper to be
+            // a bit more prompt, but this would involve a lot more temporary
+            // antichains and it's unclear if that's worth it.
+            for l in batch.desc.lower().elements().iter() {
+                let lower_than_upper = batch.desc.upper().elements().iter().any(|u| l.less_than(u));
+                if lower_than_upper {
+                    self.since.join_assign(&Antichain::from_elem(l.clone()));
+                }
+            }
+
+            let enriched_batches = ReaderEnrichedHollowBatch {
+                shard_id: self.handle.machine.shard_id(),
+                reader_metadata: HollowBatchReaderMetadata::Listen {
+                    as_of: self.as_of.clone(),
+                    // The HollowBatch should behave as if the frontier of the machine
+                    // it's operating from is the upper of the _last_ batch.
+                    frontier: self.frontier.clone(),
+                },
+                batch,
+            };
+
+            self.frontier = new_frontier;
+            self.handle.maybe_downgrade_since(&self.since).await;
+
+            Ok(vec![enriched_batches])
+        }
+    }
+}
+
 /// Data and progress events of a shard subscription.
 ///
 /// TODO: Unify this with [timely::dataflow::operators::to_stream::Event] or
@@ -478,45 +595,8 @@ where
             self.frontier
         );
 
-        let mut updates = Vec::new();
-        for key in batch.keys.iter() {
-            fetch_batch_part(
-                &self.handle.machine.shard_id(),
-                self.handle.blob.as_ref(),
-                &self.handle.metrics,
-                key,
-                &batch.desc,
-                |k, v, t, d| {
-                    // This would get covered by a snapshot started at the same as_of.
-                    if !self.as_of.less_than(&t) {
-                        return;
-                    }
-                    // Because of compaction, the next batch we get might also
-                    // contain updates we've already emitted. For example, we
-                    // emitted `[1, 2)` and then compaction combined that batch
-                    // with a `[2, 3)` batch into a new `[1, 3)` batch. If this
-                    // happens, we just need to filter out anything < the
-                    // frontier. This frontier was the upper of the last batch
-                    // (and thus exclusive) so for the == case, we still emit.
-                    if !self.frontier.less_equal(&t) {
-                        return;
-                    }
-                    let k = self.handle.metrics.codecs.key.decode(|| K::decode(k));
-                    let v = self.handle.metrics.codecs.val.decode(|| V::decode(v));
-                    let d = D::decode(d);
-                    updates.push(((k, v), t, d));
-                },
-            )
-            .await;
-        }
-        let mut ret = Vec::with_capacity(2);
-        if !updates.is_empty() {
-            ret.push(ListenEvent::Updates(updates));
-        }
-        ret.push(ListenEvent::Progress(batch.desc.upper().clone()));
-        self.frontier = batch.desc.upper().clone();
-
-        // We have a new frontier, so this is an opportunity to downgrade our
+        let new_frontier = batch.desc.upper().clone();
+        // We will have a new frontier, so this is an opportunity to downgrade our
         // since capability. Go through `maybe_heartbeat` so we can rate limit
         // this along with our heartbeats.
         //
@@ -542,9 +622,28 @@ where
                 self.since.join_assign(&Antichain::from_elem(l.clone()));
             }
         }
+
+        let r = ReaderEnrichedHollowBatch {
+            shard_id: self.handle.machine.shard_id(),
+            reader_metadata: HollowBatchReaderMetadata::Listen {
+                as_of: self.as_of.clone(),
+                // The HollowBatch should behave as if the frontier of the machine
+                // it's operating from is the upper of the _last_ batch.
+                frontier: self.frontier.clone(),
+            },
+            batch,
+        };
+
+        let mut updates =
+            self.handle.fetch_batch(r).await.expect(
+                "fetching cannot fail for Listen; it's derived from the ReadHandle it's using",
+            );
+        updates.push(ListenEvent::Progress(new_frontier.clone()));
+
+        self.frontier = new_frontier;
         self.handle.maybe_downgrade_since(&self.since).await;
 
-        ret
+        updates
     }
 
     /// Politely expires this listen, releasing its lease.
@@ -584,36 +683,6 @@ where
         // Unlike most tests, intentionally don't consolidate updates here
         // because Listen replays them at the original fidelity.
         (updates, frontier)
-    }
-
-    /// Returns a `HollowBatch` enriched with this metadata appropriate for
-    /// listening-style behavior.
-    #[instrument(level = "debug", name = "listen::next", skip_all, fields(shard = %self.handle.machine.shard_id()))]
-    pub async fn listen_hollow_batch(&mut self) -> ReaderEnrichedHollowBatch<T> {
-        trace!("Listen::listen_hollow_batch frontier={:?} ", self.frontier);
-        // Hack: Keep this method `&self` instead of `&mut self` by cloning the
-        // cached copy of the state, updating it, and throwing it away
-        // afterward.
-        let batch = self
-            .handle
-            .machine
-            .clone()
-            .next_listen_batch(&self.frontier)
-            .await;
-        let new_frontier = batch.desc.upper().clone();
-        let r = ReaderEnrichedHollowBatch {
-            shard_id: self.handle.machine.shard_id(),
-            reader_metadata: HollowBatchReaderMetadata::Listen {
-                as_of: self.as_of.clone(),
-                // The HollowBatch should behave as if the frontier of the machine
-                // it's operating from is the upper of the _last_ batch.
-                frontier: self.frontier.clone(),
-            },
-            batch,
-        };
-
-        self.frontier = new_frontier;
-        r
     }
 }
 
@@ -715,6 +784,15 @@ where
 
         let () = self.machine.verify_listen(&as_of).await?;
         Ok(Listen::new(self, as_of).await)
+    }
+
+    /// Returns an ongoing subscription of updates to a shard.
+    #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
+    pub async fn subscribe(self, as_of: Antichain<T>) -> Result<Subscribe<K, V, T, D>, Since<T>> {
+        trace!("ReadHandle::subscribe as_of={:?}", as_of);
+
+        let () = self.machine.verify_listen(&as_of).await?;
+        Ok(Subscribe::new(self, as_of).await)
     }
 
     /// Returns a snapshot of the contents of the shard TVC at `as_of`.
@@ -878,14 +956,14 @@ where
             .collect::<Vec<_>>())
     }
 
-    /// Trade in an exchange-able [SnapshotSplit] for an iterator over the data
-    /// it represents.
+    /// Trade in an exchange-able [ReaderEnrichedHollowBatch] for the
+    /// [`ListenEvent`]s it represents.
     #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
-    pub async fn hollow_batch_fetcher(
+    pub async fn fetch_batch(
         &self,
         batch: ReaderEnrichedHollowBatch<T>,
     ) -> Result<Vec<ListenEvent<K, V, T, D>>, InvalidUsage<T>> {
-        trace!("ReadHandle::hollow_batch_fetcher");
+        trace!("ReadHandle::fetch_batch");
         if batch.shard_id != self.machine.shard_id() {
             return Err(InvalidUsage::SnapshotNotFromThisShard {
                 snapshot_shard: batch.shard_id,
@@ -935,13 +1013,6 @@ where
 
         if !updates.is_empty() {
             ret.push(ListenEvent::Updates(updates));
-        }
-
-        if matches!(
-            batch.reader_metadata,
-            HollowBatchReaderMetadata::Listen { .. }
-        ) {
-            ret.push(ListenEvent::Progress(batch.batch.desc.upper().clone()));
         }
 
         Ok(ret)

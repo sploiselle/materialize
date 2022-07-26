@@ -260,25 +260,19 @@ where
         // Aggressively downgrade `since`, to not hold back compaction.
         read.downgrade_since(as_of_moveable.clone()).await;
 
-        let snapshots_hollow_batches = read
-            .snapshot_hollow_batch(as_of_moveable.clone())
-            .await
-            .expect("cannot serve requested as_of");
-
-        // First, yield all the updates from the snapshot.
-        for batch in snapshots_hollow_batches {
-            yield batch;
-        }
-
-        // Then, listen continously and yield any new updates. This loop is expected to never
-        // finish.
-        let mut listen = read
-            .listen(as_of_moveable)
+        let mut subscription = read
+            .subscribe(as_of_moveable)
             .await
             .expect("cannot serve requested as_of");
 
         loop {
-            yield listen.listen_hollow_batch().await;
+            for batch in subscription
+                .next()
+                .await
+                .expect("cannot serve requested as_of")
+            {
+                yield batch;
+            }
         }
     });
 
@@ -377,21 +371,11 @@ where
                 let mut cap = cap.retain();
                 for (_idx, batch) in data.iter() {
                     for update in read
-                        .hollow_batch_fetcher(batch.clone())
+                        .fetch_batch(batch.clone())
                         .await
                         .expect("listen iter cannot fail")
                     {
                         match dbg!(update) {
-                            ListenEvent::Progress(upper) => match upper.into_option() {
-                                Some(ts) => {
-                                    current_ts = ts;
-                                    // ??? This seems perfunctory given that
-                                    // we're downgrading the capabilities
-                                    // upstream.
-                                    cap.downgrade(&current_ts);
-                                }
-                                None => {}
-                            },
                             ListenEvent::Updates(mut updates) => {
                                 // This operator guarantees that its output has been advanced by `as_of.
                                 // The persist SnapshotIter already has this contract, so nothing to do
@@ -400,6 +384,9 @@ where
                                 let mut session = output_handle.session(&cap);
                                 session.give_vec(&mut updates);
                             }
+                            ListenEvent::Progress(..) => unreachable!(
+                                "ReadHandle::fetch_batch does not emit ListenEvent::Progress"
+                            ),
                         }
 
                         if timer.elapsed() > YIELD_INTERVAL {
