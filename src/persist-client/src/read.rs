@@ -815,17 +815,41 @@ where
     pub async fn snapshot(
         &self,
         as_of: Antichain<T>,
-    ) -> Result<SnapshotIter<K, V, T, D>, Since<T>> {
-        let mut splits = self
-            .snapshot_splits(as_of, NonZeroUsize::new(1).unwrap())
-            .await?;
-        assert_eq!(splits.len(), 1);
-        let split = splits.pop().unwrap();
-        let iter = self
-            .snapshot_iter(split)
-            .await
-            .expect("internal error: snapshot shard didn't match machine shard");
-        Ok(iter)
+    ) -> Result<Vec<((Result<K, String>, Result<V, String>), T, D)>, Since<T>> {
+        trace!("ReadHandle::snapshot_hollow_batch as_of={:?}", as_of);
+        // Hack: Keep this method `&self` instead of `&mut self` by cloning the
+        // cached copy of the state, updating it, and throwing it away
+        // afterward.
+        let batches = self.machine.clone().snapshot(&as_of).await?;
+        let enriched_batches = batches
+            .into_iter()
+            .filter(|batch| batch.len > 0)
+            .map(|batch| ReaderEnrichedHollowBatch {
+                shard_id: self.machine.shard_id(),
+                reader_metadata: HollowBatchReaderMetadata::Snapshot {
+                    as_of: as_of.clone(),
+                },
+                batch,
+            })
+            .collect::<Vec<_>>();
+
+        let mut updates = vec![];
+        for batch in enriched_batches {
+            for update in self
+                .fetch_batch(batch)
+                .await
+                .expect("shard ID must be correct")
+            {
+                match update {
+                    ListenEvent::Updates(update) => updates.extend(update),
+                    ListenEvent::Progress(_) => {
+                        unreachable!("snapshots do not generate progress events")
+                    }
+                }
+            }
+        }
+
+        Ok(updates)
     }
 
     /// Returns a snapshot of the contents of the shard TVC at `as_of`.
@@ -1094,7 +1118,10 @@ where
     /// Test helper for an [Self::snapshot] call that is expected to succeed.
     #[cfg(test)]
     #[track_caller]
-    pub async fn expect_snapshot(&self, as_of: T) -> SnapshotIter<K, V, T, D> {
+    pub async fn expect_snapshot(
+        &self,
+        as_of: T,
+    ) -> Vec<((Result<K, String>, Result<V, String>), T, D)> {
         self.snapshot(Antichain::from_elem(as_of))
             .await
             .expect("cannot serve requested as_of")
