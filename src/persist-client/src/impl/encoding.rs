@@ -472,15 +472,10 @@ impl<T: Timestamp + Codec64> RustType<ProtoSnapshotSplit> for SnapshotSplit<T> {
     fn into_proto(&self) -> ProtoSnapshotSplit {
         ProtoSnapshotSplit {
             reader_id: self.reader_id.into_proto(),
-            shard_id: self.shard_id.into_proto(),
-            as_of: Some(self.as_of.into_proto()),
             batches: self
                 .batches
                 .iter()
-                .map(|(key, desc)| ProtoHollowBatchPart {
-                    desc: Some(desc.into_proto()),
-                    key: key.into_proto(),
-                })
+                .map(|batch| batch.into_proto())
                 .collect(),
         }
     }
@@ -488,13 +483,10 @@ impl<T: Timestamp + Codec64> RustType<ProtoSnapshotSplit> for SnapshotSplit<T> {
     fn from_proto(proto: ProtoSnapshotSplit) -> Result<Self, TryFromProtoError> {
         let mut batches = Vec::new();
         for batch in proto.batches.into_iter() {
-            let desc = batch.desc.into_rust_if_some("desc")?;
-            batches.push((PartialBlobKey(batch.key), desc));
+            batches.push(batch.into_rust()?);
         }
         Ok(SnapshotSplit {
             reader_id: proto.reader_id.into_rust()?,
-            shard_id: proto.shard_id.into_rust()?,
-            as_of: proto.as_of.into_rust_if_some("as_of")?,
             batches,
         })
     }

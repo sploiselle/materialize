@@ -351,10 +351,6 @@ where
                     {
                         match dbg!(update) {
                             ListenEvent::Updates(mut updates) => {
-                                // This operator guarantees that its output has been advanced by `as_of.
-                                // The persist SnapshotIter already has this contract, so nothing to do
-                                // here.
-                                // let cap = cap.delayed(&current_ts);
                                 let mut session = output_handle.session(&cap);
                                 session.give_vec(&mut updates);
                             }

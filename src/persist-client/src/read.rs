@@ -224,9 +224,7 @@ where
 #[serde(into = "SerdeSnapshotSplit", from = "SerdeSnapshotSplit")]
 pub struct SnapshotSplit<T> {
     pub(crate) reader_id: ReaderId,
-    pub(crate) shard_id: ShardId,
-    pub(crate) as_of: Antichain<T>,
-    pub(crate) batches: Vec<(PartialBlobKey, Description<T>)>,
+    pub(crate) batches: Vec<ReaderEnrichedHollowBatch<T>>,
 }
 
 /// An iterator over one split of a "snapshot" (the contents of a shard as of
@@ -243,8 +241,7 @@ where
     D: Semigroup + Codec64,
 {
     handle: ReadHandle<K, V, T, D>,
-    as_of: Antichain<T>,
-    batches: Vec<(PartialBlobKey, Description<T>)>,
+    batches: Vec<ReaderEnrichedHollowBatch<T>>,
 
     _phantom: PhantomData<(K, V, T, D)>,
 }
@@ -260,15 +257,9 @@ where
         debug_assert_eq!(handle.reader_id, split.reader_id);
         SnapshotIter {
             handle,
-            as_of: split.as_of,
             batches: split.batches,
             _phantom: PhantomData,
         }
-    }
-
-    /// The frontier at which we're outputting the contents of the shard.
-    pub fn as_of(&self) -> &Antichain<T> {
-        &self.as_of
     }
 
     /// Attempt to pull out the next values of this iterator.
@@ -291,7 +282,7 @@ where
         trace!("SnapshotIter::next");
 
         loop {
-            let (key, desc) = match self.batches.pop() {
+            let batch = match self.batches.pop() {
                 Some(x) => {
                     // Periodically heartbeat so the batches we're iterating
                     // don't get garbage collected.
@@ -311,31 +302,29 @@ where
                 }
             };
 
-            let mut updates = Vec::new();
-            fetch_batch_part(
-                &self.handle.machine.shard_id(),
-                self.handle.blob.as_ref(),
-                &self.handle.metrics,
-                &key,
-                &desc,
-                |k, v, mut t, d| {
-                    // This would get covered by a listen started at the same as_of.
-                    if self.as_of.less_than(&t) {
-                        return;
-                    }
-                    t.advance_by(self.as_of.borrow());
-                    let k = self.handle.metrics.codecs.key.decode(|| K::decode(k));
-                    let v = self.handle.metrics.codecs.val.decode(|| V::decode(v));
-                    let d = D::decode(d);
-                    updates.push(((k, v), t, d));
-                },
-            )
-            .await;
+            let updates = self
+                .handle
+                .fetch_batch(batch)
+                .await
+                .expect("cannot fail on SnapshotIter derived from ReadHandle");
+
             if updates.is_empty() {
                 // We might have filtered everything.
                 continue;
             }
-            return Some(updates);
+
+            let mut ret_updates = vec![];
+
+            for update in updates {
+                match update {
+                    ListenEvent::Updates(u) => ret_updates.extend(u),
+                    ListenEvent::Progress(_) => {
+                        unreachable!("ReadHandle::fetch_batch does not generate Progress events")
+                    }
+                }
+            }
+
+            return Some(ret_updates);
         }
     }
 
@@ -815,41 +804,17 @@ where
     pub async fn snapshot(
         &self,
         as_of: Antichain<T>,
-    ) -> Result<Vec<((Result<K, String>, Result<V, String>), T, D)>, Since<T>> {
-        trace!("ReadHandle::snapshot_hollow_batch as_of={:?}", as_of);
-        // Hack: Keep this method `&self` instead of `&mut self` by cloning the
-        // cached copy of the state, updating it, and throwing it away
-        // afterward.
-        let batches = self.machine.clone().snapshot(&as_of).await?;
-        let enriched_batches = batches
-            .into_iter()
-            .filter(|batch| batch.len > 0)
-            .map(|batch| ReaderEnrichedHollowBatch {
-                shard_id: self.machine.shard_id(),
-                reader_metadata: HollowBatchReaderMetadata::Snapshot {
-                    as_of: as_of.clone(),
-                },
-                batch,
-            })
-            .collect::<Vec<_>>();
-
-        let mut updates = vec![];
-        for batch in enriched_batches {
-            for update in self
-                .fetch_batch(batch)
-                .await
-                .expect("shard ID must be correct")
-            {
-                match update {
-                    ListenEvent::Updates(update) => updates.extend(update),
-                    ListenEvent::Progress(_) => {
-                        unreachable!("snapshots do not generate progress events")
-                    }
-                }
-            }
-        }
-
-        Ok(updates)
+    ) -> Result<SnapshotIter<K, V, T, D>, Since<T>> {
+        let mut splits = self
+            .snapshot_splits(as_of, NonZeroUsize::new(1).unwrap())
+            .await?;
+        assert_eq!(splits.len(), 1);
+        let split = splits.pop().unwrap();
+        let iter = self
+            .snapshot_iter(split)
+            .await
+            .expect("internal error: snapshot shard didn't match machine shard");
+        Ok(iter)
     }
 
     /// Returns a snapshot of the contents of the shard TVC at `as_of`.
@@ -890,11 +855,20 @@ where
         // cached copy of the state, updating it, and throwing it away
         // afterward.
         let mut machine = self.machine.clone();
-        let batches = machine.snapshot(&as_of).await?;
-        let batches = batches.into_iter().flat_map(|b| {
-            let desc = b.desc.clone();
-            b.keys.into_iter().map(move |k| (k, desc.clone()))
-        });
+        let batches = machine
+            .snapshot(&as_of)
+            .await?
+            .into_iter()
+            .filter(|batch| batch.len > 0)
+            .map(|batch| ReaderEnrichedHollowBatch {
+                shard_id: self.machine.shard_id(),
+                reader_metadata: HollowBatchReaderMetadata::Snapshot {
+                    as_of: as_of.clone(),
+                },
+                batch,
+            })
+            .collect::<Vec<_>>();
+
         let mut splits = Vec::new();
         for _ in 0..num_splits.get() {
             // Register this split as a new reader so that it gets its own
@@ -909,17 +883,13 @@ where
                 .await;
             splits.push(SnapshotSplit {
                 reader_id: split_reader_id,
-                shard_id: self.machine.shard_id(),
-                as_of: as_of.clone(),
                 batches: Vec::new(),
             })
         }
-        for (idx, (batch_key, desc)) in batches.into_iter().enumerate() {
-            splits[idx % num_splits.get()]
-                .batches
-                .push((batch_key, desc.clone()));
+        for (idx, batch) in batches.into_iter().enumerate() {
+            splits[idx % num_splits.get()].batches.push(batch);
         }
-        return Ok(splits);
+        Ok(splits)
     }
 
     /// Trade in an exchange-able [SnapshotSplit] for an iterator over the data
@@ -930,12 +900,15 @@ where
         split: SnapshotSplit<T>,
     ) -> Result<SnapshotIter<K, V, T, D>, InvalidUsage<T>> {
         trace!("ReadHandle::snapshot split={:?}", split);
-        if split.shard_id != self.machine.shard_id() {
-            return Err(InvalidUsage::SnapshotNotFromThisShard {
-                snapshot_shard: split.shard_id,
-                handle_shard: self.machine.shard_id(),
-            });
+        for ReaderEnrichedHollowBatch { shard_id, .. } in &split.batches {
+            if shard_id != &self.machine.shard_id() {
+                return Err(InvalidUsage::SnapshotNotFromThisShard {
+                    snapshot_shard: *shard_id,
+                    handle_shard: self.machine.shard_id(),
+                });
+            }
         }
+
         let mut machine = self.machine.clone();
         machine.fetch_and_update_state().await;
         let handle = ReadHandle {
@@ -1118,10 +1091,7 @@ where
     /// Test helper for an [Self::snapshot] call that is expected to succeed.
     #[cfg(test)]
     #[track_caller]
-    pub async fn expect_snapshot(
-        &self,
-        as_of: T,
-    ) -> Vec<((Result<K, String>, Result<V, String>), T, D)> {
+    pub async fn expect_snapshot(&self, as_of: T) -> SnapshotIter<K, V, T, D> {
         self.snapshot(Antichain::from_elem(as_of))
             .await
             .expect("cannot serve requested as_of")

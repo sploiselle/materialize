@@ -895,13 +895,14 @@ mod impls {
                 return Ok(vec![]);
             }
 
-            let mut updates = Vec::new();
-            for update in self
+            let mut iter = self
                 .read
                 .snapshot(as_of.clone())
                 .await
-                .expect("wrong as_of")
-            {
+                .expect("wrong as_of");
+
+            let mut updates = Vec::new();
+            while let Some(mut next) = iter.next().await {
                 updates.append(&mut next)
             }
 
@@ -1371,10 +1372,10 @@ mod reader {
         let reader_task = mz_ore::task::spawn(|| "reader", async move {
             // Cannot snapshot at `[0]` if that's not ready.
             if !PartialOrder::less_equal(&as_of, &Antichain::from_elem(T::minimum())) {
-                for update in read.snapshot(as_of.clone()).await.expect("invalid as_of") {
-                    while let Some(next) = iter.next().await {
-                        println!("instance {}: got from snapshot: {:?}", name, update);
-                    }
+                let mut iter = read.snapshot(as_of.clone()).await.expect("invalid as_of");
+
+                while let Some(next) = iter.next().await {
+                    println!("instance {}: got from snapshot: {:?}", name, next);
                 }
             }
 
