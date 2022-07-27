@@ -253,14 +253,16 @@ impl ReclockOperator {
         // If this is the first sync and the collection is non-empty load the initial snapshot
         let first_sync = self.upper.elements() == [Timestamp::minimum()];
         if first_sync && PartialOrder::less_than(&self.upper, target_upper) {
-            for ((_, pid), ts, diff) in self
+            let mut snapshot = self
                 .read_handle
                 .snapshot(self.since.clone())
                 .await
-                .expect("local since is not beyond read handle's since")
-            {
-                let pid = pid.expect("failed to decode partition");
-                pending_batch.push((pid, ts, diff));
+                .expect("local since is not beyond read handle's since");
+            while let Some(updates) = snapshot.next().await {
+                for ((_, pid), ts, diff) in updates {
+                    let pid = pid.expect("failed to decode partition");
+                    pending_batch.push((pid, ts, diff));
+                }
             }
         }
 

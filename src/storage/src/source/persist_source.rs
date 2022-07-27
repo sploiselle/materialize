@@ -345,7 +345,7 @@ where
 
             while let Some((cap, data)) = input.next() {
                 println!("op_1 cap {:?}", cap);
-                // let mut cap = cap.retain();
+                let mut cap = cap.retain();
                 for (_idx, batch) in data.iter() {
                     for update in read
                         .fetch_batch(batch.clone())
@@ -354,10 +354,6 @@ where
                     {
                         match dbg!(update) {
                             ListenEvent::Updates(mut updates) => {
-                                // This operator guarantees that its output has been advanced by `as_of.
-                                // The persist SnapshotIter already has this contract, so nothing to do
-                                // here.
-                                let cap = cap.delayed(&current_ts);
                                 let mut session = output_handle.session(&cap);
                                 session.give_vec(&mut updates);
                             }
