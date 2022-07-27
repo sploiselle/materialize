@@ -100,7 +100,7 @@ pub enum HollowBatchReaderMetadata<T> {
     into = "SerdeReaderEnrichedHollowBatch",
     from = "SerdeReaderEnrichedHollowBatch"
 )]
-/// An exchangeable struct with sufficient metadata to fetch [`HollowBatch`]es.
+/// An exchangeable struct with sufficient metadata to fetch `HollowBatch`es.
 pub struct ReaderEnrichedHollowBatch<T> {
     pub(crate) shard_id: ShardId,
     pub(crate) reader_metadata: HollowBatchReaderMetadata<T>,
@@ -891,6 +891,67 @@ where
 
         let () = self.machine.verify_listen(&as_of).await?;
         Ok(Subscribe::new(self, as_of).await)
+    }
+
+    /// Trade in an exchange-able [ReaderEnrichedHollowBatch] for the
+    /// [`ListenEvent`]s it represents. A return of `None` indicates there were
+    /// no updates to present.
+    #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
+    pub async fn fetch_batch(
+        &self,
+        batch: ReaderEnrichedHollowBatch<T>,
+    ) -> Result<Option<ListenEvent<K, V, T, D>>, InvalidUsage<T>> {
+        trace!("ReadHandle::fetch_batch");
+        if batch.shard_id != self.machine.shard_id() {
+            return Err(InvalidUsage::SnapshotNotFromThisShard {
+                snapshot_shard: batch.shard_id,
+                handle_shard: self.machine.shard_id(),
+            });
+        }
+
+        let mut updates = Vec::new();
+        for key in batch.batch.keys.iter() {
+            fetch_batch_part(
+                &batch.shard_id,
+                self.blob.as_ref(),
+                &self.metrics,
+                &key,
+                &batch.batch.desc.clone(),
+                |k, v, mut t, d| {
+                    match &batch.reader_metadata {
+                        HollowBatchReaderMetadata::Snapshot { as_of } => {
+                            // This time is covered by a listen
+                            if as_of.less_than(&t) {
+                                return;
+                            }
+                            t.advance_by(as_of.borrow())
+                        }
+                        HollowBatchReaderMetadata::Listen { as_of, frontier } => {
+                            // This time is covered by a snapshot
+                            if !as_of.less_than(&t) {
+                                return;
+                            }
+
+                            if !frontier.less_equal(&t) {
+                                return;
+                            }
+                        }
+                    }
+
+                    let k = self.metrics.codecs.key.decode(|| K::decode(k));
+                    let v = self.metrics.codecs.val.decode(|| V::decode(v));
+                    let d = D::decode(d);
+                    updates.push(((k, v), t, d));
+                },
+            )
+            .await;
+        }
+
+        if updates.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(ListenEvent::Updates(updates)))
+        }
     }
 
     /// Returns an independent [ReadHandle] with a new [ReaderId] but the same
