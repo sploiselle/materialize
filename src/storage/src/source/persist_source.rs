@@ -121,77 +121,13 @@ where
 
                 while let Poll::Ready(item) = pinned_stream.as_mut().poll_next(&mut context) {
                     match item {
-                        // <<<<<<< HEAD
-                        //                         Some(Ok(ListenEvent::Progress(upper))) => {
-                        //                             cap_set.downgrade(upper.iter());
-
-                        //                             if upper.is_empty() {
-                        //                                 // Return early because we're done now.
-                        //                                 return;
-                        //                             }
-                        //                         }
-                        //                         Some(Ok(ListenEvent::Updates(mut updates))) => {
-                        //                             // This operator guarantees that its output has been advanced by `as_of.
-                        //                             // The persist SnapshotIter already has this contract, so nothing to do
-                        //                             // here.
-
-                        //                             if updates.is_empty() {
-                        //                                 continue;
-                        //                             }
-
-                        //                             // Swing through all the capabilities we have and
-                        //                             // peel off updates that we can emit with it. For
-                        //                             // the case of totally ordered times, we have at
-                        //                             // most on capability and will peel off all updates
-                        //                             // in one go.
-                        //                             //
-                        //                             // NOTE: We use this seemingly complicated approach
-                        //                             // such that the code is ready to deal with
-                        //                             // partially ordered times.
-                        //                             for cap in cap_set.iter() {
-                        //                                 // NOTE: The nightly `drain_filter()` would use
-                        //                                 // less allocations than this. Should switch to
-                        //                                 // it once it's available in stable rust.
-                        //                                 let (mut to_emit, remaining_updates) =
-                        //                                     updates.into_iter().partition(|(_update, ts, _diff)| {
-                        //                                         PartialOrder::less_equal(cap.time(), ts)
-                        //                                     });
-                        //                                 updates = remaining_updates;
-
-                        //                                 let mut session = output.session(&cap);
-                        //                                 session.give_vec(&mut to_emit);
-                        //                             }
-
-                        //                             assert!(
-                        //                                 updates.is_empty(),
-                        //                                 "did not have matching Capability for updates: {:?}",
-                        //                                 updates
-                        //                             );
-                        // =======
                         Some(Ok(batch)) => {
-                            let mut success = false;
                             let progress = batch.generate_progress();
-                            println!("cap_set {:?}", cap_set);
-                            for cap in cap_set.iter() {
-                                if PartialOrder::less_equal(cap.time(), &current_ts) {
-                                    let session_cap = cap.delayed(&current_ts);
-                                    let mut session = output.session(&session_cap);
-
-                                    session.give((
-                                        usize::cast_from((source_id, i).hashed()) % peers,
-                                        batch,
-                                    ));
-
-                                    success = true;
-
-                                    break;
-                                }
-                            }
-                            assert!(
-                                success,
-                                "no capabilities could produce data at {:?}",
-                                current_ts
-                            );
+                            let a_cap = cap_set.first().unwrap();
+                            let session_cap = a_cap.delayed(&current_ts);
+                            let mut session = output.session(&session_cap);
+                            session
+                                .give((usize::cast_from((source_id, i).hashed()) % peers, batch));
 
                             // Round robin
                             i += 1;
@@ -206,8 +142,6 @@ where
                                     None => return,
                                 }
                             }
-
-                            // >>>>>>> persist: shard reads from persist
                         }
                         Some(Err::<_, ExternalError>(e)) => {
                             panic!("unexpected error from persist {e}")
