@@ -371,12 +371,15 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchReaderMetadata>
                         as_of: Some(as_of.into_proto()),
                     })
                 }
-                HollowBatchReaderMetadata::Listen { as_of, until } => {
-                    Kind::Listen(ProtoHollowBatchReaderMetadataListen {
-                        as_of: Some(as_of.into_proto()),
-                        until: Some(until.into_proto()),
-                    })
-                }
+                HollowBatchReaderMetadata::Listen {
+                    as_of,
+                    until,
+                    since,
+                } => Kind::Listen(ProtoHollowBatchReaderMetadataListen {
+                    as_of: Some(as_of.into_proto()),
+                    until: Some(until.into_proto()),
+                    since: Some(since.into_proto()),
+                }),
             }),
         }
     }
@@ -396,6 +399,9 @@ impl<T: Timestamp + Codec64> RustType<ProtoHollowBatchReaderMetadata>
                 until: listen
                     .until
                     .into_rust_if_some("ProtoHollowBatchReaderMetadata::Kind::Listen::until")?,
+                since: listen
+                    .since
+                    .into_rust_if_some("ProtoHollowBatchReaderMetadata::Kind::Listen::since")?,
             },
             None => {
                 return Err(TryFromProtoError::missing_field(

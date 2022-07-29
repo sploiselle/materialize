@@ -84,6 +84,9 @@ pub enum HollowBatchReaderMetadata<T> {
         as_of: Antichain<T>,
         /// Return all values with time leq `until`.
         until: Antichain<T>,
+        /// After reading te batch, you can downgrade the reader's `since` to
+        /// this value.
+        since: Antichain<T>,
     },
 }
 
@@ -117,16 +120,6 @@ where
     }
 }
 
-#[derive(Debug)]
-/// Describes which phase of the subscription is in.
-pub enum SubscribeMode<T> {
-    /// Subscriptions begin in snapshot mode, and we load the intial batches.
-    Snapshot(Vec<ReaderEnrichedHollowBatch<T>>),
-    /// After handling all snapshot batches, subscriptions move into listening
-    /// where batches are doled out as they're generated.
-    Listen,
-}
-
 /// Capable of generating a snapshot of all data up to `as_of`, followed by a
 /// listen of all updates.
 #[derive(Debug)]
@@ -138,12 +131,8 @@ where
     V: Debug + Codec,
     D: Semigroup + Codec64,
 {
-    handle: ReadHandle<K, V, T, D>,
-    mode: SubscribeMode<T>,
-
-    as_of: Antichain<T>,
-    frontier: Antichain<T>,
-    since: Antichain<T>,
+    snapshot_batches: Vec<ReaderEnrichedHollowBatch<T>>,
+    listen: Listen<K, V, T, D>,
 }
 
 impl<K, V, T, D> Subscribe<K, V, T, D>
@@ -153,112 +142,37 @@ where
     T: Timestamp + Lattice + Codec64,
     D: Semigroup + Codec64,
 {
-    async fn new(mut handle: ReadHandle<K, V, T, D>, as_of: Antichain<T>) -> Self {
-        // Gather all of the batches for the snapshot now so the first call to
-        // `Self::next` has batches to dole out.
-        let batches = handle
-            .machine
-            .snapshot(&as_of)
+    async fn new(handle: ReadHandle<K, V, T, D>, as_of: Antichain<T>) -> Self {
+        let snapshot_batches = handle
+            .snapshot(as_of.clone())
+            .await
+            .expect("ReadHandle should validate `as_of` valid before generating Subscribe");
+        let listen = handle
+            .listen(as_of)
             .await
             .expect("ReadHandle should validate `as_of` valid before generating Subscribe");
 
-        let enriched_batches = batches
-            .into_iter()
-            .filter(|batch| batch.len > 0)
-            .map(|batch| ReaderEnrichedHollowBatch {
-                shard_id: handle.machine.shard_id(),
-                reader_metadata: HollowBatchReaderMetadata::Snapshot {
-                    as_of: as_of.clone(),
-                },
-                batch,
-            })
-            .collect::<Vec<_>>();
-
-        let mode = SubscribeMode::Snapshot(enriched_batches);
-        let mut ret = Subscribe {
-            handle,
-            since: as_of.clone(),
-            frontier: as_of.clone(),
-            as_of,
-            mode,
-        };
-
-        // This subscription only needs to distinguish things after its frontier
-        // (initially as_of although the frontier is inclusive and the as_of
-        // isn't). Be a good citizen and downgrade early.
-        ret.handle.downgrade_since(ret.since.clone()).await;
-        ret
+        Subscribe {
+            snapshot_batches,
+            listen,
+        }
     }
 
     /// Returns a `HollowBatch` enriched with this metadata appropriate for
     /// snapshot-style behavior.
-    #[instrument(level = "debug", skip_all, fields(shard = %self.handle.machine.shard_id()))]
+    #[instrument(level = "debug", skip_all, fields(shard = %self.listen.handle.machine.shard_id()))]
     pub async fn next(&mut self) -> ReaderEnrichedHollowBatch<T> {
         trace!(
             "Subscribe::next as_of={:?}, frontier={:?}",
-            self.as_of,
-            self.frontier
+            self.listen.as_of,
+            self.listen.frontier
         );
+        // This is odd, but we move our handle into a `Listen`.
+        self.listen.handle.maybe_heartbeat_reader().await;
 
-        if let SubscribeMode::Snapshot(ref batches) = &self.mode {
-            if batches.is_empty() {
-                self.mode = SubscribeMode::Listen;
-            }
-        }
-
-        match &mut self.mode {
-            SubscribeMode::Snapshot(ref mut batches) => {
-                self.handle.maybe_heartbeat_reader().await;
-                batches
-                    .pop()
-                    .expect("verified batches remain in last iteration")
-            }
-            SubscribeMode::Listen => {
-                let batch = self.handle.machine.next_listen_batch(&self.frontier).await;
-                let new_frontier = batch.desc.upper().clone();
-                // We will have a new frontier, so this is an opportunity to downgrade our
-                // since capability. Go through `maybe_heartbeat` so we can rate limit
-                // this along with our heartbeats.
-                //
-                // HACK! Everything would be simpler if we could downgrade since to the
-                // new frontier, but we can't. The next call needs to be able to
-                // distinguish between the times T at the frontier (to emit updates with
-                // these times) and T-1 (to filter them). Advancing the since to
-                // frontier would erase the ability to distinguish between them. Ideally
-                // we'd use what is conceptually "frontier - 1" (the greatest elements
-                // that are still strictly less than frontier), but the trait bounds on
-                // T don't give us a way to compute that directly. Instead, we sniff out
-                // any elements in lower that are strictly less_than frontier to compute
-                // a new since. For totally ordered times (currently always the case in
-                // mz) lower will always have a single element and it will be less_than
-                // upper, but the following logic is (hopefully) correct for partially
-                // order times as well. We could also abuse the fact that every time we
-                // actually emit is guaranteed by definition to be less_than upper to be
-                // a bit more prompt, but this would involve a lot more temporary
-                // antichains and it's unclear if that's worth it.
-                for l in batch.desc.lower().elements().iter() {
-                    let lower_than_upper =
-                        batch.desc.upper().elements().iter().any(|u| l.less_than(u));
-                    if lower_than_upper {
-                        self.since.join_assign(&Antichain::from_elem(l.clone()));
-                    }
-                }
-
-                let batch = ReaderEnrichedHollowBatch {
-                    shard_id: self.handle.machine.shard_id(),
-                    reader_metadata: HollowBatchReaderMetadata::Listen {
-                        as_of: self.as_of.clone(),
-                        until: self.frontier.clone(),
-                    },
-                    batch,
-                };
-
-                self.frontier = new_frontier;
-
-                self.handle.maybe_downgrade_since(&self.since).await;
-
-                batch
-            }
+        match self.snapshot_batches.pop() {
+            Some(batch) => batch,
+            None => self.listen.next_batch().await,
         }
     }
 }
@@ -325,20 +239,11 @@ where
         })
     }
 
-    /// Attempt to pull out the next values of this subscription.
+    /// Retreives the next batch and updates `self`s metadata.
     ///
-    /// The updates received in [ListenEvent::Updates] should be assumed to be in arbitrary order
-    /// and not necessarily consolidated. However, the timestamp of each individual update will be
-    /// greater than or equal to the last received [ListenEvent::Progress] frontier (or this
-    /// [Listen]'s initial `as_of` frontier if no progress event has been emitted yet) and less
-    /// than the next [ListenEvent::Progress] frontier.
-    ///
-    /// If you have a use for consolidated listen output, given that snapshots can't be
-    /// consolidated, come talk to us!
-    #[instrument(level = "debug", name = "listen::next", skip_all, fields(shard = %self.handle.machine.shard_id()))]
-    pub async fn next(&mut self) -> Vec<ListenEvent<K, V, T, D>> {
-        trace!("Listen::next");
-
+    /// The returned [`ReaderEnrichedHollowBatch`] is appropriate to use with
+    /// `ReadHandle::fetch_batch`.
+    pub async fn next_batch(&mut self) -> ReaderEnrichedHollowBatch<T> {
         // We might also want to call maybe_heartbeat_reader in the
         // `next_listen_batch` loop so that we can heartbeat even when batches
         // aren't incoming. At the moment, the ownership would be weird and we
@@ -369,45 +274,9 @@ where
             self.frontier
         );
 
-        let mut updates = Vec::new();
-        for key in batch.keys.iter() {
-            fetch_batch_part(
-                &self.handle.machine.shard_id(),
-                self.handle.blob.as_ref(),
-                &self.handle.metrics,
-                key,
-                &batch.desc,
-                |k, v, t, d| {
-                    // This would get covered by a snapshot started at the same as_of.
-                    if !self.as_of.less_than(&t) {
-                        return;
-                    }
-                    // Because of compaction, the next batch we get might also
-                    // contain updates we've already emitted. For example, we
-                    // emitted `[1, 2)` and then compaction combined that batch
-                    // with a `[2, 3)` batch into a new `[1, 3)` batch. If this
-                    // happens, we just need to filter out anything < the
-                    // frontier. This frontier was the upper of the last batch
-                    // (and thus exclusive) so for the == case, we still emit.
-                    if !self.frontier.less_equal(&t) {
-                        return;
-                    }
-                    let k = self.handle.metrics.codecs.key.decode(|| K::decode(k));
-                    let v = self.handle.metrics.codecs.val.decode(|| V::decode(v));
-                    let d = D::decode(d);
-                    updates.push(((k, v), t, d));
-                },
-            )
-            .await;
-        }
-        let mut ret = Vec::with_capacity(2);
-        if !updates.is_empty() {
-            ret.push(ListenEvent::Updates(updates));
-        }
-        ret.push(ListenEvent::Progress(batch.desc.upper().clone()));
-        self.frontier = batch.desc.upper().clone();
+        let new_frontier = batch.desc.upper().clone();
 
-        // We have a new frontier, so this is an opportunity to downgrade our
+        // We will have a new frontier, so this is an opportunity to downgrade our
         // since capability. Go through `maybe_heartbeat` so we can rate limit
         // this along with our heartbeats.
         //
@@ -433,8 +302,46 @@ where
                 self.since.join_assign(&Antichain::from_elem(l.clone()));
             }
         }
-        self.handle.maybe_downgrade_since(&self.since).await;
 
+        let r = ReaderEnrichedHollowBatch {
+            shard_id: self.handle.machine.shard_id(),
+            reader_metadata: HollowBatchReaderMetadata::Listen {
+                as_of: self.as_of.clone(),
+                until: self.frontier.clone(),
+                since: self.since.clone(),
+            },
+            batch,
+        };
+        self.frontier = new_frontier;
+        r
+    }
+
+    /// Attempt to pull out the next values of this subscription.
+    ///
+    /// The updates received in [ListenEvent::Updates] should be assumed to be in arbitrary order
+    /// and not necessarily consolidated. However, the timestamp of each individual update will be
+    /// greater than or equal to the last received [ListenEvent::Progress] frontier (or this
+    /// [Listen]'s initial `as_of` frontier if no progress event has been emitted yet) and less
+    /// than the next [ListenEvent::Progress] frontier.
+    ///
+    /// If you have a use for consolidated listen output, given that snapshots can't be
+    /// consolidated, come talk to us!
+    #[instrument(level = "debug", name = "listen::next", skip_all, fields(shard = %self.handle.machine.shard_id()))]
+    pub async fn next(&mut self) -> Vec<ListenEvent<K, V, T, D>> {
+        trace!("Listen::next");
+        let batch = self.next_batch().await;
+        let progress = batch.batch.desc.upper().clone();
+        let updates = self
+            .handle
+            .fetch_batch(batch)
+            .await
+            .expect("must accept self-generated batch");
+
+        let mut ret = Vec::with_capacity(2);
+        if !updates.is_empty() {
+            ret.push(ListenEvent::Updates(updates));
+        }
+        ret.push(ListenEvent::Progress(progress));
         ret
     }
 
@@ -635,7 +542,7 @@ where
     /// [`ListenEvent`]s it represents.
     #[instrument(level = "debug", skip_all, fields(shard = %self.machine.shard_id()))]
     pub async fn fetch_batch(
-        &self,
+        &mut self,
         batch: ReaderEnrichedHollowBatch<T>,
     ) -> Result<Vec<((Result<K, String>, Result<V, String>), T, D)>, InvalidUsage<T>> {
         trace!("ReadHandle::fetch_batch");
@@ -648,6 +555,7 @@ where
 
         let mut updates = Vec::new();
         for key in batch.batch.keys.iter() {
+            self.maybe_heartbeat_reader().await;
             fetch_batch_part(
                 &batch.shard_id,
                 self.blob.as_ref(),
@@ -656,7 +564,11 @@ where
                 &batch.batch.desc.clone(),
                 |k, v, mut t, d| {
                     match &batch.reader_metadata {
-                        HollowBatchReaderMetadata::Listen { as_of, until } => {
+                        HollowBatchReaderMetadata::Listen {
+                            as_of,
+                            until,
+                            since: _,
+                        } => {
                             // This time is covered by a snapshot
                             if !as_of.less_than(&t) {
                                 return;
@@ -689,6 +601,10 @@ where
                 },
             )
             .await;
+        }
+
+        if let HollowBatchReaderMetadata::Listen { since, .. } = batch.reader_metadata {
+            self.maybe_downgrade_since(&since).await;
         }
 
         Ok(updates)
