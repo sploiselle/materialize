@@ -28,7 +28,7 @@ use tracing::trace;
 use mz_ore::cast::CastFrom;
 use mz_persist::location::ExternalError;
 use mz_persist_client::cache::PersistClientCache;
-use mz_persist_client::read::{ListenEvent, ReaderEnrichedHollowBatch};
+use mz_persist_client::read::ReaderEnrichedHollowBatch;
 use mz_repr::{Diff, GlobalId, Row, Timestamp};
 use mz_timely_util::async_op;
 use mz_timely_util::operators_async_ext::OperatorBuilderExt;
@@ -198,26 +198,18 @@ where
             while let Some((cap, data)) = input.next() {
                 let cap = cap.retain();
                 for (_idx, batch) in data.iter() {
-                    for update in read
+                    let mut updates = read
                         .fetch_batch(batch.clone())
                         .await
-                        .expect("fetching batches cannot fail")
-                    {
-                        match update {
-                            ListenEvent::Updates(mut updates) => {
-                                let mut session = output_handle.session(&cap);
-                                session.give_vec(&mut updates);
-                            }
-                            ListenEvent::Progress(..) => unreachable!(
-                                "ReadHandle::fetch_batch does not emit ListenEvent::Progress"
-                            ),
-                        }
+                        .expect("fetching batches cannot fail");
 
-                        if timer.elapsed() > YIELD_INTERVAL {
-                            activator.activate();
-                            break;
-                        }
-                    }
+                    let mut session = output_handle.session(&cap);
+                    session.give_vec(&mut updates);
+                }
+
+                if timer.elapsed() > YIELD_INTERVAL {
+                    activator.activate();
+                    break;
                 }
             }
             false
