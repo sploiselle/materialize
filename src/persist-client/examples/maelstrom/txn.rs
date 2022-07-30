@@ -203,7 +203,7 @@ impl Transactor {
         let snap_ts = self.since_ts + (self.read_ts - self.since_ts) / 2;
         let snap_as_of = Antichain::from_elem(snap_ts);
 
-        let mut snap = self
+        let snap = self
             .read
             .snapshot(snap_as_of.clone())
             .await
@@ -231,9 +231,15 @@ impl Transactor {
             })?;
 
         let mut updates = Vec::new();
-        while let Some(mut dataz) = snap.next().await {
+        for batch in snap {
+            let mut dataz = self
+                .read
+                .fetch_batch(batch)
+                .await
+                .expect("must accept self-generated batch");
             updates.append(&mut dataz);
         }
+
         trace!(
             "read updates from snapshot as_of {}: {:?}",
             snap_ts,

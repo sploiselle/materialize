@@ -456,7 +456,6 @@ impl PersistClient {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use std::num::NonZeroUsize;
     use std::pin::Pin;
     use std::str::FromStr;
     use std::task::Context;
@@ -575,11 +574,11 @@ mod tests {
         assert_eq!(write.upper(), &Antichain::from_elem(3));
 
         // Grab a snapshot and listener as_of 1.
-        let mut snap = read.expect_snapshot(1).await;
+        let snap = read.expect_snapshot(1).await;
         let mut listen = read.clone().await.expect_listen(1).await;
 
         // Snapshot should only have part of what we wrote.
-        assert_eq!(snap.read_all().await, all_ok(&data[..1], 1));
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data[..1], 1));
 
         // Write a [3,4) batch.
         write
@@ -615,11 +614,11 @@ mod tests {
             .open_writer::<String, String, u64, i64>(shard_id)
             .await
             .expect("codec mismatch");
-        let read1 = client
+        let mut read1 = client
             .open_reader::<String, String, u64, i64>(shard_id)
             .await
             .expect("codec mismatch");
-        let read2 = client
+        let mut read2 = client
             .open_reader::<String, String, u64, i64>(shard_id)
             .await
             .expect("codec mismatch");
@@ -629,15 +628,11 @@ mod tests {
             .expect("codec mismatch");
 
         write2.expect_compare_and_append(&data[..1], 0, 2).await;
-        assert_eq!(
-            read2.expect_snapshot(1).await.read_all().await,
-            all_ok(&data[..1], 1)
-        );
+        let snap2 = read2.expect_snapshot(1).await;
+        assert_eq!(read2.fetch_batches(snap2).await, all_ok(&data[..1], 1));
         write1.expect_compare_and_append(&data[1..], 2, 4).await;
-        assert_eq!(
-            read1.expect_snapshot(3).await.read_all().await,
-            all_ok(&data, 3)
-        );
+        let snap1 = read1.expect_snapshot(3).await;
+        assert_eq!(read1.fetch_batches(snap1).await, all_ok(&data, 3));
     }
 
     #[tokio::test]
@@ -735,20 +730,19 @@ mod tests {
 
         // InvalidUsage from ReadHandle methods.
         {
-            let mut splits = read0
-                .snapshot_splits(Antichain::from_elem(3), NonZeroUsize::new(1).unwrap())
+            let mut snap = read0
+                .snapshot(Antichain::from_elem(3))
                 .await
                 .expect("cannot serve requested as_of");
-            let split = splits.pop().unwrap();
 
             let shard_id1 = "s11111111-1111-1111-1111-111111111111"
                 .parse::<ShardId>()
                 .expect("invalid shard id");
-            let (_, read1) = client
+            let (_, mut read1) = client
                 .expect_open::<String, String, u64, i64>(shard_id1)
                 .await;
             assert_eq!(
-                read1.snapshot_iter(split).await.unwrap_err(),
+                read1.fetch_batch(snap.pop().unwrap()).await.unwrap_err(),
                 InvalidUsage::SnapshotNotFromThisShard {
                     snapshot_shard: shard_id0,
                     handle_shard: shard_id1,
@@ -869,13 +863,13 @@ mod tests {
 
         let client = new_test_client().await;
 
-        let (mut write1, read1) = client
+        let (mut write1, mut read1) = client
             .expect_open::<String, String, u64, i64>(ShardId::new())
             .await;
 
         // Different types, so that checks would fail in case we were not separating these
         // collections internally.
-        let (mut write2, read2) = client
+        let (mut write2, mut read2) = client
             .expect_open::<String, (), u64, i64>(ShardId::new())
             .await;
 
@@ -887,11 +881,11 @@ mod tests {
             .expect_compare_and_append(&data2[..], u64::minimum(), 3)
             .await;
 
-        let mut snap = read1.expect_snapshot(2).await;
-        assert_eq!(snap.read_all().await, all_ok(&data1[..], 2));
+        let snap = read1.expect_snapshot(2).await;
+        assert_eq!(read1.fetch_batches(snap).await, all_ok(&data1[..], 2));
 
-        let mut snap = read2.expect_snapshot(2).await;
-        assert_eq!(snap.read_all().await, all_ok(&data2[..], 2));
+        let snap = read2.expect_snapshot(2).await;
+        assert_eq!(read2.fetch_batches(snap).await, all_ok(&data2[..], 2));
     }
 
     #[tokio::test]
@@ -997,7 +991,7 @@ mod tests {
 
         let id = ShardId::new();
         let client = new_test_client().await;
-        let (mut write1, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write1, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         let (mut write2, _read) = client.expect_open::<String, String, u64, i64>(id).await;
 
@@ -1011,8 +1005,8 @@ mod tests {
             .await;
         assert_eq!(write1.upper(), &Antichain::from_elem(3));
 
-        let mut snap = read.expect_snapshot(2).await;
-        assert_eq!(snap.read_all().await, all_ok(&data[..2], 2));
+        let snap = read.expect_snapshot(2).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data[..2], 2));
 
         // Try and write with a wrong expected upper.
         let res = write2
@@ -1032,8 +1026,8 @@ mod tests {
 
         assert_eq!(write2.upper(), &Antichain::from_elem(4));
 
-        let mut snap = read.expect_snapshot(3).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 3));
+        let snap = read.expect_snapshot(3).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 3));
     }
 
     #[tokio::test]
@@ -1051,7 +1045,7 @@ mod tests {
         let id = ShardId::new();
         let client = new_test_client().await;
 
-        let (mut write1, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write1, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         let (mut write2, _read) = client.expect_open::<String, String, u64, i64>(id).await;
 
@@ -1076,8 +1070,8 @@ mod tests {
             .await;
         assert_eq!(write1.upper(), &Antichain::from_elem(6));
 
-        let mut snap = read.expect_snapshot(5).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 5));
+        let snap = read.expect_snapshot(5).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 5));
 
         assert_eq!(
             listen.read_until(&6).await,
@@ -1102,7 +1096,7 @@ mod tests {
         let id = ShardId::new();
         let client = new_test_client().await;
 
-        let (mut write, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         // Write a [0,3) batch.
         write
@@ -1125,8 +1119,8 @@ mod tests {
         write.expect_append(&data[2..5], vec![3], vec![6]).await;
         assert_eq!(write.upper(), &Antichain::from_elem(6));
 
-        let mut snap = read.expect_snapshot(5).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 5));
+        let snap = read.expect_snapshot(5).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 5));
     }
 
     // Per-writer appends can be non-contiguous, as long as appends to the shard from all writers
@@ -1146,7 +1140,7 @@ mod tests {
         let id = ShardId::new();
         let client = new_test_client().await;
 
-        let (mut write1, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write1, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         let (mut write2, _read) = client.expect_open::<String, String, u64, i64>(id).await;
 
@@ -1170,8 +1164,8 @@ mod tests {
             .await;
         assert_eq!(write1.upper(), &Antichain::from_elem(6));
 
-        let mut snap = read.expect_snapshot(5).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 5));
+        let snap = read.expect_snapshot(5).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 5));
     }
 
     // Compare_and_appends need to be contiguous for a shard, meaning the lower of an appended
@@ -1191,7 +1185,7 @@ mod tests {
         let id = ShardId::new();
         let client = new_test_client().await;
 
-        let (mut write, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         // Write a [0,3) batch.
         write.expect_compare_and_append(&data[..2], 0, 3).await;
@@ -1214,8 +1208,8 @@ mod tests {
         write.expect_compare_and_append(&data[2..5], 3, 6).await;
         assert_eq!(write.upper(), &Antichain::from_elem(6));
 
-        let mut snap = read.expect_snapshot(5).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 5));
+        let snap = read.expect_snapshot(5).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 5));
     }
 
     // Per-writer compare_and_appends can be non-contiguous, as long as appends to the shard from
@@ -1235,7 +1229,7 @@ mod tests {
         let id = ShardId::new();
         let client = new_test_client().await;
 
-        let (mut write1, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write1, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         let (mut write2, _read) = client.expect_open::<String, String, u64, i64>(id).await;
 
@@ -1251,8 +1245,8 @@ mod tests {
         write1.expect_compare_and_append(&data[4..5], 5, 6).await;
         assert_eq!(write1.upper(), &Antichain::from_elem(6));
 
-        let mut snap = read.expect_snapshot(5).await;
-        assert_eq!(snap.read_all().await, all_ok(&data, 5));
+        let snap = read.expect_snapshot(5).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 5));
     }
 
     #[test]
@@ -1388,9 +1382,12 @@ mod tests {
 
         let expected = data.records().collect::<Vec<_>>();
         let max_ts = expected.last().map(|(_, t, _)| *t).unwrap_or_default();
-        let (_, read) = client.expect_open::<Vec<u8>, Vec<u8>, u64, i64>(id).await;
-        let actual = read.expect_snapshot(max_ts).await.read_all().await;
-        assert_eq!(actual, all_ok(expected.iter(), max_ts));
+        let (_, mut read) = client.expect_open::<Vec<u8>, Vec<u8>, u64, i64>(id).await;
+        let actual = read.expect_snapshot(max_ts).await;
+        assert_eq!(
+            read.fetch_batches(actual).await,
+            all_ok(expected.iter(), max_ts)
+        );
     }
 
     // Regression test for #12131. Snapshot with as_of >= upper would
@@ -1410,7 +1407,7 @@ mod tests {
 
         let id = ShardId::new();
         let client = new_test_client().await;
-        let (mut write, read) = client.expect_open::<String, String, u64, i64>(id).await;
+        let (mut write, mut read) = client.expect_open::<String, String, u64, i64>(id).await;
 
         // Grab a listener as_of (aka gt) 1, which is not yet closed out.
         let mut listen = read.clone().await.expect_listen(1).await;
@@ -1465,8 +1462,8 @@ mod tests {
         write.expect_compare_and_append(&data[2..], 3, 4).await;
 
         // Read the snapshot and check that it got all the appropriate data.
-        let mut snap = snap.await;
-        assert_eq!(snap.read_all().await, all_ok(&data[..], 3));
+        let snap = snap.await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data[..], 3));
     }
 
     proptest! {

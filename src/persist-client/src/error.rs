@@ -93,8 +93,8 @@ pub enum InvalidUsage<T> {
         /// The expected upper of the batch
         expected_upper: Antichain<T>,
     },
-    /// A [crate::read::SnapshotSplit] was given to
-    /// [crate::read::ReadHandle::snapshot_iter] from a different shard
+    /// A [crate::read::ReaderEnrichedHollowBatch] was given to
+    /// [crate::read::ReadHandle::fetch_batch] from a different shard
     SnapshotNotFromThisShard {
         /// The shard of the snapshot
         snapshot_shard: ShardId,

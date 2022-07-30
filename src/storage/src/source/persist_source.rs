@@ -201,7 +201,7 @@ where
                     let mut updates = read
                         .fetch_batch(batch.clone())
                         .await
-                        .expect("fetching batches cannot fail");
+                        .expect("must accept self-generated batch");
 
                     let mut session = output_handle.session(&cap);
                     session.give_vec(&mut updates);

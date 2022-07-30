@@ -361,7 +361,8 @@ mod api {
         ///
         /// Returns an `Err` with the current upper if the given `as_of` is beyond the current
         /// upper.
-        async fn snapshot(&self, as_of: Antichain<T>) -> Result<Vec<((K, V), T)>, Antichain<T>>;
+        async fn snapshot(&mut self, as_of: Antichain<T>)
+            -> Result<Vec<((K, V), T)>, Antichain<T>>;
 
         async fn current_upper(&mut self) -> Antichain<T>;
 
@@ -895,14 +896,19 @@ mod impls {
                 return Ok(vec![]);
             }
 
-            let mut iter = self
+            let snapshot = self
                 .read
                 .snapshot(as_of.clone())
                 .await
                 .expect("wrong as_of");
 
             let mut updates = Vec::new();
-            while let Some(mut next) = iter.next().await {
+            for batch in snapshot {
+                let mut next = self
+                    .read
+                    .fetch_batch(batch)
+                    .await
+                    .expect("must accept self-generated batch");
                 updates.append(&mut next)
             }
 
@@ -1372,9 +1378,12 @@ mod reader {
         let reader_task = mz_ore::task::spawn(|| "reader", async move {
             // Cannot snapshot at `[0]` if that's not ready.
             if !PartialOrder::less_equal(&as_of, &Antichain::from_elem(T::minimum())) {
-                let mut iter = read.snapshot(as_of.clone()).await.expect("invalid as_of");
-
-                while let Some(next) = iter.next().await {
+                let snapshot = read.snapshot(as_of.clone()).await.expect("invalid as_of");
+                for batch in snapshot {
+                    let next = read
+                        .fetch_batch(batch)
+                        .await
+                        .expect("must accept self-generated batch");
                     println!("instance {}: got from snapshot: {:?}", name, next);
                 }
             }

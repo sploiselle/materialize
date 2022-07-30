@@ -533,7 +533,7 @@ mod tests {
             })
             .await
             .expect("client construction failed");
-        let (mut write, read) = client
+        let (mut write, mut read) = client
             .expect_open::<String, String, u64, i64>(ShardId::new())
             .await;
 
@@ -581,10 +581,8 @@ mod tests {
             .await
             .expect("invalid usage")
             .expect("unexpected upper");
-        assert_eq!(
-            read.expect_snapshot(3).await.read_all().await,
-            all_ok(&data, 3)
-        );
+        let snap = read.expect_snapshot(3).await;
+        assert_eq!(read.fetch_batches(snap).await, all_ok(&data, 3));
     }
 
     #[tokio::test]

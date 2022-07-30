@@ -1171,15 +1171,19 @@ mod persist_read_handles {
                                     as_of: Antichain<T2>,
                                 ) -> Result<Vec<(Row, Diff)>, StorageError>
                                 {
-                                    let mut snapshot = read_handle
+                                    let snapshot = read_handle
                                         .snapshot(as_of)
                                         .await
                                         .map_err(|_| StorageError::ReadBeforeSince(id))?;
 
                                     let mut contents = Vec::new();
 
-                                    while let Some(updates) = snapshot.next().await {
-                                        for ((source_data, _pid), _ts, diff) in updates {
+                                    for batch in snapshot {
+                                        for ((source_data, _pid), _ts, diff) in read_handle
+                                            .fetch_batch(batch)
+                                            .await
+                                            .expect("must accept self-generated batch")
+                                        {
                                             let row =
                                                 source_data.expect("cannot read snapshot").0?;
                                             contents.push((row, diff));

@@ -214,11 +214,16 @@ async fn bench_snapshot_one_iter(
         .open_reader::<Vec<u8>, Vec<u8>, u64, i64>(*shard_id)
         .await?;
 
-    let mut snap = read
+    let snap = read
         .snapshot(as_of.clone())
         .await
         .expect("cannot serve requested as_of");
-    while let Some(x) = snap.next().await {
+
+    for batch in snap {
+        let x = read
+            .fetch_batch(batch)
+            .await
+            .expect("must accept self-generated batch");
         black_box(x);
     }
 
