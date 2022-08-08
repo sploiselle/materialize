@@ -477,6 +477,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoReadEnrichedHollowBatch>
             shard_id: self.shard_id.into_proto(),
             reader_metadata: Some(self.reader_metadata.into_proto()),
             batch: Some(self.batch.into_proto()),
+            leased_seqno: self.leased_seqno.into_proto(),
         }
     }
 
@@ -489,6 +490,7 @@ impl<T: Timestamp + Codec64> RustType<ProtoReadEnrichedHollowBatch>
             batch: proto
                 .batch
                 .into_rust_if_some("ProtoReadEnrichedHollowBatch::batch")?,
+            leased_seqno: proto.leased_seqno.into_rust()?,
         })
     }
 }
