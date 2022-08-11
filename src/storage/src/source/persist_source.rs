@@ -206,7 +206,7 @@ where
     fetcher_builder.build_async(
         scope.clone(),
         async_op!(|initial_capabilities, _frontiers| {
-            let mut fetcher = persist_clients
+            let reader = persist_clients
                 .lock()
                 .await
                 .open(metadata.persist_location.clone())
@@ -216,8 +216,12 @@ where
                     data_shard.clone(),
                 )
                 .await
-                .expect("could not open persist shard")
-                .batch_fetcher();
+                .expect("could not open persist shard");
+
+            // Derive a `BatchFetcher` from this handle, and then expire the
+            // handle because it's no longer needed.
+            let fetcher = reader.batch_fetcher();
+            reader.expire().await;
 
             initial_capabilities.clear();
 
