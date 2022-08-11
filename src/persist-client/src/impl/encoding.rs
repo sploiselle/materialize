@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 
 use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::Description;
+use mz_persist::location::SeqNo;
 use mz_persist_types::{Codec, Codec64};
 use mz_proto::{IntoRustIfSome, ProtoType, RustType, TryFromProtoError};
 use prost::Message;
@@ -25,12 +26,13 @@ use crate::error::CodecMismatch;
 use crate::r#impl::paths::PartialBlobKey;
 use crate::r#impl::state::proto_hollow_batch_reader_metadata;
 use crate::r#impl::state::{
-    HollowBatch, ProtoHollowBatch, ProtoHollowBatchReaderMetadata, ProtoReadEnrichedHollowBatch,
-    ProtoReaderState, ProtoStateRollup, ProtoTrace, ProtoU64Antichain, ProtoU64Description,
-    ProtoWriterState, ReaderState, State, StateCollections, WriterState,
+    HollowBatch, ProtoConsumedBatch, ProtoHollowBatch, ProtoHollowBatchReaderMetadata,
+    ProtoReadEnrichedHollowBatch, ProtoReaderState, ProtoStateRollup, ProtoTrace,
+    ProtoU64Antichain, ProtoU64Description, ProtoWriterState, ReaderState, State, StateCollections,
+    WriterState,
 };
 use crate::r#impl::trace::Trace;
-use crate::read::{HollowBatchReaderMetadata, ReaderEnrichedHollowBatch, ReaderId};
+use crate::read::{ConsumedBatch, HollowBatchReaderMetadata, ReaderEnrichedHollowBatch, ReaderId};
 use crate::{ShardId, WriterId};
 
 pub(crate) fn parse_id(id_prefix: char, id_type: &str, encoded: &str) -> Result<[u8; 16], String> {
@@ -492,6 +494,34 @@ impl<T: Timestamp + Codec64> RustType<ProtoReadEnrichedHollowBatch>
                 .into_rust_if_some("ProtoReadEnrichedHollowBatch::batch")?,
             leased_seqno: proto.leased_seqno.into_rust()?,
         })
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SerdeConsumedBatch(Vec<u8>);
+
+impl From<ConsumedBatch> for SerdeConsumedBatch {
+    fn from(x: ConsumedBatch) -> Self {
+        SerdeConsumedBatch(x.into_proto().encode_to_vec())
+    }
+}
+
+impl From<SerdeConsumedBatch> for ConsumedBatch {
+    fn from(x: SerdeConsumedBatch) -> Self {
+        let proto = ProtoConsumedBatch::decode(x.0.as_slice())
+            .expect("internal error: invalid ProtoConsumedBatch");
+        proto
+            .into_rust()
+            .expect("internal error: invalid ProtoConsumedBatch")
+    }
+}
+
+impl RustType<ProtoConsumedBatch> for ConsumedBatch {
+    fn into_proto(&self) -> ProtoConsumedBatch {
+        ProtoConsumedBatch { seqno: self.0 .0 }
+    }
+
+    fn from_proto(proto: ProtoConsumedBatch) -> Result<Self, TryFromProtoError> {
+        Ok(ConsumedBatch(SeqNo(proto.seqno)))
     }
 }
 

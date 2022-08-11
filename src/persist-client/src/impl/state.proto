@@ -87,3 +87,7 @@ message ProtoReadEnrichedHollowBatch {
     ProtoHollowBatch batch = 3;
     uint64 leased_seqno = 4;
 }
+
+message ProtoConsumedBatch {
+    uint64 seqno = 1;
+}

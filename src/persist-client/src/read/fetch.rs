@@ -32,7 +32,7 @@ use crate::r#impl::paths::PartialBlobKey;
 use crate::read::HollowBatchReaderMetadata;
 use crate::ShardId;
 
-use super::{ReadHandle, ReaderEnrichedHollowBatch};
+use super::{ConsumedBatch, ReadHandle, ReaderEnrichedHollowBatch};
 
 /// Capable of fetch batches, and appropriately handling the metadata on
 /// [`ReaderEnrichedHollowBatch`]es.
@@ -61,14 +61,22 @@ where
 
     /// Trade in an exchange-able [ReaderEnrichedHollowBatch] for the data it
     /// represents.
-    #[instrument(level = "debug", skip_all, fields(shard = %self.handle.machine.shard_id()))]
-    /// Trade in an exchange-able [ReaderEnrichedHollowBatch] for the data it
-    /// represents.
+    ///
+    /// The [`ConsumedBatch`] returned after fetching must be passed back to
+    /// issuer ([`ReadHandle::process_consumed_batch`],
+    /// [`Subscribe::process_consumed_batch`]), so that it can properly handle
+    /// internal bookkeeping.
     #[instrument(level = "debug", skip_all, fields(shard = %self.handle.machine.shard_id()))]
     pub async fn fetch_batch(
         &mut self,
         batch: ReaderEnrichedHollowBatch<T>,
-    ) -> Result<Vec<((Result<K, String>, Result<V, String>), T, D)>, InvalidUsage<T>> {
+    ) -> Result<
+        (
+            ConsumedBatch,
+            Vec<((Result<K, String>, Result<V, String>), T, D)>,
+        ),
+        InvalidUsage<T>,
+    > {
         if batch.shard_id != self.handle.machine.shard_id() {
             return Err(InvalidUsage::BatchNotFromThisShard {
                 batch_shard: batch.shard_id,
@@ -76,6 +84,7 @@ where
             });
         }
 
+        let batch_seqno = batch.seqno();
         let mut updates = Vec::new();
         for key in batch.batch.keys.iter() {
             self.handle.maybe_heartbeat_reader().await;
@@ -126,13 +135,11 @@ where
             .await;
         }
 
-        self.handle.drop_seqno_lease(batch.leased_seqno);
-
         if let HollowBatchReaderMetadata::Listen { since, .. } = batch.reader_metadata {
             self.handle.maybe_downgrade_since(&since).await;
         }
 
-        Ok(updates)
+        Ok((ConsumedBatch(batch_seqno), updates))
     }
 }
 

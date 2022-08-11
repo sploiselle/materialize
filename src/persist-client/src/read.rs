@@ -28,7 +28,7 @@ use uuid::Uuid;
 use mz_persist::location::{Blob, SeqNo};
 use mz_persist_types::{Codec, Codec64};
 
-use crate::r#impl::encoding::SerdeReaderEnrichedHollowBatch;
+use crate::r#impl::encoding::{SerdeConsumedBatch, SerdeReaderEnrichedHollowBatch};
 use crate::r#impl::machine::Machine;
 use crate::r#impl::metrics::Metrics;
 use crate::r#impl::state::{HollowBatch, Since};
@@ -83,7 +83,8 @@ pub(crate) enum HollowBatchReaderMetadata<T> {
 /// A token representing one read batch.
 ///
 /// This may be exchanged (including over the network). It is tradeable via
-/// [BatchFetcher::fetch_batch] for the resulting data stored in the batch.
+/// [BatchFetcher::fetch_batch] for the resulting data stored in the
+/// batch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "T: Timestamp + Codec64",
@@ -101,8 +102,7 @@ pub struct ReaderEnrichedHollowBatch<T> {
     /// returned to the [`ReadHandle`] from which it originated for the `SeqNo`
     /// to be GCed.
     ///
-    /// For strategies to accomplish that, see the documentation on functions
-    /// that return `Self`.
+    /// For more details on this, see [`ConsumedBatch`].
     pub(crate) leased_seqno: SeqNo,
 }
 
@@ -124,6 +124,16 @@ where
         self.leased_seqno
     }
 }
+
+/// Expressed that a [`ReaderEnrichedHollowBatch`] has been consumed by
+/// [`BatchFetcher::fetch_batch`].
+///
+/// Upon receipt, this value should be returned to the batch's issuer
+/// ([`ReadHandle::process_consumed_batch`]) so the read handle can perform
+/// internal bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "SerdeConsumedBatch", from = "SerdeConsumedBatch")]
+pub struct ConsumedBatch(pub(crate) SeqNo);
 
 /// Capable of generating a snapshot of all data at `as_of`, followed by a
 /// listen of all updates.
@@ -163,13 +173,6 @@ where
     ///
     /// First returns snapshot batches, until they're exhausted, at which point
     /// begins returning listen batches.
-    ///
-    /// The returned [`ReaderEnrichedHollowBatch`] is appropriate to use with
-    /// `ReadHandle::fetch_batch`.
-    ///
-    /// Note that because `ReaderEnrichedHollowBatch` includes a `SeqNo` lease,
-    /// it must be returned to the same `Subscribe` via
-    /// [`Self::drop_seqno_lease`] to permit GC of the `SeqNo`.
     #[instrument(level = "debug", skip_all, fields(shard = %self.listen.handle.machine.shard_id()))]
     pub async fn next(&mut self) -> ReaderEnrichedHollowBatch<T> {
         // This is odd, but we move our handle into a `Listen`.
@@ -181,9 +184,10 @@ where
         }
     }
 
-    /// Passes through request to drop SeqNo lease
-    pub fn drop_seqno_lease(&mut self, seqno: SeqNo) {
-        self.listen.handle.drop_seqno_lease(seqno);
+    /// Passes through the request to process the consumed batch to
+    /// [`ReadHandle::process_consumed_batch`].
+    pub fn process_consumed_batch(&mut self, consumed_batch: ConsumedBatch) {
+        self.listen.handle.process_consumed_batch(consumed_batch);
     }
 }
 
@@ -210,7 +214,7 @@ where
     D: Semigroup + Codec64 + Send + Sync,
 {
     handle: ReadHandle<K, V, T, D>,
-    fetcher: fetch::BatchFetcher<K, V, T, D>,
+    fetcher: BatchFetcher<K, V, T, D>,
 
     as_of: Antichain<T>,
     since: Antichain<T>,
@@ -351,16 +355,15 @@ where
     #[instrument(level = "debug", name = "listen::next", skip_all, fields(shard = %self.handle.machine.shard_id()))]
     pub async fn next(&mut self) -> Vec<ListenEvent<K, V, T, D>> {
         let batch = self.next_batch().await;
-        let batch_seqno_lease = batch.seqno();
         let progress = batch.batch.desc.upper().clone();
 
-        let updates = self
+        let (consumed_batch, updates) = self
             .fetcher
             .fetch_batch(batch)
             .await
             .expect("must accept self-generated batch");
 
-        self.handle.drop_seqno_lease(batch_seqno_lease);
+        self.handle.process_consumed_batch(consumed_batch);
 
         let mut ret = Vec::with_capacity(2);
         if !updates.is_empty() {
@@ -538,10 +541,6 @@ where
     /// The `Since` error indicates that the requested `as_of` cannot be served
     /// (the caller has out of date information) and includes the smallest
     /// `as_of` that would have been accepted.
-    ///
-    /// The returned [`ReaderEnrichedHollowBatch`]es include `SeqNo` leases,
-    /// which must be returned to the same `ReadHandle`. You can accomplish
-    /// this via explicit calls to [`Self::drop_seqno_lease`].
     #[instrument(level = "trace", skip_all, fields(shard = %self.machine.shard_id()))]
     pub async fn snapshot(
         &mut self,
@@ -577,14 +576,12 @@ where
 
         let mut contents = Vec::new();
         for batch in snap {
-            let leased_seqno = batch.seqno();
-
-            let mut r = fetcher
+            let (consumed_batch, mut r) = fetcher
                 .fetch_batch(batch)
                 .await
                 .expect("must accept self-generated snapshot");
             contents.append(&mut r);
-            self.drop_seqno_lease(leased_seqno);
+            self.process_consumed_batch(consumed_batch);
         }
         Ok(contents)
     }
@@ -605,18 +602,26 @@ where
     }
     /// Tracks that the `ReadHandle`'s machine's current `SeqNo` is being
     /// "leased out" to a `ReaderEncirchedHollowBatch`, and cannot be garbage
-    /// collected until its lease has been dropped (`Self::drop_seqno_lease`).
+    /// collected until its lease has been dropped by the batch being consumed
+    /// and returned to `self` ([`Self::process_consumed_batch`]).
     fn lease_seqno(&mut self) -> SeqNo {
         let lease = self.machine.seqno();
         *self.leased_seqnos.entry(lease).or_insert(0) += 1;
         lease
     }
 
-    /// Tracks that a `SeqNo` lease has been returned and can be dropped. Once
-    /// a `SeqNo` has no more outstanding leases, it can be removed, and
-    /// `Self::downgrade_since` no longer needs to prevent it from being
-    /// garbage collected.
-    pub fn drop_seqno_lease(&mut self, leased_seqno: SeqNo) {
+    /// Processes that a batch issued from `self` has been consumed, and `self`
+    /// can now process any internal bookkeeping.
+    ///
+    /// # Panics
+    /// - If `self` does not have record of issuing the [`ConsumedBatch`], e.g.
+    ///   it originated from from another `ReadHandle`.
+    pub fn process_consumed_batch(&mut self, consumed_batch: ConsumedBatch) {
+        // Tracks that a `SeqNo` lease has been returned and can be dropped. Once
+        // a `SeqNo` has no more outstanding leases, it can be removed, and
+        // `Self::downgrade_since` no longer needs to prevent it from being
+        // garbage collected.
+        let leased_seqno = consumed_batch.0;
         let remaining_leases = self
             .leased_seqnos
             .get_mut(&leased_seqno)
