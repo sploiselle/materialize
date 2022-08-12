@@ -2874,6 +2874,7 @@ dependencies = [
  "axum",
  "clap",
  "dirs",
+ "indicatif",
  "mz-ore",
  "open",
  "reqwest",
@@ -3630,6 +3631,7 @@ dependencies = [
  "futures",
  "futures-task",
  "futures-util",
+ "mz-build-info",
  "mz-http-util",
  "mz-orchestrator-tracing",
  "mz-ore",
@@ -3643,6 +3645,7 @@ dependencies = [
  "proptest-derive",
  "prost",
  "prost-build",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
@@ -3958,6 +3961,7 @@ dependencies = [
  "mz-walkabout",
  "phf",
  "phf_codegen",
+ "serde",
  "tracing",
  "uncased",
  "unicode-width",
@@ -3975,6 +3979,7 @@ dependencies = [
  "futures",
  "junit-report",
  "md-5",
+ "mz-build-info",
  "mz-controller",
  "mz-environmentd",
  "mz-orchestrator",
@@ -5910,9 +5915,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.24.7"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54cb4ebf3d49308b99e6e9dc95e989e2fdbdc210e4f67c39db0bb89ba927001c"
+checksum = "1594a36887d0f70096702bffadfb67dfbfe76ad4bf84605e86157dc9fce9961a"
 dependencies = [
  "cfg-if",
  "core-foundation-sys",
