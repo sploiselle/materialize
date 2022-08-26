@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use anyhow::bail;
 use rdkafka::client::ClientContext;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::{Offset, TopicPartitionList};
@@ -22,7 +23,7 @@ use mz_kafka_util::client::{create_new_client_config, MzClientContext};
 use mz_ore::task;
 use mz_secrets::SecretsReader;
 use mz_sql_parser::ast::display::AstDisplay;
-use mz_sql_parser::ast::{KafkaConfigOption, KafkaConfigOptionName};
+use mz_sql_parser::ast::{AstInfo, KafkaConfigOption, KafkaConfigOptionName};
 use mz_storage::types::connections::{
     CsrConnection, CsrConnectionHttpAuth, KafkaConnection, StringOrSecret, TlsIdentity,
 };
@@ -49,7 +50,14 @@ generate_extracted_config!(
     (TopicMetadataRefreshIntervalMs, i32),
     (TransactionTimeoutMs, i32),
     (StartTimestamp, i64),
-    (StartOffset, Vec<i64>)
+    (StartOffset, Vec<i64>),
+    (AvroKeyFullName, String),
+    (AvroValueFullName, String),
+    (PartitionCount, i32, Default(-1)),
+    (ReplicationFactor, i32, Default(-1)),
+    (RetentionBytes, i64),
+    (RetentionMs, i64),
+    (ReuseTopic, bool, Default(false))
 );
 
 /// An enum that represents start offsets for a kafka consumer.
@@ -59,6 +67,47 @@ pub enum KafkaStartOffsetType {
     StartOffset(Vec<i64>),
     /// Specified by the user.
     StartTimestamp(i64),
+}
+
+#[derive(Debug)]
+pub enum KafkaConfigOptionValidation {
+    Source,
+    Sink,
+}
+
+pub fn validate_with_options_for_context<T: AstInfo>(
+    options: &[KafkaConfigOption<T>],
+    context: KafkaConfigOptionValidation,
+) -> Result<(), anyhow::Error> {
+    for KafkaConfigOption { name, .. } in options {
+        use KafkaConfigOptionName::*;
+        match context {
+            KafkaConfigOptionValidation::Sink => {
+                if matches!(
+                    name,
+                    KafkaConfigOptionName::StartOffset | KafkaConfigOptionName::StartTimestamp
+                ) {
+                    bail!("cannot specify {} for SINK", name.to_ast_string())
+                }
+            }
+            KafkaConfigOptionValidation::Source => {
+                if matches!(
+                    name,
+                    AvroKeyFullName
+                        | AvroValueFullName
+                        | PartitionCount
+                        | ReplicationFactor
+                        | RetentionBytes
+                        | RetentionMs
+                        | ReuseTopic
+                ) {
+                    bail!("cannot specify {} for SOURCE", name.to_ast_string())
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl TryFrom<KafkaConfigOptionExtracted>
@@ -83,6 +132,13 @@ impl TryFrom<KafkaConfigOptionExtracted>
             transaction_timeout_ms,
             start_offset,
             start_timestamp,
+            reuse_topic: _,
+            avro_key_full_name: _,
+            avro_value_full_name: _,
+            partition_count: _,
+            replication_factor: _,
+            retention_ms: _,
+            retention_bytes: _,
             seen: _,
         }: KafkaConfigOptionExtracted,
     ) -> Result<

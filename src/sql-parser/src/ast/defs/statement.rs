@@ -529,6 +529,36 @@ impl<T: AstInfo> AstDisplay for CreateSourceStatement<T> {
 }
 impl_display_t!(CreateSourceStatement);
 
+/// An option in a `CREATE SINK` statement.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CreateSourceOptions {
+    Snapshot,
+}
+
+impl AstDisplay for CreateSourceOptions {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str(match self {
+            CreateSourceOptions::Snapshot => "SNAPSHOT",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KafkaSinkOption<T: AstInfo> {
+    pub name: CreateSourceOptions,
+    pub value: Option<WithOptionValue<T>>,
+}
+
+impl<T: AstInfo> AstDisplay for KafkaSinkOption<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_node(&self.name);
+        if let Some(v) = &self.value {
+            f.write_str(" = ");
+            f.write_node(v);
+        }
+    }
+}
+
 /// `CREATE SINK`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CreateSinkStatement<T: AstInfo> {
@@ -536,11 +566,9 @@ pub struct CreateSinkStatement<T: AstInfo> {
     pub if_not_exists: bool,
     pub from: T::ObjectName,
     pub connection: CreateSinkConnection<T>,
-    pub with_options: Vec<WithOption<T>>,
     pub format: Option<Format<T>>,
     pub envelope: Option<Envelope<T>>,
-    pub with_snapshot: bool,
-    pub as_of: Option<AsOf<T>>,
+    pub with_options: Vec<KafkaSinkOption<T>>,
 }
 
 impl<T: AstInfo> AstDisplay for CreateSinkStatement<T> {
@@ -567,15 +595,11 @@ impl<T: AstInfo> AstDisplay for CreateSinkStatement<T> {
             f.write_str(" ENVELOPE ");
             f.write_node(envelope);
         }
-        if self.with_snapshot {
-            f.write_str(" WITH SNAPSHOT");
-        } else {
-            f.write_str(" WITHOUT SNAPSHOT");
-        }
 
-        if let Some(as_of) = &self.as_of {
-            f.write_str(" ");
-            f.write_node(as_of);
+        if !self.with_options.is_empty() {
+            f.write_str(" WITH (");
+            f.write_node(&display::comma_separated(&self.with_options));
+            f.write_str(")");
         }
     }
 }

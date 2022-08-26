@@ -2045,17 +2045,32 @@ impl<'a> Parser<'a> {
     fn parse_kafka_config_options(&mut self) -> Result<KafkaConfigOption<Raw>, ParserError> {
         let name = match self.expect_one_of_keywords(&[
             ACKS,
+            AVRO,
             CLIENT,
             ENABLE,
             FETCH,
             GROUP,
             ISOLATION,
+            PARTITION,
+            REPLICATION,
+            RETENTION,
+            REUSE,
+            SNAPSHOT,
+            START,
             STATISTICS,
             TOPIC,
             TRANSACTION,
-            START,
         ])? {
             ACKS => KafkaConfigOptionName::Acks,
+            AVRO => {
+                let name = match self.expect_one_of_keywords(&[KEY, VALUE])? {
+                    KEY => KafkaConfigOptionName::AvroKeyFullName,
+                    VALUE => KafkaConfigOptionName::AvroValueFullName,
+                    _ => unreachable!(),
+                };
+                self.expect_keywords(&[FULL, NAME])?;
+                name
+            }
             CLIENT => {
                 self.expect_keyword(ID)?;
                 KafkaConfigOptionName::ClientId
@@ -2080,6 +2095,19 @@ impl<'a> Parser<'a> {
                 self.expect_keyword(LEVEL)?;
                 KafkaConfigOptionName::IsolationLevel
             }
+            PARTITION => {
+                self.expect_keyword(COUNT)?;
+                KafkaConfigOptionName::PartitionCount
+            }
+            REPLICATION => {
+                self.expect_keyword(FACTOR)?;
+                KafkaConfigOptionName::ReplicationFactor
+            }
+            RETENTION => match self.expect_one_of_keywords(&[BYTES, DURATION])? {
+                BYTES => KafkaConfigOptionName::RetentionBytes,
+                MS => KafkaConfigOptionName::RetentionMs,
+                _ => unreachable!(),
+            },
             STATISTICS => {
                 self.expect_keywords(&[INTERVAL, MS])?;
                 KafkaConfigOptionName::StatisticsIntervalMs
@@ -2336,47 +2364,46 @@ impl<'a> Parser<'a> {
         let from = self.parse_raw_name()?;
         self.expect_keyword(INTO)?;
         let connection = self.parse_create_sink_connection()?;
-        let mut with_options = vec![];
-        if self.parse_keyword(WITH) {
-            if let Some(Token::LParen) = self.next_token() {
-                self.prev_token();
-                self.prev_token();
-                with_options = self.parse_opt_with_options()?;
-            }
-        }
         let format = if self.parse_keyword(FORMAT) {
             Some(self.parse_format()?)
         } else {
             None
         };
+
         let envelope = if self.parse_keyword(ENVELOPE) {
             Some(self.parse_envelope()?)
         } else {
             None
         };
-        let with_snapshot = if self.parse_keyword(WITH) {
-            self.expect_keyword(SNAPSHOT)?;
-            true
-        } else if self.parse_keyword(WITHOUT) {
-            self.expect_keyword(SNAPSHOT)?;
-            false
+
+        let with_options = if self.parse_keyword(WITH) {
+            self.expect_token(&Token::LParen)?;
+            let options = self.parse_comma_separated(Parser::parse_create_sink_options)?;
+            self.expect_token(&Token::RParen)?;
+            options
         } else {
-            // If neither WITH nor WITHOUT SNAPSHOT is provided,
-            // default to WITH SNAPSHOT.
-            true
+            vec![]
         };
-        let as_of = self.parse_optional_as_of()?;
+
         Ok(Statement::CreateSink(CreateSinkStatement {
             name,
             from,
             connection,
-            with_options,
             format,
             envelope,
-            with_snapshot,
-            as_of,
             if_not_exists,
+            with_options,
         }))
+    }
+
+    fn parse_create_sink_options(&mut self) -> Result<KafkaSinkOption<Raw>, ParserError> {
+        let name = match self.expect_one_of_keywords(&[SNAPSHOT])? {
+            SNAPSHOT => CreateSourceOptions::Snapshot,
+            _ => unreachable!(),
+        };
+        let _ = self.consume_token(&Token::Eq);
+        let value = self.parse_opt_with_option_value(false)?;
+        Ok(KafkaSinkOption { name, value })
     }
 
     fn parse_create_source_connection(
