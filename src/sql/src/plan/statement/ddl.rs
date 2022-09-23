@@ -432,7 +432,7 @@ pub fn plan_create_source(
 
                         let topic = extracted_options
                             .topic
-                            .ok_or_else(|| sql_err!("KAFKA CONNECTION without TOPIC"))?;
+                            .expect("validated exists during purification");
 
                         (
                             connection,
