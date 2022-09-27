@@ -59,8 +59,8 @@ use mz_stash::{self, StashError, TypedCollection};
 
 use crate::controller::hosts::{StorageHosts, StorageHostsConfig};
 use crate::protocol::client::{
-    ExportSinkCommand, IngestSourceCommand, ProtoStorageCommand, ProtoStorageResponse,
-    StorageCommand, StorageResponse, Update,
+    ExportSinkCommand, InfallibleUpdate, IngestSourceCommand, ProtoStorageCommand,
+    ProtoStorageResponse, StorageCommand, StorageResponse, Update,
 };
 use crate::types::errors::DataflowError;
 use crate::types::hosts::{StorageHostConfig, StorageHostResourceAllocation};
@@ -720,7 +720,7 @@ impl Arbitrary for DurableExportMetadata<mz_repr::Timestamp> {
 /// Controller state maintained for each storage instance.
 #[derive(Debug)]
 pub struct StorageControllerState<
-    T: Timestamp + Lattice + Codec64,
+    T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation,
     S = mz_stash::Memory<mz_stash::Postgres>,
 > {
     /// Collections maintained by the storage controller.
@@ -746,7 +746,8 @@ pub struct StorageControllerState<
 
 /// A storage controller for a storage instance.
 #[derive(Debug)]
-pub struct Controller<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
+pub struct Controller<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation>
+{
     state: StorageControllerState<T>,
     /// Storage host provisioning and storage object assignment.
     hosts: StorageHosts<T>,
@@ -762,7 +763,7 @@ pub struct Controller<T: Timestamp + Lattice + Codec64 + TimestampManipulation> 
     managed_collection_tx: Option<mpsc::Sender<(GlobalId, Vec<(Row, Diff)>)>>,
 }
 
-impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Controller<T> {
+impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation> Controller<T> {
     async fn open_persist_client(&mut self) -> PersistClient {
         self.persist
             .lock()
@@ -859,10 +860,13 @@ impl From<DataflowError> for StorageError {
     }
 }
 
-impl<T: Timestamp + Lattice + Codec64> StorageControllerState<T> {
+impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation>
+    StorageControllerState<T>
+{
     pub(super) async fn new(
         postgres_url: String,
         tx: tokio::sync::mpsc::UnboundedSender<StorageResponse<T>>,
+        now: NowFn,
     ) -> Self {
         let tls = mz_postgres_util::make_tls(
             &tokio_postgres::config::Config::from_str(&postgres_url)
@@ -878,7 +882,7 @@ impl<T: Timestamp + Lattice + Codec64> StorageControllerState<T> {
             exports: BTreeMap::default(),
             exported_collections: BTreeMap::default(),
             stash,
-            persist_write_handles: Arc::new(persist_write_handles::PersistWorker::new(tx)),
+            persist_write_handles: Arc::new(persist_write_handles::PersistWorker::new(tx, now)),
             persist_read_handles: persist_read_handles::PersistWorker::new(),
             stashed_response: None,
         }
@@ -1065,67 +1069,32 @@ where
                                         tokio::time::Duration::from_millis(1_000),
                                     );
 
-                                    let mut max_ts = T::minimum();
-
-                                    // Returns an upper guaranteed to be
-                                    // greater than the current write frontier,
-                                    // either `now` or `write_frontier++`. We
-                                    // prefer `now` because it's likely further
-                                    // in the future, making reading these
-                                    // collections more likely to return
-                                    // quickly.
-                                    macro_rules! max_now_write_frontier {
-                                        ($write_frontier:expr, $now:expr) => {{
-                                            if $write_frontier.less_than(&$now) {
-                                                $now
-                                            } else {
-                                                match $write_frontier.elements().iter().min() {
-                                                    Some(upper) => upper.clone(),
-                                                    // Closed collection
-                                                    None => continue,
-                                                }
-                                            }
-                                        }};
-                                    }
                                     loop {
-                                        tokio::select! {
+                                        let updates = tokio::select! {
                                             _ = interval.tick() => {
                                                 let collections = collections.lock().await;
-                                                let now = T::from(now());
-                                                let mut upper_candidate = T::minimum();
-                                                for (_, write_frontier) in collections.iter() {
-                                                    let write_frontier = write_frontier.lock().await;
-                                                    let upper = max_now_write_frontier!(write_frontier, now.clone());
-                                                    upper_candidate = std::cmp::max(upper_candidate, upper);
-                                                };
-
-                                                max_ts = std::cmp::max(upper_candidate, max_ts.step_forward());
-
-                                                let updates = collections.iter().map(|(id, _)| {
-                                                    (*id, vec![], max_ts.clone())
-                                                }).collect::<Vec<_>>();
-
-                                                // When advancing timestamps, errors don't matter
-                                                let _ = write_handle.append(updates).await;
+                                                collections.iter().map(|(id, _)| {
+                                                    (*id, vec![])
+                                                }).collect::<Vec<_>>()
                                             },
                                             cmd = rx.recv() => {
-                                                if let Some((id, rows)) = cmd {
-                                                    let collections = collections.lock().await;
-                                                    let write_frontier = &collections[&id].lock().await;
-                                                    let upper_candidate = dbg!(max_now_write_frontier!(write_frontier, T::from(now())));
-                                                    max_ts = std::cmp::max(upper_candidate, max_ts.step_forward());
-                                                    let lower = dbg!(max_ts.step_back().expect("upper cannot be T::minimum()"));
-
-                                                    let updates = vec![(id, rows.into_iter().map(|(row, diff)| Update {
-                                                        row,
-                                                        diff,
-                                                        timestamp: lower.clone()
-                                                    }).collect::<Vec<_>>(), max_ts.clone())];
-
-                                                    write_handle.append(updates).await.unwrap().unwrap();
+                                                match cmd {
+                                                    Some((id, rows)) => {
+                                                        vec![(id, rows.into_iter().map(|(row, diff)| InfallibleUpdate {
+                                                            row,
+                                                            diff,
+                                                        }).collect::<Vec<_>>())]
+                                                    },
+                                                    None => vec![],
                                                 }
                                             }
-                                        }
+                                        };
+
+                                        write_handle
+                                            .infallible_append(updates)
+                                            .await
+                                            .unwrap()
+                                            .unwrap();
                                     }
                                 },
                             );
@@ -1652,7 +1621,7 @@ where
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let c = Self {
-            state: StorageControllerState::new(postgres_url, tx).await,
+            state: StorageControllerState::new(postgres_url, tx, now.clone()).await,
             hosts: StorageHosts::new(
                 StorageHostsConfig {
                     build_info,
@@ -1675,7 +1644,7 @@ where
 
 impl<T> Controller<T>
 where
-    T: Timestamp + Lattice + TotalOrder + Codec64 + TimestampManipulation,
+    T: Timestamp + Lattice + TotalOrder + Codec64 + From<EpochMillis> + TimestampManipulation,
 
     // Required to setup grpc clients for new storaged instances.
     StorageCommand<T>: RustType<ProtoStorageCommand>,
@@ -2082,32 +2051,35 @@ mod persist_read_handles {
 
 mod persist_write_handles {
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
 
     use differential_dataflow::lattice::Lattice;
     use futures::stream::FuturesUnordered;
     use itertools::Itertools;
     use timely::progress::{Antichain, Timestamp};
     use tokio::sync::mpsc::UnboundedSender;
+    use tracing::Instrument;
 
+    use mz_ore::now::{EpochMillis, NowFn};
     use mz_persist_client::write::WriteHandle;
     use mz_persist_types::Codec64;
-    use mz_repr::{Diff, GlobalId};
-    use tracing::Instrument;
+    use mz_repr::{Diff, GlobalId, TimestampManipulation};
 
     use crate::controller::StorageError;
     use crate::protocol::client::StorageResponse;
-    use crate::protocol::client::Update;
+    use crate::protocol::client::{InfallibleUpdate, Update};
     use crate::types::sources::SourceData;
 
     #[derive(Debug)]
-    pub struct PersistWorker<T: Timestamp + Lattice + Codec64> {
+    pub struct PersistWorker<
+        T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation,
+    > {
         tx: UnboundedSender<(tracing::Span, PersistWorkerCmd<T>)>,
     }
 
     impl<T> Drop for PersistWorker<T>
     where
-        T: Timestamp + Lattice + Codec64,
+        T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation,
     {
         fn drop(&mut self) {
             self.send(PersistWorkerCmd::Shutdown);
@@ -2123,12 +2095,19 @@ mod persist_write_handles {
             Vec<(GlobalId, Vec<Update<T>>, T)>,
             tokio::sync::oneshot::Sender<Result<(), StorageError>>,
         ),
+        InfallibleAppend(
+            Vec<(GlobalId, Vec<InfallibleUpdate>)>,
+            tokio::sync::oneshot::Sender<Result<(), StorageError>>,
+        ),
         Shutdown,
     }
 
-    impl<T: Timestamp + Lattice + Codec64> PersistWorker<T> {
+    impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulation>
+        PersistWorker<T>
+    {
         pub(crate) fn new(
             mut frontier_responses: tokio::sync::mpsc::UnboundedSender<StorageResponse<T>>,
+            now: NowFn,
         ) -> Self {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(tracing::Span, _)>();
 
@@ -2140,9 +2119,10 @@ mod persist_write_handles {
                     // We do this in case we can consolidate commands.
                     // It would be surprising to receive multiple concurrent `Append` commands,
                     // but we might receive multiple *empty* `Append` commands.
-                    let mut commands = vec![cmd];
+                    let mut commands = VecDeque::new();
+                    commands.push_back(cmd);
                     while let Ok(cmd) = rx.try_recv() {
-                        commands.push(cmd);
+                        commands.push_back(cmd);
                     }
 
                     // Accumulated updates and upper frontier.
@@ -2151,7 +2131,7 @@ mod persist_write_handles {
 
                     let mut shutdown = false;
 
-                    for (span, command) in commands {
+                    while let Some((span, command)) = commands.pop_front() {
                         match command {
                             PersistWorkerCmd::Register(id, write_handle) => {
                                 let previous = write_handles.insert(id, write_handle);
@@ -2187,6 +2167,39 @@ mod persist_write_handles {
                                     old_upper.join_assign(&Antichain::from_elem(upper));
                                 }
                                 all_responses.push(response);
+                            }
+                            PersistWorkerCmd::InfallibleAppend(updates, response) => {
+                                let mut updates_outer = Vec::with_capacity(updates.len());
+                                for (id, update) in updates {
+                                    let now = T::from(now());
+                                    let current_upper = write_handles[&id].upper().clone();
+                                    let lower = if current_upper.less_than(&now) {
+                                        now
+                                    } else {
+                                        current_upper
+                                            .elements()
+                                            .iter()
+                                            .min()
+                                            .expect("cannot append to closed collection")
+                                            .clone()
+                                    };
+
+                                    let upper = lower.step_forward();
+                                    let update = update
+                                        .into_iter()
+                                        .map(|InfallibleUpdate { row, diff }| Update {
+                                            row,
+                                            diff,
+                                            timestamp: lower.clone(),
+                                        })
+                                        .collect::<Vec<_>>();
+
+                                    updates_outer.push((id, update, upper));
+                                }
+                                commands.push_front((
+                                    span,
+                                    PersistWorkerCmd::Append(updates_outer, response),
+                                ));
                             }
                             PersistWorkerCmd::Shutdown => {
                                 shutdown = true;
@@ -2339,6 +2352,27 @@ mod persist_write_handles {
                 rx
             } else {
                 self.send(PersistWorkerCmd::Append(updates, tx));
+                rx
+            }
+        }
+
+        /// Appends values to collections associated with `GlobalId`, but lets
+        /// the persist worker chose the timestamps in such a way that the
+        /// updates are guaranteed to be valid.
+        ///
+        /// The resulting values can always be unwrapped but are maintained to
+        /// use the same internals as `append`.
+        pub(crate) fn infallible_append(
+            &self,
+            updates: Vec<(GlobalId, Vec<InfallibleUpdate>)>,
+        ) -> tokio::sync::oneshot::Receiver<Result<(), StorageError>> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if updates.is_empty() {
+                tx.send(Ok(()))
+                    .expect("rx has not been dropped at this point");
+                rx
+            } else {
+                self.send(PersistWorkerCmd::InfallibleAppend(updates, tx));
                 rx
             }
         }
