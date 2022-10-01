@@ -111,6 +111,7 @@ Drop
 Else
 Enable
 End
+Endpoint
 Enforced
 Envelope
 Escape
@@ -182,7 +183,6 @@ Latest
 Leading
 Least
 Left
-Legacywith
 Level
 Like
 Limit
@@ -259,6 +259,7 @@ Real
 References
 Refresh
 Regex
+Region
 Registry
 Remote
 Rename
