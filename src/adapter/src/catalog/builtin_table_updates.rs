@@ -202,9 +202,10 @@ impl CatalogState {
             CatalogItem::Table(_) => self.pack_table_update(id, oid, schema_id, name, diff),
             CatalogItem::Source(source) => {
                 let (source_type, connection_id) = match &source.data_source {
-                    DataSourceDesc::Ingest(ingest) => {
-                        (ingest.desc.name(), ingest.desc.connection.connection_id())
-                    }
+                    DataSourceDesc::Ingestion(ingestion) => (
+                        ingestion.desc.name(),
+                        ingestion.desc.connection.connection_id(),
+                    ),
                     DataSourceDesc::Source => ("subsource", None),
                     DataSourceDesc::Introspection(_) => ("source", None),
                 };
@@ -217,8 +218,8 @@ impl CatalogState {
                     source_type,
                     connection_id,
                     match &source.host_config {
-                        StorageHostConfig::Remote { .. } => None,
-                        StorageHostConfig::Managed { size, .. } => Some(size),
+                        Some(StorageHostConfig::Remote { .. }) | None => None,
+                        Some(StorageHostConfig::Managed { size, .. }) => Some(size),
                     },
                     diff,
                 )
@@ -233,9 +234,6 @@ impl CatalogState {
             CatalogItem::Secret(_) => self.pack_secret_update(id, schema_id, name, diff),
             CatalogItem::Connection(connection) => {
                 self.pack_connection_update(id, oid, schema_id, name, connection, diff)
-            }
-            CatalogItem::StorageManagedTable(_) => {
-                self.pack_source_update(id, oid, schema_id, name, "source", None, None, diff)
             }
         };
 
