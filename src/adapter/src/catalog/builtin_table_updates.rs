@@ -42,7 +42,7 @@ use crate::catalog::{
 };
 use crate::coord::ReplicaMetadata;
 
-use super::DataSourceDesc;
+use super::{DataSourceDesc, Ingestion};
 
 /// An update to a built-in table.
 #[derive(Debug)]
@@ -217,9 +217,12 @@ impl CatalogState {
                     name,
                     source_type,
                     connection_id,
-                    match &source.host_config {
-                        Some(StorageHostConfig::Remote { .. }) | None => None,
-                        Some(StorageHostConfig::Managed { size, .. }) => Some(size),
+                    match &source.data_source {
+                        DataSourceDesc::Ingestion(Ingestion {
+                            host_config: StorageHostConfig::Managed { size, .. },
+                            ..
+                        }) => Some(size.as_str()),
+                        _ => None,
                     },
                     diff,
                 )
