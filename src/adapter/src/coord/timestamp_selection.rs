@@ -110,13 +110,10 @@ impl<S: Append + 'static> Coordinator<S> {
         &self,
         id_bundle: &CollectionIdBundle,
     ) -> Antichain<mz_repr::Timestamp> {
-        let mut since = Antichain::from_elem(Timestamp::minimum());
-        {
-            let storage = &self.controller.storage;
-            for id in id_bundle.storage_ids.iter() {
-                since.join_assign(&storage.collection(*id).unwrap().implied_capability)
-            }
-        }
+        let mut since = self
+            .controller
+            .storage
+            .least_valid_read(&id_bundle.storage_ids);
         {
             for (instance, compute_ids) in &id_bundle.compute_ids {
                 for id in compute_ids.iter() {

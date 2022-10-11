@@ -20,7 +20,7 @@
 //! Eventually, the source is dropped with either `drop_sources()` or by allowing compaction to the
 //! empty frontier.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
@@ -316,6 +316,8 @@ pub trait StorageController: Debug + Send {
     /// This method is **not** guaranteed to be cancellation safe. It **must**
     /// be awaited to completion.
     async fn process(&mut self) -> Result<(), anyhow::Error>;
+
+    fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp>;
 }
 
 /// Compaction policies for collections maintained by `Controller`.
@@ -1327,6 +1329,14 @@ where
                 Ok(())
             }
         }
+    }
+
+    fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp> {
+        let mut since = Antichain::from_elem(Timestamp::minimum());
+        for id in ids {
+            since.join_assign(&self.state.collections[id].implied_capability)
+        }
+        since
     }
 }
 
