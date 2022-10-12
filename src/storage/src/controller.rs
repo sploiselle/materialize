@@ -317,7 +317,7 @@ pub trait StorageController: Debug + Send {
     /// be awaited to completion.
     async fn process(&mut self) -> Result<(), anyhow::Error>;
 
-    fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp>;
+    async fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp>;
 }
 
 /// Compaction policies for collections maintained by `Controller`.
@@ -1331,7 +1331,14 @@ where
         }
     }
 
-    fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp> {
+    async fn least_valid_read(&self, ids: &BTreeSet<GlobalId>) -> Antichain<Self::Timestamp> {
+        let _ = self
+            .state
+            .persist_write_handles
+            .awaken(ids.clone())
+            .await
+            .expect("sender hung up");
+
         let mut since = Antichain::from_elem(Timestamp::minimum());
         for id in ids {
             since.join_assign(&self.state.collections[id].implied_capability)
@@ -1913,9 +1920,96 @@ mod persist_read_handles {
     }
 }
 
+#[derive(Debug, Clone)]
+struct QuiescenceState<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
+    quiesced: bool,
+    last_activity: T,
+    last_quiesced: T,
+}
+
+#[derive(Debug, Clone)]
+struct Quiescer<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
+    state: HashMap<GlobalId, QuiescenceState<T>>,
+    dur: T,
+}
+
+impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
+    fn new(dur: T) -> Quiescer<T> {
+        Quiescer {
+            state: HashMap::new(),
+            dur,
+        }
+    }
+
+    fn insert(&mut self, id: GlobalId) {
+        let prev = self.state.insert(
+            id,
+            QuiescenceState {
+                quiesced: false,
+                last_activity: T::minimum(),
+                last_quiesced: T::minimum(),
+            },
+        );
+
+        assert!(
+            prev.is_none(),
+            "cannot track quiescence of same collection twice"
+        );
+    }
+
+    fn filter_quiesced_updates(
+        &mut self,
+        updates: Vec<(GlobalId, Vec<Update<T>>, T)>,
+    ) -> Vec<(GlobalId, Vec<Update<T>>, T)> {
+        let mut results = Vec::with_capacity(updates.len());
+        for (id, updates, upper) in updates {
+            if let Some(QuiescenceState {
+                quiesced,
+                last_activity,
+                last_quiesced,
+            }) = self.state.get_mut(&id)
+            {
+                if updates.is_empty() {
+                    if last_activity.step_forward_by(&self.dur) < upper {
+                        *quiesced = true;
+                    }
+                    if *quiesced {
+                        *last_quiesced = upper.clone();
+                        continue;
+                    }
+                } else {
+                    *quiesced = false;
+                    *last_activity = upper.clone();
+                }
+            }
+
+            results.push((id, updates, upper));
+        }
+
+        results
+    }
+
+    fn awaken(&mut self, ids: BTreeSet<GlobalId>) -> Vec<(GlobalId, T)> {
+        let mut results = vec![];
+        for id in ids {
+            if let Some(QuiescenceState {
+                quiesced,
+                last_activity,
+                last_quiesced,
+            }) = self.state.get_mut(&id)
+            {
+                *quiesced = false;
+                *last_activity = last_quiesced.clone();
+                results.push((id, last_activity.clone()))
+            }
+        }
+        results
+    }
+}
+
 mod persist_write_handles {
 
-    use std::collections::{BTreeMap, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
     use differential_dataflow::lattice::Lattice;
     use futures::stream::FuturesUnordered;
@@ -1932,6 +2026,8 @@ mod persist_write_handles {
     use crate::protocol::client::StorageResponse;
     use crate::protocol::client::{TimestamplessUpdate, Update};
     use crate::types::sources::SourceData;
+
+    use super::Quiescer;
 
     #[derive(Debug, Clone)]
     pub struct PersistWorker<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
@@ -1951,7 +2047,7 @@ mod persist_write_handles {
     /// Commands for [PersistWorker].
     #[derive(Debug)]
     enum PersistWorkerCmd<T: Timestamp + Lattice + Codec64> {
-        Register(GlobalId, WriteHandle<SourceData, (), T, Diff>),
+        Register(GlobalId, WriteHandle<SourceData, (), T, Diff>, bool),
         Append(
             Vec<(GlobalId, Vec<Update<T>>, T)>,
             tokio::sync::oneshot::Sender<Result<(), StorageError>>,
@@ -1960,6 +2056,10 @@ mod persist_write_handles {
         /// `max(write_frontier, T)`.
         MonotonicAppend(
             Vec<(GlobalId, Vec<TimestamplessUpdate>, T)>,
+            tokio::sync::oneshot::Sender<Result<(), StorageError>>,
+        ),
+        AwakenQuiescedCollections(
+            BTreeSet<GlobalId>,
             tokio::sync::oneshot::Sender<Result<(), StorageError>>,
         ),
         Shutdown,
@@ -1972,6 +2072,7 @@ mod persist_write_handles {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(tracing::Span, _)>();
 
             mz_ore::task::spawn(|| "PersistWriteHandles", async move {
+                let mut quiescer = Quiescer::new(T::minimum());
                 let mut write_handles = BTreeMap::new();
 
                 while let Some(cmd) = rx.recv().await {
@@ -1993,7 +2094,7 @@ mod persist_write_handles {
 
                     while let Some((span, command)) = commands.pop_front() {
                         match command {
-                            PersistWorkerCmd::Register(id, write_handle) => {
+                            PersistWorkerCmd::Register(id, write_handle, quiesce) => {
                                 let previous = write_handles.insert(id, write_handle);
                                 if previous.is_some() {
                                     panic!(
@@ -2001,8 +2102,13 @@ mod persist_write_handles {
                                         id
                                     );
                                 }
+
+                                if quiesce {
+                                    quiescer.insert(id);
+                                }
                             }
                             PersistWorkerCmd::Append(updates, response) => {
+                                let updates = quiescer.filter_quiesced_updates(updates);
                                 for (id, update, upper) in updates {
                                     let (old_span, updates, old_upper) =
                                         all_updates.entry(id).or_insert_with(|| {
@@ -2066,6 +2172,19 @@ mod persist_write_handles {
                                     span,
                                     PersistWorkerCmd::Append(updates_outer, response),
                                 ));
+                            }
+                            PersistWorkerCmd::AwakenQuiescedCollections(ids, response) => {
+                                let updates = quiescer
+                                    .awaken(ids)
+                                    .into_iter()
+                                    .map(|(id, upper)| (id, vec![], upper))
+                                    .collect_vec();
+                                if !updates.is_empty() {
+                                    commands.push_front((
+                                        span,
+                                        PersistWorkerCmd::Append(updates, response),
+                                    ));
+                                }
                             }
                             PersistWorkerCmd::Shutdown => {
                                 shutdown = true;
@@ -2204,7 +2323,7 @@ mod persist_write_handles {
             id: GlobalId,
             write_handle: WriteHandle<SourceData, (), T, Diff>,
         ) {
-            self.send(PersistWorkerCmd::Register(id, write_handle))
+            self.send(PersistWorkerCmd::Register(id, write_handle, false))
         }
 
         pub(crate) fn append(
@@ -2252,6 +2371,15 @@ mod persist_write_handles {
                 self.send(PersistWorkerCmd::MonotonicAppend(updates, tx));
                 rx
             }
+        }
+
+        pub(crate) fn awaken(
+            &self,
+            ids: BTreeSet<GlobalId>,
+        ) -> tokio::sync::oneshot::Receiver<Result<(), StorageError>> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.send(PersistWorkerCmd::AwakenQuiescedCollections(ids, tx));
+            rx
         }
 
         fn send(&self, cmd: PersistWorkerCmd<T>) {

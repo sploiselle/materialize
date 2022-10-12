@@ -278,7 +278,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 );
             }
             Plan::Explain(plan) => {
-                tx.send(self.sequence_explain(&session, plan), session);
+                tx.send(self.sequence_explain(&session, plan).await, session);
             }
             Plan::SendDiffs(plan) => {
                 tx.send(self.sequence_send_diffs(&mut session, plan), session);
@@ -1078,7 +1078,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 // Determine the initial validity for the table.
                 let since_ts = self.peek_local_write_ts();
 
-                let collection_desc = table.desc.clone().into();
+                let collection_desc = dbg!(table.desc.clone().into());
                 self.controller
                     .storage
                     .create_collections(vec![(table_id, collection_desc)])
@@ -1458,7 +1458,7 @@ impl<S: Append + 'static> Coordinator<S> {
         let id_bundle = self
             .index_oracle(compute_instance)
             .sufficient_collections(&depends_on);
-        let as_of = self.least_valid_read(&id_bundle);
+        let as_of = self.least_valid_read(&id_bundle).await;
 
         let mut ops = Vec::new();
         if let Some(drop_id) = replace {
@@ -2069,12 +2069,14 @@ impl<S: Append + 'static> Coordinator<S> {
 
                     // We want to prevent compaction of the indexes consulted by
                     // determine_timestamp, not the ones listed in the query.
-                    let timestamp = self.determine_timestamp(
-                        session,
-                        &id_bundle,
-                        &QueryWhen::Immediately,
-                        compute_instance,
-                    )?;
+                    let timestamp = self
+                        .determine_timestamp(
+                            session,
+                            &id_bundle,
+                            &QueryWhen::Immediately,
+                            compute_instance,
+                        )
+                        .await?;
                     let read_holds = read_policy::ReadHolds {
                         time: timestamp,
                         id_bundle,
@@ -2137,7 +2139,8 @@ impl<S: Append + 'static> Coordinator<S> {
             let id_bundle = self
                 .index_oracle(compute_instance)
                 .sufficient_collections(&source_ids);
-            self.determine_timestamp(session, &id_bundle, &when, compute_instance)?
+            self.determine_timestamp(session, &id_bundle, &when, compute_instance)
+                .await?
         };
 
         // before we have the corrected timestamp ^
@@ -2191,15 +2194,17 @@ impl<S: Append + 'static> Coordinator<S> {
 
         // At this point, `dataflow_plan` contains our best optimized dataflow.
         // We will check the plan to see if there is a fast path to escape full dataflow construction.
-        let peek_plan = self.create_peek_plan(
-            dataflow,
-            view_id,
-            compute_instance,
-            index_id,
-            key,
-            permutation,
-            thinning.len(),
-        )?;
+        let peek_plan = self
+            .create_peek_plan(
+                dataflow,
+                view_id,
+                compute_instance,
+                index_id,
+                key,
+                permutation,
+                thinning.len(),
+            )
+            .await?;
 
         // We only track the peeks in the session if the query doesn't use AS
         // OF or we're inside an explicit transaction. The latter case is
@@ -2268,35 +2273,49 @@ impl<S: Append + 'static> Coordinator<S> {
             session.add_transaction_ops(TransactionOps::Subscribe)?;
         }
 
-        let make_sink_desc = |coord: &mut Coordinator<S>, from, from_desc, uses| {
-            // Determine the frontier of updates to subscribe *from*.
-            // Updates greater or equal to this frontier will be produced.
-            let id_bundle = coord
-                .index_oracle(compute_instance_id)
-                .sufficient_collections(uses);
-            // If a timestamp was explicitly requested, use that.
-            let timestamp =
-                coord.determine_timestamp(session, &id_bundle, &when, compute_instance_id)?;
+        let uses = match &from {
+            SubscribeFrom::Id(from_id) => {
+                check_no_invalid_log_reads(
+                    &self.catalog,
+                    &compute_instance,
+                    &btreeset!(*from_id),
+                    LogReadStyle::Subscribe,
+                )?;
+                vec![*from_id]
+            }
+            SubscribeFrom::Query { expr, .. } => {
+                check_no_invalid_log_reads(
+                    &self.catalog,
+                    &compute_instance,
+                    &expr.depends_on(),
+                    LogReadStyle::Subscribe,
+                )?;
+                depends_on.clone()
+            }
+        };
 
-            Ok::<_, AdapterError>(ComputeSinkDesc {
-                from,
-                from_desc,
-                connection: ComputeSinkConnection::Subscribe(SubscribeSinkConnection::default()),
-                as_of: SinkAsOf {
-                    frontier: Antichain::from_elem(timestamp),
-                    strict: !with_snapshot,
-                },
-            })
+        // Determine the frontier of updates to subscribe *from*.
+        // Updates greater or equal to this frontier will be produced.
+        let id_bundle = self
+            .index_oracle(compute_instance_id)
+            .sufficient_collections(&uses);
+        // If a timestamp was explicitly requested, use that.
+        let timestamp = self
+            .determine_timestamp(session, &id_bundle, &when, compute_instance_id)
+            .await?;
+
+        let make_sink_desc = |from, from_desc| ComputeSinkDesc {
+            from,
+            from_desc,
+            connection: ComputeSinkConnection::Subscribe(SubscribeSinkConnection::default()),
+            as_of: SinkAsOf {
+                frontier: Antichain::from_elem(timestamp),
+                strict: !with_snapshot,
+            },
         };
 
         let dataflow = match from {
             SubscribeFrom::Id(from_id) => {
-                check_no_invalid_log_reads(
-                    &self.catalog,
-                    compute_instance,
-                    &btreeset!(from_id),
-                    LogReadStyle::Subscribe,
-                )?;
                 let from = self.catalog.get_entry(&from_id);
                 let from_desc = from
                     .desc(
@@ -2307,22 +2326,16 @@ impl<S: Append + 'static> Coordinator<S> {
                     .unwrap()
                     .into_owned();
                 let sink_id = self.catalog.allocate_user_id().await?;
-                let sink_desc = make_sink_desc(self, from_id, from_desc, &[from_id][..])?;
+                let sink_desc = make_sink_desc(from_id, from_desc);
                 let sink_name = format!("subscribe-{}", sink_id);
                 self.dataflow_builder(compute_instance_id)
                     .build_sink_dataflow(sink_name, sink_id, sink_desc)?
             }
             SubscribeFrom::Query { expr, desc } => {
-                check_no_invalid_log_reads(
-                    &self.catalog,
-                    compute_instance,
-                    &expr.depends_on(),
-                    LogReadStyle::Subscribe,
-                )?;
                 let id = self.allocate_transient_id()?;
                 let expr = self.view_optimizer.optimize(expr)?;
                 let desc = RelationDesc::new(expr.typ(), desc.iter_names());
-                let sink_desc = make_sink_desc(self, id, desc, &depends_on)?;
+                let sink_desc = make_sink_desc(id, desc);
                 let mut dataflow = DataflowDesc::new(format!("subscribe-{}", id));
                 let mut dataflow_builder = self.dataflow_builder(compute_instance_id);
                 dataflow_builder.import_view_into_dataflow(&id, &expr, &mut dataflow)?;
@@ -2353,14 +2366,14 @@ impl<S: Append + 'static> Coordinator<S> {
         }
     }
 
-    fn sequence_explain(
+    async fn sequence_explain(
         &mut self,
         session: &Session,
         plan: ExplainPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
         match plan {
             ExplainPlan::New(plan) => self.sequence_explain_new(session, plan),
-            ExplainPlan::Old(plan) => self.sequence_explain_old(session, plan),
+            ExplainPlan::Old(plan) => self.sequence_explain_old(session, plan).await,
         }
     }
 
@@ -2533,7 +2546,7 @@ impl<S: Append + 'static> Coordinator<S> {
         Ok(send_immediate_rows(rows))
     }
 
-    fn sequence_explain_old(
+    async fn sequence_explain_old(
         &mut self,
         session: &Session,
         plan: ExplainPlanOld,
@@ -2686,13 +2699,15 @@ impl<S: Append + 'static> Coordinator<S> {
                 // TODO: determine_timestamp takes a mut self to track table linearizability,
                 // so explaining a plan involving tables has side effects. Removing those side
                 // effects would be good.
-                let timestamp = self.determine_timestamp(
-                    session,
-                    &id_bundle,
-                    &QueryWhen::Immediately,
-                    compute_instance,
-                )?;
-                let since = self.least_valid_read(&id_bundle).elements().to_vec();
+                let timestamp = self
+                    .determine_timestamp(
+                        session,
+                        &id_bundle,
+                        &QueryWhen::Immediately,
+                        compute_instance,
+                    )
+                    .await?;
+                let since = self.least_valid_read(&id_bundle).await.elements().to_vec();
                 let upper = self.least_valid_write(&id_bundle);
                 let respond_immediately = !upper.less_equal(&timestamp);
                 let upper = upper.elements().to_vec();

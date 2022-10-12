@@ -558,7 +558,7 @@ impl<S: Append + 'static> Coordinator<S> {
                             .or_insert_with(BTreeSet::new)
                             .extend(dataflow.export_ids());
                         let dataflow_plan =
-                            vec![self.finalize_dataflow(dataflow, idx.compute_instance)];
+                            vec![self.finalize_dataflow(dataflow, idx.compute_instance).await];
                         self.controller
                             .active_compute()
                             .create_dataflows(idx.compute_instance, dataflow_plan)
@@ -582,7 +582,7 @@ impl<S: Append + 'static> Coordinator<S> {
                     let id_bundle = self
                         .index_oracle(mview.compute_instance)
                         .sufficient_collections(&mview.depends_on);
-                    let as_of = self.least_valid_read(&id_bundle);
+                    let as_of = self.least_valid_read(&id_bundle).await;
                     let internal_view_id = self.allocate_transient_id()?;
                     let df = self
                         .dataflow_builder(mview.compute_instance)

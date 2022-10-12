@@ -357,7 +357,7 @@ impl<S: Append + 'static> crate::coord::Coordinator<S> {
     /// The result will be a [`PeekPlan::FastPath`] plan iff the [`create_fast_path_plan`]
     /// call succeeds, or a [`PeekPlan::SlowPath`] plan wrapping a [`PeekDataflowPlan`]
     /// otherwise.
-    pub(crate) fn create_peek_plan(
+    pub(crate) async fn create_peek_plan(
         &mut self,
         mut dataflow: DataflowDescription<OptimizedMirRelationExpr>,
         view_id: GlobalId,
@@ -370,10 +370,9 @@ impl<S: Append + 'static> crate::coord::Coordinator<S> {
         // try to produce a `FastPathPlan`
         let fast_path_plan = create_fast_path_plan(&mut dataflow, view_id)?;
         // derive a PeekPlan from the optional FastPathPlan
-        let peek_plan = fast_path_plan.map_or_else(
-            // finalize the dataflow and produce a PeekPlan::SlowPath as a default
-            || {
-                let mut desc = self.finalize_dataflow(dataflow, compute_instance);
+        let peek_plan = match fast_path_plan {
+            None => {
+                let mut desc = self.finalize_dataflow(dataflow, compute_instance).await;
                 // We have the opportunity to name an `until` frontier that will prevent work we needn't perform.
                 // By default, `until` will be `Antichain::new()`, which prevents no updates and is safe.
                 if let Some(as_of) = desc.as_of.as_ref() {
@@ -390,10 +389,9 @@ impl<S: Append + 'static> crate::coord::Coordinator<S> {
                     permutation,
                     thinned_arity,
                 })
-            },
-            // produce a PeekPlan::FastPath if possible
-            PeekPlan::FastPath,
-        );
+            }
+            Some(fast_path_plan) => PeekPlan::FastPath(fast_path_plan),
+        };
         Ok(peek_plan)
     }
 

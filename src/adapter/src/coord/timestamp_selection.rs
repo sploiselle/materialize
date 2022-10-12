@@ -34,7 +34,7 @@ impl<S: Append + 'static> Coordinator<S> {
     ///
     /// The set of storage and compute IDs used when determining the timestamp
     /// are also returned.
-    pub(crate) fn determine_timestamp(
+    pub(crate) async fn determine_timestamp(
         &mut self,
         session: &Session,
         id_bundle: &CollectionIdBundle,
@@ -53,7 +53,7 @@ impl<S: Append + 'static> Coordinator<S> {
         // what to do if it cannot be satisfied (perhaps the query should use
         // a larger timestamp and block, perhaps the user should intervene).
 
-        let since = self.least_valid_read(id_bundle);
+        let since = self.least_valid_read(id_bundle).await;
 
         // Initialize candidate to the minimum correct time.
         let mut candidate = Timestamp::minimum();
@@ -106,14 +106,16 @@ impl<S: Append + 'static> Coordinator<S> {
     }
 
     /// The smallest common valid read frontier among the specified collections.
-    pub(crate) fn least_valid_read(
+    pub(crate) async fn least_valid_read(
         &self,
         id_bundle: &CollectionIdBundle,
     ) -> Antichain<mz_repr::Timestamp> {
         let mut since = self
             .controller
             .storage
-            .least_valid_read(&id_bundle.storage_ids);
+            .least_valid_read(&id_bundle.storage_ids)
+            .await;
+
         {
             for (instance, compute_ids) in &id_bundle.compute_ids {
                 for id in compute_ids.iter() {

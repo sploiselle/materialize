@@ -98,7 +98,7 @@ impl<S: Append + 'static> Coordinator<S> {
         let mut dataflow_plans = Vec::with_capacity(dataflows.len());
         for dataflow in dataflows.into_iter() {
             output_ids.extend(dataflow.export_ids());
-            dataflow_plans.push(self.finalize_dataflow(dataflow, instance));
+            dataflow_plans.push(self.finalize_dataflow(dataflow, instance).await);
         }
         self.controller
             .active_compute()
@@ -128,7 +128,7 @@ impl<S: Append + 'static> Coordinator<S> {
     /// Panics if as_of is < the `since` frontiers.
     ///
     /// Panics if the dataflow descriptions contain an invalid plan.
-    pub(crate) fn finalize_dataflow(
+    pub(crate) async fn finalize_dataflow(
         &self,
         mut dataflow: DataflowDesc,
         compute_instance: ComputeInstanceId,
@@ -150,10 +150,12 @@ impl<S: Append + 'static> Coordinator<S> {
             .collect::<BTreeSet<_>>();
 
         let compute_ids = vec![(compute_instance, compute_ids)].into_iter().collect();
-        let since = self.least_valid_read(&CollectionIdBundle {
-            storage_ids,
-            compute_ids,
-        });
+        let since = self
+            .least_valid_read(&CollectionIdBundle {
+                storage_ids,
+                compute_ids,
+            })
+            .await;
 
         // Ensure that the dataflow's `as_of` is at least `since`.
         if let Some(as_of) = &mut dataflow.as_of {
@@ -713,6 +715,6 @@ impl<S: Append + 'static> Coordinator<S> {
             .ship_dataflows(vec![df.clone()], compute_instance)
             .await;
         let _: DataflowDescription<mz_compute_client::plan::Plan> =
-            self.finalize_dataflow(df, compute_instance);
+            self.finalize_dataflow(df, compute_instance).await;
     }
 }
