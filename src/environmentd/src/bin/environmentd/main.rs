@@ -596,6 +596,7 @@ fn run(mut args: Args) -> Result<(), anyhow::Error> {
         storaged_image: args.storaged_image.expect("clap enforced"),
         computed_image: args.computed_image.expect("clap enforced"),
         now: SYSTEM_TIME.clone(),
+        quiescence_dur: 10000,
     };
 
     // When inside a cgroup with a cpu limit,

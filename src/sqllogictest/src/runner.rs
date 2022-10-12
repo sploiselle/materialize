@@ -671,6 +671,7 @@ impl Runner {
                 persist_clients,
                 storage_stash_url,
                 now: SYSTEM_TIME.clone(),
+                quiescence_dur: 100,
             },
             secrets_controller: Arc::clone(&orchestrator) as Arc<dyn SecretsController>,
             // Setting the port to 0 means that the OS will automatically

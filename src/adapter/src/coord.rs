@@ -476,7 +476,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 // using a single dataflow, we have to make sure the rebuild process re-runs
                 // the same multiple-build dataflow.
                 CatalogItem::Source(source) => {
-                    let data_source = match &source.data_source {
+                    let (data_source, quiesce) = match &source.data_source {
                         // Re-announce the source description.
                         DataSourceDesc::Ingestion(ingestion) => {
                             let mut source_imports = BTreeMap::new();
@@ -499,17 +499,20 @@ impl<S: Append + 'static> Coordinator<S> {
                                 source_exports.insert(subsource, export);
                             }
 
-                            DataSource::Ingestion(IngestionDescription {
-                                desc: ingestion.desc.clone(),
-                                ingestion_metadata: (),
-                                source_imports,
-                                source_exports,
-                                host_config: ingestion.host_config.clone(),
-                            })
+                            (
+                                DataSource::Ingestion(IngestionDescription {
+                                    desc: ingestion.desc.clone(),
+                                    ingestion_metadata: (),
+                                    source_imports,
+                                    source_exports,
+                                    host_config: ingestion.host_config.clone(),
+                                }),
+                                false,
+                            )
                         }
-                        DataSourceDesc::Source => DataSource::Source,
+                        DataSourceDesc::Source => (DataSource::Source, false),
                         DataSourceDesc::Introspection(introspection) => {
-                            DataSource::Introspection(*introspection)
+                            (DataSource::Introspection(*introspection), true)
                         }
                     };
 
@@ -522,6 +525,7 @@ impl<S: Append + 'static> Coordinator<S> {
                                 data_source,
                                 since: None,
                                 status_collection_id,
+                                quiesce,
                             },
                         )])
                         .await
@@ -530,7 +534,9 @@ impl<S: Append + 'static> Coordinator<S> {
                     policies_to_set.storage_ids.insert(entry.id());
                 }
                 CatalogItem::Table(table) => {
-                    let collection_desc = table.desc.clone().into();
+                    let mut collection_desc: CollectionDescription<Timestamp> =
+                        table.desc.clone().into();
+                    collection_desc.quiesce = true;
                     self.controller
                         .storage
                         .create_collections(vec![(entry.id(), collection_desc)])

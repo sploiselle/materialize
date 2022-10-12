@@ -554,6 +554,7 @@ impl<S: Append + 'static> Coordinator<S> {
                                 data_source,
                                 since: None,
                                 status_collection_id,
+                                quiesce: false,
                             },
                         )])
                         .await
@@ -1078,7 +1079,9 @@ impl<S: Append + 'static> Coordinator<S> {
                 // Determine the initial validity for the table.
                 let since_ts = self.peek_local_write_ts();
 
-                let collection_desc = dbg!(table.desc.clone().into());
+                let mut collection_desc: CollectionDescription<Timestamp> =
+                    table.desc.clone().into();
+                collection_desc.quiesce = true;
                 self.controller
                     .storage
                     .create_collections(vec![(table_id, collection_desc)])
@@ -1499,6 +1502,7 @@ impl<S: Append + 'static> Coordinator<S> {
                             data_source: DataSource::Dataflow,
                             since: Some(as_of),
                             status_collection_id: None,
+                            quiesce: false,
                         },
                     )])
                     .await

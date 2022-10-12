@@ -123,6 +123,7 @@ pub struct CollectionDescription<T> {
     /// A GlobalId to use for this collection to use for the status collection.
     /// Used to keep track of source status/error information.
     pub status_collection_id: Option<GlobalId>,
+    pub quiesce: bool,
 }
 
 impl<T> From<RelationDesc> for CollectionDescription<T> {
@@ -132,6 +133,7 @@ impl<T> From<RelationDesc> for CollectionDescription<T> {
             data_source: DataSource::Dataflow,
             since: None,
             status_collection_id: None,
+            quiesce: false,
         }
     }
 }
@@ -716,6 +718,7 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
         postgres_url: String,
         tx: tokio::sync::mpsc::UnboundedSender<StorageResponse<T>>,
         now: NowFn,
+        quiescence_dur: T,
     ) -> Self {
         let tls = mz_postgres_util::make_tls(
             &tokio_postgres::config::Config::from_str(&postgres_url)
@@ -727,7 +730,7 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
             .expect("could not connect to postgres storage stash");
         let stash = mz_stash::Memory::new(stash);
 
-        let persist_write_handles = persist_write_handles::PersistWorker::new(tx);
+        let persist_write_handles = persist_write_handles::PersistWorker::new(tx, quiescence_dur);
         let collection_manager_write_handle = persist_write_handles.clone();
 
         let collection_manager =
@@ -880,7 +883,9 @@ where
                 metadata,
             );
 
-            self.state.persist_write_handles.register(id, write);
+            self.state
+                .persist_write_handles
+                .register(id, write, description.quiesce);
             self.state.persist_read_handles.register(id, read);
 
             self.state.collections.insert(id, collection_state);
@@ -1364,11 +1369,12 @@ where
         orchestrator: Arc<dyn NamespacedOrchestrator>,
         storaged_image: String,
         now: NowFn,
+        quiescence_dur: T,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         Self {
-            state: StorageControllerState::new(postgres_url, tx, now).await,
+            state: StorageControllerState::new(postgres_url, tx, now, quiescence_dur).await,
             hosts: StorageHosts::new(
                 StorageHostsConfig {
                     build_info,
@@ -1922,9 +1928,8 @@ mod persist_read_handles {
 
 #[derive(Debug, Clone)]
 struct QuiescenceState<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
-    quiesced: bool,
     last_activity: T,
-    last_quiesced: T,
+    last_ts_bump: T,
 }
 
 #[derive(Debug, Clone)]
@@ -1945,9 +1950,8 @@ impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
         let prev = self.state.insert(
             id,
             QuiescenceState {
-                quiesced: false,
                 last_activity: T::minimum(),
-                last_quiesced: T::minimum(),
+                last_ts_bump: T::minimum(),
             },
         );
 
@@ -1964,21 +1968,29 @@ impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
         let mut results = Vec::with_capacity(updates.len());
         for (id, updates, upper) in updates {
             if let Some(QuiescenceState {
-                quiesced,
                 last_activity,
-                last_quiesced,
+                last_ts_bump,
             }) = self.state.get_mut(&id)
             {
+                if matches!(id, GlobalId::User(_)) {
+                    println!(
+                        "FILTER: id {:?}, last_act {:?}, last_ts_bump {:?}, upper {:?}",
+                        id, last_activity, last_ts_bump, upper
+                    );
+                }
                 if updates.is_empty() {
+                    // Store that we have seen a quiescable update.
+                    *last_ts_bump = upper.clone();
+
+                    // If we haven't seen any meaningful update in at least
+                    // `self.dur`, do not propagate this update out.
                     if last_activity.step_forward_by(&self.dur) < upper {
-                        *quiesced = true;
-                    }
-                    if *quiesced {
-                        *last_quiesced = upper.clone();
+                        if matches!(id, GlobalId::User(_)) {
+                            println!("quiesced");
+                        }
                         continue;
                     }
                 } else {
-                    *quiesced = false;
                     *last_activity = upper.clone();
                 }
             }
@@ -1993,14 +2005,21 @@ impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
         let mut results = vec![];
         for id in ids {
             if let Some(QuiescenceState {
-                quiesced,
                 last_activity,
-                last_quiesced,
+                last_ts_bump,
             }) = self.state.get_mut(&id)
             {
-                *quiesced = false;
-                *last_activity = last_quiesced.clone();
-                results.push((id, last_activity.clone()))
+                println!(
+                    "AWAKEN: id {:?}, last_act {:?}, last_ts_bump {:?}",
+                    id, last_activity, last_ts_bump
+                );
+                // If we're asked to awaken, that counts as activity.
+                if last_activity < last_ts_bump {
+                    *last_activity = last_ts_bump.clone();
+                    // This resulting write might be unnecessary because the
+                    // last timestamp bump succeeded.
+                    results.push((id, last_activity.clone()));
+                }
             }
         }
         results
@@ -2068,11 +2087,12 @@ mod persist_write_handles {
     impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> PersistWorker<T> {
         pub(crate) fn new(
             mut frontier_responses: tokio::sync::mpsc::UnboundedSender<StorageResponse<T>>,
+            quiescence_dur: T,
         ) -> Self {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(tracing::Span, _)>();
 
             mz_ore::task::spawn(|| "PersistWriteHandles", async move {
-                let mut quiescer = Quiescer::new(T::minimum());
+                let mut quiescer = Quiescer::new(quiescence_dur);
                 let mut write_handles = BTreeMap::new();
 
                 while let Some(cmd) = rx.recv().await {
@@ -2179,7 +2199,11 @@ mod persist_write_handles {
                                     .into_iter()
                                     .map(|(id, upper)| (id, vec![], upper))
                                     .collect_vec();
-                                if !updates.is_empty() {
+                                if updates.is_empty() {
+                                    response
+                                        .send(Ok(()))
+                                        .expect("rx has not been dropped at this point");
+                                } else {
                                     commands.push_front((
                                         span,
                                         PersistWorkerCmd::Append(updates, response),
@@ -2322,8 +2346,9 @@ mod persist_write_handles {
             &self,
             id: GlobalId,
             write_handle: WriteHandle<SourceData, (), T, Diff>,
+            quiesce: bool,
         ) {
-            self.send(PersistWorkerCmd::Register(id, write_handle, false))
+            self.send(PersistWorkerCmd::Register(id, write_handle, quiesce))
         }
 
         pub(crate) fn append(

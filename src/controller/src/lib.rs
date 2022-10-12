@@ -73,6 +73,7 @@ pub struct ControllerConfig {
     pub computed_image: String,
     /// The now function to advance the controller's introspection collections.
     pub now: NowFn,
+    pub quiescence_dur: EpochMillis,
 }
 
 /// Responses that [`Controller`] can produce.
@@ -220,6 +221,7 @@ where
             config.orchestrator.namespace("storage"),
             config.storaged_image,
             config.now,
+            T::from(config.quiescence_dur),
         )
         .await;
 
