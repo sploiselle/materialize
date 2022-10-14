@@ -1926,109 +1926,9 @@ mod persist_read_handles {
     }
 }
 
-#[derive(Debug, Clone)]
-struct QuiescenceState<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
-    last_activity: T,
-    last_ts_bump: T,
-}
-
-#[derive(Debug, Clone)]
-struct Quiescer<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
-    state: HashMap<GlobalId, QuiescenceState<T>>,
-    dur: T,
-}
-
-impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
-    fn new(dur: T) -> Quiescer<T> {
-        Quiescer {
-            state: HashMap::new(),
-            dur,
-        }
-    }
-
-    fn insert(&mut self, id: GlobalId) {
-        let prev = self.state.insert(
-            id,
-            QuiescenceState {
-                last_activity: T::minimum(),
-                last_ts_bump: T::minimum(),
-            },
-        );
-
-        assert!(
-            prev.is_none(),
-            "cannot track quiescence of same collection twice"
-        );
-    }
-
-    fn filter_quiesced_updates(
-        &mut self,
-        updates: Vec<(GlobalId, Vec<Update<T>>, T)>,
-    ) -> Vec<(GlobalId, Vec<Update<T>>, T)> {
-        let mut results = Vec::with_capacity(updates.len());
-        for (id, updates, upper) in updates {
-            if let Some(QuiescenceState {
-                last_activity,
-                last_ts_bump,
-            }) = self.state.get_mut(&id)
-            {
-                if matches!(id, GlobalId::User(_)) {
-                    println!(
-                        "FILTER: id {:?}, last_act {:?}, last_ts_bump {:?}, upper {:?}",
-                        id, last_activity, last_ts_bump, upper
-                    );
-                }
-                if updates.is_empty() {
-                    // Store that we have seen a quiescable update.
-                    *last_ts_bump = upper.clone();
-
-                    // If we haven't seen any meaningful update in at least
-                    // `self.dur`, do not propagate this update out.
-                    if last_activity.step_forward_by(&self.dur) < upper {
-                        if matches!(id, GlobalId::User(_)) {
-                            println!("quiesced");
-                        }
-                        continue;
-                    }
-                } else {
-                    *last_activity = upper.clone();
-                }
-            }
-
-            results.push((id, updates, upper));
-        }
-
-        results
-    }
-
-    fn awaken(&mut self, ids: BTreeSet<GlobalId>) -> Vec<(GlobalId, T)> {
-        let mut results = vec![];
-        for id in ids {
-            if let Some(QuiescenceState {
-                last_activity,
-                last_ts_bump,
-            }) = self.state.get_mut(&id)
-            {
-                println!(
-                    "AWAKEN: id {:?}, last_act {:?}, last_ts_bump {:?}",
-                    id, last_activity, last_ts_bump
-                );
-                // If we're asked to awaken, that counts as activity.
-                if last_activity < last_ts_bump {
-                    *last_activity = last_ts_bump.clone();
-                    // This resulting write might be unnecessary because the
-                    // last timestamp bump succeeded.
-                    results.push((id, last_activity.clone()));
-                }
-            }
-        }
-        results
-    }
-}
-
 mod persist_write_handles {
 
-    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
     use differential_dataflow::lattice::Lattice;
     use futures::stream::FuturesUnordered;
@@ -2046,7 +1946,104 @@ mod persist_write_handles {
     use crate::protocol::client::{TimestamplessUpdate, Update};
     use crate::types::sources::SourceData;
 
-    use super::Quiescer;
+    #[derive(Debug, Clone)]
+    struct QuiescenceState<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
+        last_activity: T,
+        last_ts_bump: T,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Quiescer<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
+        state: HashMap<GlobalId, QuiescenceState<T>>,
+        dur: T,
+    }
+
+    impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> Quiescer<T> {
+        fn new(dur: T) -> Quiescer<T> {
+            Quiescer {
+                state: HashMap::new(),
+                dur,
+            }
+        }
+
+        fn insert(&mut self, id: GlobalId) {
+            let prev = self.state.insert(
+                id,
+                QuiescenceState {
+                    last_activity: T::minimum(),
+                    last_ts_bump: T::minimum(),
+                },
+            );
+
+            assert!(
+                prev.is_none(),
+                "cannot track quiescence of same collection twice"
+            );
+        }
+
+        fn filter_quiesced_updates(
+            &mut self,
+            updates: Vec<(GlobalId, Vec<Update<T>>, T)>,
+        ) -> Vec<(GlobalId, Vec<Update<T>>, T)> {
+            let mut results = Vec::with_capacity(updates.len());
+            for (id, updates, upper) in updates {
+                if let Some(QuiescenceState {
+                    last_activity,
+                    last_ts_bump,
+                }) = self.state.get_mut(&id)
+                {
+                    if matches!(id, GlobalId::User(_)) {
+                        println!(
+                            "FILTER: id {:?}, last_act {:?}, last_ts_bump {:?}, upper {:?}",
+                            id, last_activity, last_ts_bump, upper
+                        );
+                    }
+                    if updates.is_empty() {
+                        // Store that we have seen a quiescable update.
+                        *last_ts_bump = upper.clone();
+
+                        // If we haven't seen any meaningful update in at least
+                        // `self.dur`, do not propagate this update out.
+                        if last_activity.step_forward_by(&self.dur) < upper {
+                            if matches!(id, GlobalId::User(_)) {
+                                println!("quiesced");
+                            }
+                            continue;
+                        }
+                    } else {
+                        *last_activity = upper.clone();
+                    }
+                }
+
+                results.push((id, updates, upper));
+            }
+            results
+        }
+
+        fn awaken(&mut self, ids: BTreeSet<GlobalId>) -> Vec<(GlobalId, T)> {
+            let mut results = vec![];
+            for id in ids {
+                if let Some(QuiescenceState {
+                    last_activity,
+                    last_ts_bump,
+                }) = self.state.get_mut(&id)
+                {
+                    println!(
+                        "AWAKEN: id {:?}, last_act {:?}, last_ts_bump {:?}",
+                        id, last_activity, last_ts_bump
+                    );
+                    // If we're asked to awaken, that counts as activity.
+                    if last_activity < last_ts_bump {
+                        *last_activity = last_ts_bump.clone();
+                        // This resulting write might be unnecessary because the
+                        // last timestamp bump succeeded.
+                        results.push((id, last_activity.clone()));
+                    }
+                }
+            }
+            results
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub struct PersistWorker<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {

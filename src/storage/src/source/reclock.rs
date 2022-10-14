@@ -715,8 +715,9 @@ impl ReclockOperator {
         loop {
             let upper = self.upper.clone();
             let new_upper = new_upper.clone();
-            let updates = integrate(&self.source_upper, updates)
-                .map(|((pid, offset), diff)| ((pack_binding(pid, offset), ()), next_ts, diff));
+            let updates = integrate(&self.source_upper, updates).map(|((pid, offset), diff)| {
+                dbg!(((pack_binding(pid, offset), ()), next_ts, diff))
+            });
             match self
                 .write_handle
                 .compare_and_append(updates, upper, new_upper)
