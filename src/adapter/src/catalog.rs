@@ -1598,6 +1598,7 @@ pub struct Ingestion {
     /// This map does *not* include the export of the source associated with the ingestion itself
     pub subsource_exports: HashMap<GlobalId, usize>,
     pub host_config: StorageHostConfig,
+    pub remap_collection_id: Option<GlobalId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5517,6 +5518,7 @@ impl Catalog {
                         source_imports: ingestion.source_imports,
                         subsource_exports: ingestion.subsource_exports,
                         host_config: self.resolve_storage_host_config(&host_config)?,
+                        remap_collection_id: None,
                     }),
                     None => DataSourceDesc::Source,
                 },

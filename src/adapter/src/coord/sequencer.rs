@@ -510,6 +510,7 @@ impl Coordinator {
                             source_imports: ingestion.source_imports,
                             subsource_exports: ingestion.subsource_exports,
                             host_config,
+                            remap_collection_id: None,
                         })
                     }
                     None => {
@@ -577,6 +578,7 @@ impl Coordinator {
                                     source_imports,
                                     source_exports,
                                     host_config: ingestion.host_config,
+                                    remap_collection_id: None,
                                 }),
                                 source_status_collection_id,
                             )

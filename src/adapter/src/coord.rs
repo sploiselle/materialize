@@ -697,6 +697,7 @@ impl Coordinator {
                                     source_imports,
                                     source_exports,
                                     host_config: ingestion.host_config.clone(),
+                                    remap_collection_id: ingestion.remap_collection_id,
                                 }),
                                 source_status_collection_id,
                             )

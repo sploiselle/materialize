@@ -616,7 +616,7 @@ where
                     return;
                 }
                 Err(actual_upper) => {
-                    self.upper = actual_upper.0;
+                    self.upper = actual_upper.current;
                 }
             }
         }

@@ -74,6 +74,7 @@ pub struct IngestionDescription<S = ()> {
     pub source_exports: BTreeMap<GlobalId, SourceExport<S>>,
     /// The address of a `clusterd` process on which to install the source.
     pub host_config: StorageHostConfig,
+    pub remap_collection_id: Option<GlobalId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -116,22 +117,24 @@ impl<T: Timestamp + Lattice + Codec64> ResumptionFrontierCalculator<T>
             handles.push(handle);
         }
 
-        let CollectionMetadata {
+        if let CollectionMetadata {
             persist_location,
-            remap_shard,
+            remap_shard: Some(remap_shard),
             data_shard: _,
             // The status shard only contains non-definite status updates
             status_shard: _,
-        } = &self.ingestion_metadata;
-        let remap_handle = client_cache
-            .open(persist_location.clone())
-            .await
-            .expect("error creating persist client")
-            // TODO: Any way to plumb the GlobalId to this?
-            .open_writer::<SourceData, (), T, Diff>(*remap_shard, "resumption remap")
-            .await
-            .unwrap();
-        handles.push(remap_handle);
+        } = &self.ingestion_metadata
+        {
+            let remap_handle = client_cache
+                .open(persist_location.clone())
+                .await
+                .expect("error creating persist client")
+                // TODO: Any way to plumb the GlobalId to this?
+                .open_writer::<SourceData, (), T, Diff>(*remap_shard, "resumption remap")
+                .await
+                .unwrap();
+            handles.push(remap_handle);
+        }
 
         handles
     }
@@ -181,14 +184,23 @@ where
                 .boxed(),
             any::<S>().boxed(),
             any::<StorageHostConfig>().boxed(),
+            any::<Option<GlobalId>>(),
         )
             .prop_map(
-                |(desc, source_imports, source_exports, ingestion_metadata, host_config)| Self {
+                |(
                     desc,
                     source_imports,
                     source_exports,
                     ingestion_metadata,
                     host_config,
+                    remap_collection_id,
+                )| Self {
+                    desc,
+                    source_imports,
+                    source_exports,
+                    ingestion_metadata,
+                    host_config,
+                    remap_collection_id,
                 },
             )
             .boxed()
@@ -203,6 +215,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             ingestion_metadata: Some(self.ingestion_metadata.into_proto()),
             desc: Some(self.desc.into_proto()),
             host_config: Some(self.host_config.into_proto()),
+            remap_collection_id: self.remap_collection_id.into_proto(),
         }
     }
 
@@ -219,6 +232,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             host_config: proto
                 .host_config
                 .into_rust_if_some("ProtoIngestionDescription::host_config")?,
+            remap_collection_id: proto.remap_collection_id.into_rust()?,
         })
     }
 }

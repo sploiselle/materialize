@@ -135,8 +135,9 @@ impl Coordinator {
                     // `mz_storage_usage_by_shard` table.
                     persist_location: _,
                 } = &collection.collection_metadata;
-                [*data_shard, *remap_shard].into_iter().chain(*status_shard)
+                [*remap_shard, *status_shard, Some(*data_shard)].into_iter()
             })
+            .filter_map(|shard| shard)
             .collect();
 
         let collection_metric = self

@@ -281,7 +281,9 @@ where
 
         let (current_shard_write_handle, current_shard_read_handle) = persist_client
             .open::<crate::types::sources::SourceData, (), IntoTime, Diff>(
-                read_metadata.remap_shard,
+                read_metadata
+                    .remap_shard
+                    .expect("only migrate collections with remap shards"),
                 &format!("reclock {}", id),
             )
             .await
