@@ -1534,6 +1534,8 @@ pub struct Ingestion {
     /// This map does *not* include the export of the source associated with the ingestion itself
     pub subsource_exports: HashMap<GlobalId, usize>,
     pub cluster_id: ClusterId,
+    /// The ID of this collection's remap/progress collection if applicable.
+    pub remap_collection_id: Option<GlobalId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5486,6 +5488,7 @@ impl Catalog {
                                 self.state.clusters_by_linked_object_id[&id]
                             }
                         },
+                        remap_collection_id: None,
                     }),
                     None => DataSourceDesc::Source,
                 },

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use differential_dataflow::lattice::Lattice;
 use futures::{stream::LocalBoxStream, StreamExt};
 use mz_persist_types::codec_impls::UnitSchema;
@@ -144,6 +144,10 @@ where
         // TODO(guswynn): use the type-system to prevent misuse here.
         remap_relation_desc: RelationDesc,
     ) -> anyhow::Result<Self> {
+        let remap_shard = metadata.remap_shard.ok_or_else(|| {
+            anyhow!("cannot create remap PersistHandle for collection without remap shard")
+        })?;
+
         let mut persist_clients = persist_clients.lock().await;
         let persist_client = persist_clients
             .open(metadata.persist_location.clone())
@@ -153,7 +157,7 @@ where
 
         let since_handle: SinceHandle<_, _, _, _, PersistEpoch> = persist_client
             .open_critical_since(
-                metadata.remap_shard.clone(),
+                remap_shard,
                 PersistClient::CONTROLLER_CRITICAL_SINCE,
                 &format!("reclock {}", id),
             )
@@ -164,7 +168,10 @@ where
 
         let (write_handle, mut read_handle) = persist_client
             .open(
-                metadata.remap_shard.clone(),
+                metadata
+                    .remap_shard
+                    .clone()
+                    .expect("PersistHandle only generated for collections with remap shards"),
                 &format!("reclock {}", id),
                 Arc::new(remap_relation_desc),
                 Arc::new(UnitSchema),
@@ -178,7 +185,7 @@ where
             PartialOrder::less_equal(since, &as_of),
             "invalid as_of: as_of({as_of:?}) < since({since:?}), \
             source {id}, \
-            remap_shard: {}",
+            remap_shard: {:?}",
             metadata.remap_shard
         );
 

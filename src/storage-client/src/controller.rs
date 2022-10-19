@@ -453,7 +453,7 @@ pub struct CollectionMetadata {
     /// The persist location where the shards are located.
     pub persist_location: PersistLocation,
     /// The persist shard id of the remap collection used to reclock this collection.
-    pub remap_shard: ShardId,
+    pub remap_shard: Option<ShardId>,
     /// The persist shard containing the contents of this storage collection.
     pub data_shard: ShardId,
     /// The persist shard containing the status updates for this storage collection.
@@ -468,7 +468,7 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
             blob_uri: self.persist_location.blob_uri.clone(),
             consensus_uri: self.persist_location.consensus_uri.clone(),
             data_shard: self.data_shard.to_string(),
-            remap_shard: self.remap_shard.to_string(),
+            remap_shard: self.remap_shard.map(|s| s.to_string()),
             status_shard: self.status_shard.map(|s| s.to_string()),
             relation_desc: Some(self.relation_desc.into_proto()),
         }
@@ -482,8 +482,8 @@ impl RustType<ProtoCollectionMetadata> for CollectionMetadata {
             },
             remap_shard: value
                 .remap_shard
-                .parse()
-                .map_err(TryFromProtoError::InvalidShardId)?,
+                .map(|s| s.parse().map_err(TryFromProtoError::InvalidShardId))
+                .transpose()?,
             data_shard: value
                 .data_shard
                 .parse()
@@ -523,14 +523,14 @@ pub trait ResumptionFrontierCalculator<T> {
 #[derive(Arbitrary, Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
 pub struct DurableCollectionMetadata {
     // See the comments on [`CollectionMetadata`].
-    pub remap_shard: ShardId,
+    pub remap_shard: Option<ShardId>,
     pub data_shard: ShardId,
 }
 
 impl RustType<ProtoDurableCollectionMetadata> for DurableCollectionMetadata {
     fn into_proto(&self) -> ProtoDurableCollectionMetadata {
         ProtoDurableCollectionMetadata {
-            remap_shard: self.remap_shard.to_string(),
+            remap_shard: self.remap_shard.into_proto(),
             data_shard: self.data_shard.to_string(),
         }
     }
@@ -539,8 +539,12 @@ impl RustType<ProtoDurableCollectionMetadata> for DurableCollectionMetadata {
         Ok(DurableCollectionMetadata {
             remap_shard: value
                 .remap_shard
-                .parse()
-                .map_err(TryFromProtoError::InvalidShardId)?,
+                .map(|data_shard| {
+                    data_shard
+                        .parse()
+                        .map_err(TryFromProtoError::InvalidShardId)
+                })
+                .transpose()?,
             data_shard: value
                 .data_shard
                 .parse()
@@ -924,26 +928,118 @@ where
             }
         }
 
-        // Install collection state for each bound description.
-        // Note that this method implementation attempts to do AS MUCH work
-        // concurrently as possible. There are inline comments explaining the motivation
-        // behind each section
+        // Install collection state for each bound description. Note that this
+        // method implementation attempts to do AS MUCH work concurrently as
+        // possible. There are inline comments explaining the motivation behind
+        // each section.
+        let mut entries = Vec::with_capacity(collections.len());
+
+        for (id, desc) in &collections {
+            // This is a temporary workaround for migrations of remap
+            // collections; this lookup can be removed in the next release
+            let current_metadata = METADATA_COLLECTION
+                .peek_key_one(&mut self.state.stash, id)
+                .await
+                .expect("connect to stash");
+
+            let remap_shard = match &desc.data_source {
+                // Iff the ingestion specifies a remap collection...
+                DataSource::Ingestion(IngestionDescription {
+                    remap_collection_id: Some(remap_collection_id),
+                    ..
+                }) => {
+                    match current_metadata {
+                        // If this collection already has a remap shard
+                        // identified, ensure it's the data shard of the remap
+                        // collection. This migrates/fixes up remap shards for
+                        // collections defined before queryable remap shards
+                        // were supported. This can be removed in the next
+                        // release.
+                        Some(DurableCollectionMetadata {
+                            remap_shard: Some(remap_shard),
+                            ..
+                        }) => {
+                            // Rewrite the data stored at `remap_collection_id`,
+                            // which is wrong on first boot. Note that we do
+                            // this blithely just for simplicity's sake
+                            self.rewrite_collection_metadata(
+                                *remap_collection_id,
+                                DurableCollectionMetadata {
+                                    // Data shards used as another collection's
+                                    // remap shards do not have remap shards
+                                    // themselves.
+                                    remap_shard: None,
+                                    // This data shard is the other collection's
+                                    // remap shard. In the next release the way
+                                    // we discover this relationship will be
+                                    // inverted.
+                                    data_shard: remap_shard,
+                                },
+                            )
+                            .await;
+
+                            Some(remap_shard)
+                        }
+                        // We have not yet defined this collection, so grab the
+                        // remap collection's data shard. This is the match arm
+                        // that should survive the next release, but it will no
+                        // longer need to be predicated on the collection not
+                        // having been written yet.
+                        None => {
+                            let DurableCollectionMetadata { data_shard, .. } = METADATA_COLLECTION
+                                .peek_key_one(&mut self.state.stash, remap_collection_id)
+                                .await
+                                .expect("connect to stash")
+                                .expect("known to exist");
+
+                            Some(data_shard)
+                        }
+                        Some(DurableCollectionMetadata {
+                            remap_shard: None, ..
+                        }) => unreachable!("metadata of ingestion-based sources must be initialized with remap shard"),
+                    }
+                }
+                // All other cases (i.e. ingestion without remap shard, or any other data source)
+                _ => {
+                    // If the current metadata has a remap shard for this
+                    // collection, delete it.
+                    if let Some(DurableCollectionMetadata {
+                        remap_shard: Some(..),
+                        data_shard,
+                    }) = current_metadata
+                    {
+                        self.rewrite_collection_metadata(
+                            *id,
+                            DurableCollectionMetadata {
+                                remap_shard: None,
+                                data_shard,
+                            },
+                        )
+                        .await;
+                    }
+
+                    None
+                }
+            };
+
+            // Note that in the case of remap shards of collections that
+            // pre-date queryable remap shards, this data shard is "wrong". We
+            // will correct the relationship when we create the primary
+            // collection by replacing this data shard with that collection's
+            // remap shard.
+            entries.push((
+                *id,
+                DurableCollectionMetadata {
+                    remap_shard,
+                    data_shard: ShardId::new(),
+                },
+            ))
+        }
 
         // Perform all stash writes in a single transaction, to minimize transaction overhead and
         // the time spent waiting for stash.
         METADATA_COLLECTION
-            .insert_without_overwrite(
-                &mut self.state.stash,
-                collections.iter().map(|(id, _)| {
-                    (
-                        *id,
-                        DurableCollectionMetadata {
-                            remap_shard: ShardId::new(),
-                            data_shard: ShardId::new(),
-                        },
-                    )
-                }),
-            )
+            .insert_without_overwrite(&mut self.state.stash, entries.into_iter())
             .await?;
 
         let mut durable_metadata = METADATA_COLLECTION.peek_one(&mut self.state.stash).await?;
@@ -964,9 +1060,21 @@ where
                 None
             };
 
+            let remap_shard = match &description.data_source {
+                // Only ingestions can have remap shards.
+                DataSource::Ingestion(ingestion) => {
+                    // Iff ingestion has a remap collection, its metadata must
+                    // exist (and be correct) by this point.
+                    ingestion
+                        .remap_collection_id
+                        .map(|id| durable_metadata[&id].data_shard)
+                }
+                _ => None,
+            };
+
             let metadata = CollectionMetadata {
                 persist_location: self.persist_location.clone(),
-                remap_shard: collection_shards.remap_shard,
+                remap_shard,
                 data_shard: collection_shards.data_shard,
                 status_shard,
                 relation_desc: description.desc.clone(),
@@ -994,7 +1102,7 @@ where
                 // should be replaced with real introspection (https://github.com/MaterializeInc/materialize/issues/14266)
                 // but for now, it's helpful to have this mapping written down somewhere
                 debug!(
-                    "mapping GlobalId={} to remap shard ({}), data shard ({}), status shard ({:?})",
+                    "mapping GlobalId={} to remap shard ({:?}), data shard ({}), status shard ({:?})",
                     id, metadata.remap_shard, metadata.data_shard, metadata.status_shard
                 );
 
@@ -1130,6 +1238,7 @@ where
                         // The rest of the fields are identical
                         desc: ingestion.desc,
                         instance_id: ingestion.instance_id,
+                        remap_collection_id: ingestion.remap_collection_id,
                     };
                     let mut persist_clients = self.persist.lock().await;
                     let mut state = desc.initialize_state(&mut persist_clients).await;
@@ -1940,7 +2049,13 @@ where
     ///
     /// Any shards changed between the old and the new version will be
     /// decommissioned/eventually deleted.
-    async fn _rewrite_collection_metadata(
+    ///
+    /// Note that this function expects to be called:
+    /// - While no source is currently using the shards identified in the
+    ///   current metadata.
+    /// - Before any sources begins using the shards identified in
+    ///   `new_metadata`.
+    async fn rewrite_collection_metadata(
         &mut self,
         id: GlobalId,
         new_metadata: DurableCollectionMetadata,
@@ -1962,16 +2077,20 @@ where
 
                 let mut to_delete_shards = vec![];
                 for (old, new, desc) in [
-                    (metadata.data_shard, new_metadata.data_shard, "data"),
+                    (
+                        Some(metadata.data_shard),
+                        Some(new_metadata.data_shard),
+                        "data",
+                    ),
                     (metadata.remap_shard, new_metadata.remap_shard, "remap"),
                 ] {
-                    if old != new {
+                    if old != new && old.is_some() {
                         info!(
                             "replacing {:?}'s {} shard {:?} with {:?}",
                             id, desc, old, new
                         );
                         to_delete_shards
-                            .push((old, format!("retired {} shard for {:?}", desc, id)));
+                            .push((old.unwrap(), format!("retired {} shard for {:?}", desc, id)));
                     }
                 }
 

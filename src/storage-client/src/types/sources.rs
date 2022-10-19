@@ -78,6 +78,8 @@ pub struct IngestionDescription<S = ()> {
     pub source_exports: BTreeMap<GlobalId, SourceExport<S>>,
     /// The ID of the instance in which to install the source.
     pub instance_id: StorageInstanceId,
+    /// The ID of this ingestion's remap/progress collection, if applicable.
+    pub remap_collection_id: Option<GlobalId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -132,28 +134,30 @@ impl<T: Timestamp + Lattice + Codec64> ResumptionFrontierCalculator<T>
             GenericSourceConnection::TestScript(_) => TESTSCRIPT_PROGRESS_DESC.clone(),
         };
 
-        let CollectionMetadata {
+        if let CollectionMetadata {
             persist_location,
-            remap_shard,
+            remap_shard: Some(remap_shard),
             data_shard: _,
             // The status shard only contains non-definite status updates
             status_shard: _,
             relation_desc: _,
-        } = &self.ingestion_metadata;
-        let remap_handle = client_cache
-            .open(persist_location.clone())
-            .await
-            .expect("error creating persist client")
-            // TODO: Any way to plumb the GlobalId to this?
-            .open_writer::<SourceData, (), T, Diff>(
-                *remap_shard,
-                "resumption remap",
-                Arc::new(remap_relation_desc),
-                Arc::new(UnitSchema),
-            )
-            .await
-            .unwrap();
-        handles.push(remap_handle);
+        } = &self.ingestion_metadata
+        {
+            let remap_handle = client_cache
+                .open(persist_location.clone())
+                .await
+                .expect("error creating persist client")
+                // TODO: Any way to plumb the GlobalId to this?
+                .open_writer::<SourceData, (), T, Diff>(
+                    *remap_shard,
+                    "resumption remap",
+                    Arc::new(remap_relation_desc),
+                    Arc::new(UnitSchema),
+                )
+                .await
+                .unwrap();
+            handles.push(remap_handle);
+        }
 
         handles
     }
@@ -203,14 +207,23 @@ where
                 .boxed(),
             any::<S>().boxed(),
             any::<StorageInstanceId>().boxed(),
+            any::<Option<GlobalId>>(),
         )
             .prop_map(
-                |(desc, source_imports, source_exports, ingestion_metadata, instance_id)| Self {
+                |(
                     desc,
                     source_imports,
                     source_exports,
                     ingestion_metadata,
                     instance_id,
+                    remap_collection_id,
+                )| Self {
+                    desc,
+                    source_imports,
+                    source_exports,
+                    ingestion_metadata,
+                    instance_id,
+                    remap_collection_id,
                 },
             )
             .boxed()
@@ -225,6 +238,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             ingestion_metadata: Some(self.ingestion_metadata.into_proto()),
             desc: Some(self.desc.into_proto()),
             instance_id: Some(self.instance_id.into_proto()),
+            remap_collection_id: self.remap_collection_id.into_proto(),
         }
     }
 
@@ -241,6 +255,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             instance_id: proto
                 .instance_id
                 .into_rust_if_some("ProtoIngestionDescription::instance_id")?,
+            remap_collection_id: proto.remap_collection_id.into_rust()?,
         })
     }
 }
