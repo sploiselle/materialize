@@ -123,6 +123,7 @@ Execute
 Exists
 Expected
 Explain
+Expose
 Extract
 Factor
 False

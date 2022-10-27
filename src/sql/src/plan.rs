@@ -666,6 +666,7 @@ pub struct Ingestion {
     pub desc: SourceDesc,
     pub source_imports: HashSet<GlobalId>,
     pub subsource_exports: HashMap<GlobalId, usize>,
+    pub progress_subsource: Option<GlobalId>,
 }
 
 #[derive(Clone, Debug)]

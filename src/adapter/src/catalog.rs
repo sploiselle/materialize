@@ -5518,7 +5518,7 @@ impl Catalog {
                         source_imports: ingestion.source_imports,
                         subsource_exports: ingestion.subsource_exports,
                         host_config: self.resolve_storage_host_config(&host_config)?,
-                        remap_collection_id: None,
+                        remap_collection_id: ingestion.progress_subsource,
                     }),
                     None => DataSourceDesc::Source,
                 },

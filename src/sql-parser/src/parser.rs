@@ -2424,6 +2424,12 @@ impl<'a> Parser<'a> {
             None
         };
 
+        let progress_subsource = if self.parse_keywords(&[EXPOSE, PROGRESS, AS]) {
+            Some(self.parse_deferred_object_name()?)
+        } else {
+            None
+        };
+
         // New WITH block
         let with_options = if self.parse_keyword(WITH) {
             self.expect_token(&Token::LParen)?;
@@ -2445,6 +2451,7 @@ impl<'a> Parser<'a> {
             key_constraint,
             with_options,
             referenced_subsources,
+            progress_subsource,
         }))
     }
 

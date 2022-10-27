@@ -1367,7 +1367,7 @@ impl SourceConnection for KafkaSourceConnection {
     }
 }
 
-static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+pub static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
     RelationDesc::empty()
         .with_column(
             "partition",
@@ -1845,7 +1845,7 @@ impl SourceConnection for KinesisSourceConnection {
     }
 }
 
-static KINESIS_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+pub static KINESIS_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
     RelationDesc::empty()
         .with_column("shard_id", ScalarType::Int32.nullable(false))
         .with_column("sequence_number", ScalarType::UInt64.nullable(true))
@@ -1919,7 +1919,7 @@ impl SourceConnection for PostgresSourceConnection {
     }
 }
 
-static PG_PROGRESS_DESC: Lazy<RelationDesc> =
+pub static PG_PROGRESS_DESC: Lazy<RelationDesc> =
     Lazy::new(|| RelationDesc::empty().with_column("lsn", ScalarType::UInt64.nullable(true)));
 
 impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
@@ -2349,7 +2349,7 @@ impl SourceConnection for S3SourceConnection {
     }
 }
 
-static S3_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+pub static S3_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
     RelationDesc::empty().with_column("byte_offset", ScalarType::UInt64.nullable(true))
 });
 

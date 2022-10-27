@@ -242,7 +242,7 @@ where
             };
             let collection_metadata = mz_storage_client::controller::CollectionMetadata {
                 persist_location,
-                remap_shard: mz_persist_client::ShardId::new(),
+                remap_shard: None,
                 data_shard: mz_persist_client::ShardId::new(),
                 status_shard: None,
             };
@@ -271,6 +271,7 @@ where
                                 mz_storage_client::types::hosts::StorageHostConfig::Remote {
                                     addr: "test".to_string(),
                                 },
+                            remap_collection_id: None,
                         },
                         // TODO: test resumption as well!
                         resume_upper: Antichain::from_elem(Timestamp::minimum()),
