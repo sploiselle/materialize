@@ -600,6 +600,27 @@ where
     pub async fn compact(&mut self, new_since: Antichain<IntoTime>) {
         self.remap_handle.compact(new_since).await;
     }
+
+    /// Closes the collection from further input.
+    pub async fn finalize(&mut self) {
+        loop {
+            match self
+                .remap_handle
+                .compare_and_append(vec![], self.upper.clone(), Antichain::new())
+                .await
+            {
+                // We have successfully produced data in the remap collection so let's read back what
+                // we wrote to update our local state
+                Ok(()) => {
+                    self.upper = Antichain::new();
+                    return;
+                }
+                Err(actual_upper) => {
+                    self.upper = actual_upper.0;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
