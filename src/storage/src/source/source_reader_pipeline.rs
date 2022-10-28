@@ -1182,7 +1182,7 @@ where
                     // the remap shard that might be needed for the reported source
                     // uppers.
                     if input_frontier.is_empty() {
-                        cap_set.downgrade(&[]);
+                        timestamper.finalize().await;
                         return;
                     }
                 }
