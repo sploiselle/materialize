@@ -819,7 +819,15 @@ where
                     // the remap shard that might be needed for the reported source
                     // uppers.
                     if source_upper.is_empty() {
+                        // Downgrade the capability set to indicate that we will
+                        // never produce more data from this operator. Note that
+                        // this would occur automatically when returning from
+                        // this function but no harm in being explicit.
                         cap_set.downgrade(&[]);
+
+                        // Mark the persist shard as finalized so that it can be
+                        // read at any time in the future.
+                        timestamper.finalize().await;
                         return;
                     }
                 }
