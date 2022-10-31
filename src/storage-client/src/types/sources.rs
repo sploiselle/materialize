@@ -1403,7 +1403,9 @@ impl SourceDesc {
             GenericSourceConnection::LoadGenerator(connection) => {
                 connection.load_generator.views().len()
             }
-            GenericSourceConnection::Postgres(connection) => connection.details.tables.len(),
+            GenericSourceConnection::Postgres(connection) => {
+                connection.publication_details.tables.len()
+            }
         };
         // Every ingestion produces a main stream plus subsource streams
         subsources + 1
@@ -1650,10 +1652,11 @@ impl RustType<ProtoKinesisSourceConnection> for KinesisSourceConnection {
 pub struct PostgresSourceConnection {
     pub connection_id: GlobalId,
     pub connection: PostgresConnection,
-    /// The cast expressions to convert the incoming string encoded rows to their target types
-    pub table_casts: Vec<Vec<MirScalarExpr>>,
+    /// The cast expressions to convert the incoming string encoded rows to
+    /// their target types, keyed by their position in the source.
+    pub table_casts: HashMap<usize, Vec<MirScalarExpr>>,
     pub publication: String,
-    pub details: PostgresSourceDetails,
+    pub publication_details: PostgresSourcePublicationDetails,
 }
 
 impl Arbitrary for PostgresSourceConnection {
@@ -1664,12 +1667,13 @@ impl Arbitrary for PostgresSourceConnection {
         (
             any::<PostgresConnection>(),
             any::<GlobalId>(),
-            proptest::collection::vec(
+            proptest::collection::hash_map(
+                any::<usize>(),
                 proptest::collection::vec(any::<MirScalarExpr>(), 1..4),
                 1..4,
             ),
             any::<String>(),
-            any::<PostgresSourceDetails>(),
+            any::<PostgresSourcePublicationDetails>(),
         )
             .prop_map(
                 |(connection, connection_id, table_casts, publication, details)| Self {
@@ -1677,7 +1681,7 @@ impl Arbitrary for PostgresSourceConnection {
                     connection_id,
                     table_casts,
                     publication,
-                    details,
+                    publication_details: details,
                 },
             )
             .boxed()
@@ -1693,33 +1697,36 @@ impl SourceConnection for PostgresSourceConnection {
 impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
     fn into_proto(&self) -> ProtoPostgresSourceConnection {
         use proto_postgres_source_connection::ProtoPostgresTableCast;
-        let mut table_casts = vec![];
-        for table_cast in self.table_casts.iter() {
-            table_casts.push(ProtoPostgresTableCast {
-                column_casts: table_cast
-                    .iter()
-                    .cloned()
-                    .map(|cast| cast.into_proto())
-                    .collect(),
-            });
+        let mut table_casts_map = HashMap::new();
+        for (pos, table_cast_cols) in self.table_casts.iter() {
+            table_casts_map.insert(
+                mz_ore::cast::usize_to_u64(*pos),
+                ProtoPostgresTableCast {
+                    column_casts: table_cast_cols
+                        .iter()
+                        .cloned()
+                        .map(|cast| cast.into_proto())
+                        .collect(),
+                },
+            );
         }
         ProtoPostgresSourceConnection {
             connection: Some(self.connection.into_proto()),
             connection_id: Some(self.connection_id.into_proto()),
             publication: self.publication.clone(),
-            details: Some(self.details.into_proto()),
-            table_casts,
+            details: Some(self.publication_details.into_proto()),
+            table_casts_map,
         }
     }
 
     fn from_proto(proto: ProtoPostgresSourceConnection) -> Result<Self, TryFromProtoError> {
-        let mut table_casts = vec![];
-        for table_cast in proto.table_casts {
+        let mut table_casts = HashMap::new();
+        for (pos, table_cast_cols) in proto.table_casts_map {
             let mut column_casts = vec![];
-            for cast in table_cast.column_casts {
+            for cast in table_cast_cols.column_casts {
                 column_casts.push(cast.into_rust()?);
             }
-            table_casts.push(column_casts);
+            table_casts.insert(mz_ore::cast::u64_to_usize(pos), column_casts);
         }
         Ok(PostgresSourceConnection {
             connection: proto
@@ -1729,7 +1736,7 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
                 .connection_id
                 .into_rust_if_some("ProtoPostgresSourceConnection::connection_id")?,
             publication: proto.publication,
-            details: proto
+            publication_details: proto
                 .details
                 .into_rust_if_some("ProtoPostgresSourceConnection::details")?,
             table_casts,
@@ -1738,21 +1745,21 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PostgresSourceDetails {
+pub struct PostgresSourcePublicationDetails {
     pub tables: Vec<mz_postgres_util::desc::PostgresTableDesc>,
     pub slot: String,
 }
 
-impl RustType<ProtoPostgresSourceDetails> for PostgresSourceDetails {
-    fn into_proto(&self) -> ProtoPostgresSourceDetails {
-        ProtoPostgresSourceDetails {
+impl RustType<ProtoPostgresSourcePublicationDetails> for PostgresSourcePublicationDetails {
+    fn into_proto(&self) -> ProtoPostgresSourcePublicationDetails {
+        ProtoPostgresSourcePublicationDetails {
             tables: self.tables.iter().map(|t| t.into_proto()).collect(),
             slot: self.slot.clone(),
         }
     }
 
-    fn from_proto(proto: ProtoPostgresSourceDetails) -> Result<Self, TryFromProtoError> {
-        Ok(PostgresSourceDetails {
+    fn from_proto(proto: ProtoPostgresSourcePublicationDetails) -> Result<Self, TryFromProtoError> {
+        Ok(PostgresSourcePublicationDetails {
             tables: proto
                 .tables
                 .into_iter()
