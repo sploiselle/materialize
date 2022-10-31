@@ -621,7 +621,7 @@ pub fn plan_create_source(
             // The postgres source reader will then eval each of those on the incoming rows based
             // on the target table
             let mut table_casts = vec![];
-            for table in details.tables.iter() {
+            'tables: for table in details.tables.iter() {
                 // First, construct an expression context where the expression is evaluated on an
                 // imaginary row which has the same number of columns as the upstream table but all
                 // of the types are text
@@ -653,8 +653,16 @@ pub fn plan_create_source(
                 // column and casts it to the appropriate target type
                 let mut column_casts = vec![];
                 for (i, column) in table.columns.iter().enumerate() {
-                    let ty = mz_pgrepr::Type::from_oid_and_typmod(column.type_oid, column.type_mod)
-                        .map_err(|e| sql_err!("{}", e))?;
+                    let ty = match mz_pgrepr::Type::from_oid_and_typmod(
+                        column.type_oid,
+                        column.type_mod,
+                    ) {
+                        Ok(ty) => ty,
+                        // If a table contains any unknown types, it's
+                        // inelligible for table casts.
+                        Err(_) => continue 'tables,
+                    };
+
                     let data_type = scx.resolve_type(ty)?;
                     let scalar_type = query::scalar_type_from_sql(scx, &data_type)?;
 
