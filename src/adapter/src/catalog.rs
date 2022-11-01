@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -3245,16 +3246,37 @@ impl Catalog {
         c: &Catalog,
     ) -> Result<Catalog, Error> {
         let mut c = c.clone();
-        let items = tx.loaded_items();
-        for (id, name, def) in items {
+        let mut awaiting_dependencies: BTreeMap<GlobalId, Vec<_>> = BTreeMap::new();
+        let mut items: VecDeque<_> = tx.loaded_items().into_iter().collect();
+        while let Some((id, name, def)) = items.pop_front() {
+            let d_c = def.clone();
             // TODO(benesch): a better way of detecting when a view has depended
             // upon a non-existent logging view. This is fine for now because
             // the only goal is to produce a nicer error message; we'll bail out
             // safely even if the error message we're sniffing out changes.
             static LOGGING_ERROR: Lazy<Regex> =
                 Lazy::new(|| Regex::new("unknown catalog item 'mz_catalog.[^']*'").unwrap());
-            let item = match c.deserialize_item(def) {
+
+            // TODO: unlike LOGGING_ERROR, this has semantic meaning and needs
+            // some more structure
+            static MISSING_DEP: Lazy<Regex> =
+                Lazy::new(|| Regex::new(r#"invalid id (u\d+)"#).unwrap());
+
+            let item = match c.deserialize_item(d_c) {
                 Ok(item) => item,
+
+                // If we were missing a dependency, wait for it to be added.
+                Err(e) if MISSING_DEP.is_match(&e.to_string()) => {
+                    let e = e.to_string();
+                    let cap = MISSING_DEP.captures(&e).unwrap();
+                    let missing_dep = GlobalId::from_str(cap.get(1).unwrap().as_str()).unwrap();
+                    awaiting_dependencies
+                        .entry(missing_dep)
+                        .or_default()
+                        .push((id, name, def));
+                    continue;
+                }
+
                 Err(e) if LOGGING_ERROR.is_match(&e.to_string()) => {
                     return Err(Error::new(ErrorKind::UnsatisfiableLoggingDependency {
                         depender_name: name.to_string(),
@@ -3268,7 +3290,16 @@ impl Catalog {
             };
             let oid = c.allocate_oid()?;
             c.state.insert_item(id, oid, name, item);
+            if let Some(dependent_items) = awaiting_dependencies.remove(&id) {
+                items.extend(dependent_items);
+            }
         }
+
+        assert!(
+            awaiting_dependencies.is_empty(),
+            "the following dependencies were never filled {:?}",
+            awaiting_dependencies
+        );
         c.transient_revision = 1;
         Ok(c)
     }

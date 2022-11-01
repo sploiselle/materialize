@@ -9,6 +9,7 @@
 
 use semver::Version;
 use std::collections::BTreeMap;
+use tracing::info;
 
 use mz_ore::collections::CollectionExt;
 use mz_sql::ast::Raw;
@@ -23,14 +24,14 @@ use super::storage::Transaction;
 
 fn rewrite_items<F>(tx: &mut Transaction, mut f: F) -> Result<(), anyhow::Error>
 where
-    F: FnMut(&mut mz_sql::ast::Statement<Raw>) -> Result<(), anyhow::Error>,
+    F: FnMut(&mut Transaction<S>, &mut mz_sql::ast::Statement<Raw>) -> Result<(), anyhow::Error>,
 {
     let mut updated_items = BTreeMap::new();
     let items = tx.loaded_items();
     for (id, name, SerializedCatalogItem::V1 { create_sql }) in items {
         let mut stmt = mz_sql::parse::parse(&create_sql)?.into_element();
 
-        f(&mut stmt)?;
+        f(tx, &mut stmt)?;
 
         let serialized_item = SerializedCatalogItem::V1 {
             create_sql: stmt.to_ast_string_stable(),
@@ -45,13 +46,16 @@ where
 pub(crate) async fn migrate(catalog: &mut Catalog) -> Result<(), anyhow::Error> {
     let mut storage = catalog.storage().await;
     let catalog_version = storage.get_catalog_content_version().await?;
-    let _catalog_version = match catalog_version {
+    let catalog_version = match catalog_version {
         Some(v) => Version::parse(&v)?,
         None => Version::new(0, 0, 0),
     };
+
+    info!("migrating from catalog version {:?}", catalog_version);
+
     let mut tx = storage.transaction().await?;
     // First, do basic AST -> AST transformations.
-    rewrite_items(&mut tx, |_stmt| Ok(()))?;
+    rewrite_items(&mut tx, |_tx, _stmt| Ok(()))?;
 
     // Then, load up a temporary catalog with the rewritten items, and perform
     // some transformations that require introspecting the catalog. These
@@ -60,9 +64,9 @@ pub(crate) async fn migrate(catalog: &mut Catalog) -> Result<(), anyhow::Error> 
     // you are really certain you want one of these crazy migrations.
     let cat = Catalog::load_catalog_items(&mut tx, catalog)?;
     let conn_cat = cat.for_system_session();
-
-    rewrite_items(&mut tx, |item| {
+    rewrite_items(&mut tx, |tx, item| {
         deferred_object_name_rewrite(&conn_cat, item)?;
+        progress_collection_rewrite(&conn_cat, tx, item)?;
         Ok(())
     })?;
     tx.commit().await.map_err(|e| e.into())
@@ -128,6 +132,102 @@ fn deferred_object_name_rewrite(
                 name,
             )));
         }
+    }
+    Ok(())
+}
+
+// Rewrites all subsource references to be qualified by their IDs, which is the
+// mechanism by which `DeferredObjectName` differentiates between user input and
+// created objects.
+fn progress_collection_rewrite<S: Append>(
+    cat: &ConnCatalog<'_>,
+    tx: &mut Transaction<'_, S>,
+    stmt: &mut mz_sql::ast::Statement<Raw>,
+) -> Result<(), anyhow::Error> {
+    if let Statement::CreateSource(CreateSourceStatement {
+        name,
+        connection,
+        progress_subsource,
+        ..
+    }) = stmt
+    {
+        if progress_subsource.is_some() {
+            return Ok(());
+        }
+
+        let progress_desc = match connection {
+            mz_sql::ast::CreateSourceConnection::Kafka(_) => {
+                mz_storage_client::types::sources::KAFKA_PROGRESS_DESC.clone()
+            }
+            mz_sql::ast::CreateSourceConnection::Kinesis { .. } => {
+                mz_storage_client::types::sources::KINESIS_PROGRESS_DESC.clone()
+            }
+            mz_sql::ast::CreateSourceConnection::S3 { .. } => {
+                mz_storage_client::types::sources::S3_PROGRESS_DESC.clone()
+            }
+            mz_sql::ast::CreateSourceConnection::Postgres { .. } => {
+                mz_storage_client::types::sources::PG_PROGRESS_DESC.clone()
+            }
+            // This match arm intentionally a wild card; this never needs to be updated.
+            _ => return Ok(()),
+        };
+
+        // Generate a new GlobalId for the subsource.
+        let progress_subsource_id =
+            mz_repr::GlobalId::User(tx.get_and_increment_id("user".to_string())?);
+
+        // Generate a StatementContext, which is simplest for handling names.
+        let scx = mz_sql::plan::StatementContext::new(None, cat);
+
+        // Find an available name.
+        let (item, prefix) = name.0.split_last().unwrap();
+        let mut suggested_name = prefix.to_vec();
+        suggested_name.push(format!("{}_progress", item.as_str()).into());
+
+        let partial =
+            mz_sql::normalize::unresolved_object_name(UnresolvedObjectName(suggested_name))?;
+        let qualified = scx.allocate_qualified_name(partial)?;
+        let found_name = scx.catalog.find_available_name(qualified);
+        let full_name = scx.catalog.resolve_full_name(&found_name);
+
+        // Grab the item name, which is necessary to add this item to the
+        // current transaction.
+        let item_name = full_name.item.clone();
+
+        info!(
+            "adding progress subsource to {:?}; named {:?}, with id {:?}",
+            name, full_name, progress_subsource_id,
+        );
+
+        // Generate an unresolved version of the name, which will
+        // ultimately go in the parent `CREATE SOURCE` statement.
+        let name = UnresolvedObjectName::from(full_name);
+
+        // Generate the progress subsource schema.
+        let (columns, table_constraints) = scx.relation_desc_into_table_defs(&progress_desc)?;
+
+        // Create the subsource statement
+        let subsource = mz_sql::ast::CreateSubsourceStatement {
+            name: name.clone(),
+            columns,
+            constraints: table_constraints,
+            if_not_exists: false,
+        };
+
+        tx.insert_item(
+            progress_subsource_id,
+            found_name.qualifiers.schema_spec.into(),
+            &item_name,
+            SerializedCatalogItem::V1 {
+                create_sql: subsource.to_ast_string_stable(),
+            },
+        )?;
+
+        // Place the newly created subsource into the `CREATE SOURCE` statement.
+        *progress_subsource = Some(DeferredObjectName::Named(RawObjectName::Id(
+            progress_subsource_id.to_string(),
+            name,
+        )));
     }
     Ok(())
 }
