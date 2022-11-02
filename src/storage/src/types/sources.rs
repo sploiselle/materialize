@@ -9,7 +9,7 @@
 
 //! Types and traits related to the introduction of changing collections into `dataflow`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::{Add, AddAssign, Deref, DerefMut};
 use std::str::FromStr;
 use std::time::Duration;
@@ -1653,6 +1653,7 @@ pub struct PostgresSourceConnection {
     pub table_casts: Vec<Vec<MirScalarExpr>>,
     pub publication: String,
     pub details: PostgresSourceDetails,
+    pub text_cols: HashSet<u32>,
 }
 
 impl Arbitrary for PostgresSourceConnection {
@@ -1669,14 +1670,16 @@ impl Arbitrary for PostgresSourceConnection {
             ),
             any::<String>(),
             any::<PostgresSourceDetails>(),
+            any::<HashSet<u32>>(),
         )
             .prop_map(
-                |(connection, connection_id, table_casts, publication, details)| Self {
+                |(connection, connection_id, table_casts, publication, details, text_cols)| Self {
                     connection,
                     connection_id,
                     table_casts,
                     publication,
                     details,
+                    text_cols,
                 },
             )
             .boxed()
@@ -1708,6 +1711,7 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
             publication: self.publication.clone(),
             details: Some(self.details.into_proto()),
             table_casts,
+            text_cols: self.text_cols.iter().cloned().collect(),
         }
     }
 
@@ -1732,6 +1736,7 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
                 .details
                 .into_rust_if_some("ProtoPostgresSourceConnection::details")?,
             table_casts,
+            text_cols: proto.text_cols.into_iter().collect(),
         })
     }
 }
