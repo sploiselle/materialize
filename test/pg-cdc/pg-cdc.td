@@ -97,6 +97,8 @@ CREATE TYPE an_enum AS ENUM ('var0', 'var1');
 CREATE TABLE enum_table (a an_enum);
 ALTER TABLE enum_table REPLICA IDENTITY FULL;
 
+INSERT INTO enum_table VALUES ('var1'), ('var0');
+
 #
 # Test that slots created for replication sources are deleted on DROP
 #
@@ -466,6 +468,35 @@ DELETE FROM conflict_schema.conflict_table;
 
 > SELECT COUNT(*) FROM conflict_table;
 0
+
+#
+# Support enum values as strings
+#
+#
+> CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [an_enum]
+  )
+  FOR TABLES (
+    "enum_table"
+  );
+
+$ set-regex match=\d+ replacement=<NUMBER>
+> SELECT * FROM (SHOW SOURCES) WHERE name LIKE 'enum%';
+enum_source             postgres  <NUMBER>
+enum_table              subsource <null>
+
+$ unset-regex
+
+> SELECT * FROM enum_table
+var0
+var1
+
+#
+# Cleanup
+#
+#
 
 $ postgres-execute connection=postgres://postgres:postgres@postgres
 DROP PUBLICATION mz_source;
