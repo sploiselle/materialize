@@ -28,4 +28,4 @@ CREATE PUBLICATION mz_source FOR ALL TABLES;
 
 # Todo: add test for detail and hint once testdrive supports that
 ! CREATE SOURCE mz_source FROM POSTGRES CONNECTION pg (PUBLICATION 'mz_source') FOR ALL TABLES;
-regex: the following columns contain unsupported types:\n"public\.enum_table\.a"
+regex: the following columns contain unsupported types:\npostgres\.public\.person\.current_mood

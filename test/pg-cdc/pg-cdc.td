@@ -93,9 +93,23 @@ INSERT INTO conflict_schema.conflict_table VALUES ('234');
 CREATE TABLE "space table" ("space column" INTEGER);
 
 CREATE TYPE an_enum AS ENUM ('var0', 'var1');
-
 CREATE TABLE enum_table (a an_enum);
+INSERT INTO enum_table VALUES ('var1'), ('var0');
 ALTER TABLE enum_table REPLICA IDENTITY FULL;
+
+CREATE TYPE another_enum AS ENUM ('var2', 'var3');
+CREATE TABLE another_enum_table ("колона" another_enum);
+INSERT INTO another_enum_table VALUES ('var2'), ('var3');
+ALTER TABLE another_enum_table REPLICA IDENTITY FULL;
+
+CREATE TABLE conflict_schema.another_enum_table ("колона" another_enum);
+ALTER TABLE conflict_schema.another_enum_table REPLICA IDENTITY FULL;
+INSERT INTO conflict_schema.another_enum_table VALUES ('var2'), ('var3');
+ALTER TABLE conflict_schema.another_enum_table REPLICA IDENTITY FULL;
+
+DROP PUBLICATION IF EXISTS mz_source_narrow;
+
+CREATE PUBLICATION mz_source_narrow FOR TABLE enum_table, public.another_enum_table, pk_table;
 
 #
 # Test that slots created for replication sources are deleted on DROP
@@ -177,7 +191,15 @@ contains:publication "no_such_publication" does not exist
   FOR TABLES (
     "enum_table"
   );
-contains: uses unrecognized type
+regex: the following columns contain unsupported types:\npostgres.public.enum_table.a
+
+! CREATE SOURCE "mz_source"
+  FROM POSTGRES CONNECTION pg (PUBLICATION 'mz_source')
+  FOR TABLES (
+    "enum_table",
+    public.another_enum_table
+  );
+regex: the following columns contain unsupported types:\npostgres\.public\.another_enum_table\."колона"\npostgres\.public\.enum_table\.a
 
 #
 # Establish direct replication
@@ -234,9 +256,9 @@ contains: SOURCE materialize.public.conflict_table is a subsource and cannot be 
 ! DROP SOURCE conflict_table CASCADE
 contains: SOURCE materialize.public.conflict_table is a subsource and cannot be dropped independently of its primary source
 
-> SELECT * FROM no_replica_identity;
-1
-2
+# > SELECT * FROM no_replica_identity;
+# 1
+# 2
 
 #
 # Perform sanity checks of the initial snapshot
@@ -470,8 +492,113 @@ DELETE FROM conflict_schema.conflict_table;
 > SELECT COUNT(*) FROM conflict_table;
 0
 
+#
+# Support enum values as strings
+#
+#
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [pk_table.col_dne]
+  )
+  FOR TABLES (
+    "enum_table"
+  );
+contains: postgres.public.pk_table does not contain column col_dne
+
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [table_dne.col_dne]
+  )
+  FOR TABLES (
+    "enum_table"
+  );
+contains: table table_dne not found in source
+
+# Reference exists in two schemas, so is not unambiguous
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [another_enum_table."колона"]
+  )
+  FOR ALL TABLES;
+contains: table another_enum_table is ambiguous, consider specifying the schema
+
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [foo]
+  )
+  FOR ALL TABLES;
+contains: expected schema qualified column reference, only received column reference foo
+
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [foo.bar.qux.qax.foo]
+  )
+  FOR ALL TABLES;
+contains: qualified name did not have between 1 and 3 components: foo.bar.qux.qax
+
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [enum_table.a, enum_table.a]
+  )
+  FOR ALL TABLES;
+contains: multiple references
+
+# utf8_table is not part of mz_source_narrow publication
+! CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source_narrow',
+    TEXT COLUMNS [enum_table.a, utf8_table.f1]
+  )
+  FOR ALL TABLES;
+contains: table utf8_table not found in source
+
+# n.b includes a reference to pk_table, which is not a table that's part of the
+# source, but is part of the publication.
+
+> CREATE SOURCE enum_source
+  FROM POSTGRES CONNECTION pg (
+    PUBLICATION 'mz_source',
+    TEXT COLUMNS [
+      enum_table.a,
+      public.another_enum_table."колона",
+      pk_table.pk
+    ]
+  )
+  FOR TABLES (
+    "enum_table",
+    public.another_enum_table
+  );
+
+$ set-regex match=\d+ replacement=<NUMBER>
+> SELECT * FROM (SHOW SOURCES) WHERE name LIKE '%enum%';
+another_enum_table      subsource <null>
+enum_source             postgres  <NUMBER>
+enum_table              subsource <null>
+
+$ unset-regex
+
+> SELECT * FROM enum_table
+var0
+var1
+
+> SELECT "колона" FROM another_enum_table
+var2
+var3
+
+#
+# Cleanup
+#
+#
+
 $ postgres-execute connection=postgres://postgres:postgres@postgres
 DROP PUBLICATION mz_source;
+DROP PUBLICATION mz_source_narrow;
 INSERT INTO pk_table VALUES (99999);
 
 # todo: we're purifying Postgres view names incorrectly, fix that and this error!
