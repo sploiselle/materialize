@@ -24,7 +24,7 @@ use super::storage::Transaction;
 
 fn rewrite_items<F>(tx: &mut Transaction, mut f: F) -> Result<(), anyhow::Error>
 where
-    F: FnMut(&mut Transaction<S>, &mut mz_sql::ast::Statement<Raw>) -> Result<(), anyhow::Error>,
+    F: FnMut(&mut Transaction, &mut mz_sql::ast::Statement<Raw>) -> Result<(), anyhow::Error>,
 {
     let mut updated_items = BTreeMap::new();
     let items = tx.loaded_items();
@@ -139,9 +139,9 @@ fn deferred_object_name_rewrite(
 // Rewrites all subsource references to be qualified by their IDs, which is the
 // mechanism by which `DeferredObjectName` differentiates between user input and
 // created objects.
-fn progress_collection_rewrite<S: Append>(
+fn progress_collection_rewrite(
     cat: &ConnCatalog<'_>,
-    tx: &mut Transaction<'_, S>,
+    tx: &mut Transaction<'_>,
     stmt: &mut mz_sql::ast::Statement<Raw>,
 ) -> Result<(), anyhow::Error> {
     if let Statement::CreateSource(CreateSourceStatement {

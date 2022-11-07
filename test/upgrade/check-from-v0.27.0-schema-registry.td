@@ -13,5 +13,6 @@
 # This next query will fail if a bug like #10234 occurs again, where a migration
 # injects a `WITH` option into the wrong spot.
 
+$ deprecate-next-stmt from-version=0.39.0
 > SHOW CREATE SOURCE data
 "materialize.public.data" "CREATE SOURCE \"materialize\".\"public\".\"data\" FROM KAFKA CONNECTION \"materialize\".\"public\".\"kafka_conn\" (TOPIC = 'testdrive-data-${testdrive.seed}') FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY CONNECTION \"materialize\".\"public\".\"csr_conn\" SEED VALUE SCHEMA '{\"type\":\"record\",\"name\":\"foo\",\"fields\":[{\"name\":\"a\",\"type\":\"int\"}]}' ENVELOPE NONE"
