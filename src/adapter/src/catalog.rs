@@ -13,7 +13,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -3255,21 +3254,13 @@ impl Catalog {
             // the only goal is to produce a nicer error message; we'll bail out
             // safely even if the error message we're sniffing out changes.
             static LOGGING_ERROR: Lazy<Regex> =
-                Lazy::new(|| Regex::new("unknown catalog item 'mz_catalog.[^']*'").unwrap());
-
-            // TODO: unlike LOGGING_ERROR, this has semantic meaning and needs
-            // some more structure
-            static MISSING_DEP: Lazy<Regex> =
-                Lazy::new(|| Regex::new(r#"invalid id (u\d+)"#).unwrap());
+                Lazy::new(|| Regex::new("mz_catalog.[^']*").unwrap());
 
             let item = match c.deserialize_item(d_c) {
                 Ok(item) => item,
 
                 // If we were missing a dependency, wait for it to be added.
-                Err(e) if MISSING_DEP.is_match(&e.to_string()) => {
-                    let e = e.to_string();
-                    let cap = MISSING_DEP.captures(&e).unwrap();
-                    let missing_dep = GlobalId::from_str(cap.get(1).unwrap().as_str()).unwrap();
+                Err(AdapterError::PlanError(plan::PlanError::InvalidId(missing_dep))) => {
                     awaiting_dependencies
                         .entry(missing_dep)
                         .or_default()
@@ -3277,7 +3268,9 @@ impl Catalog {
                     continue;
                 }
 
-                Err(e) if LOGGING_ERROR.is_match(&e.to_string()) => {
+                Err(AdapterError::SqlCatalog(SqlCatalogError::UnknownItem(name)))
+                    if LOGGING_ERROR.is_match(&name.to_string()) =>
+                {
                     return Err(Error::new(ErrorKind::UnsatisfiableLoggingDependency {
                         depender_name: name.to_string(),
                     }));
@@ -5511,7 +5504,7 @@ impl Catalog {
     fn deserialize_item(
         &self,
         SerializedCatalogItem::V1 { create_sql }: SerializedCatalogItem,
-    ) -> Result<CatalogItem, anyhow::Error> {
+    ) -> Result<CatalogItem, AdapterError> {
         self.parse_item(create_sql, Some(&PlanContext::zero()))
     }
 
@@ -5520,7 +5513,7 @@ impl Catalog {
         &self,
         create_sql: String,
         pcx: Option<&PlanContext>,
-    ) -> Result<CatalogItem, anyhow::Error> {
+    ) -> Result<CatalogItem, AdapterError> {
         let session_catalog = self.for_system_session();
         let stmt = mz_sql::parse::parse(&create_sql)?.into_element();
         let (stmt, depends_on) = mz_sql::names::resolve(&session_catalog, stmt)?;
@@ -5625,7 +5618,12 @@ impl Catalog {
                     depends_on,
                 })
             }
-            _ => bail!("catalog entry generated inappropriate plan"),
+            _ => {
+                return Err(Error::new(ErrorKind::Corruption {
+                    detail: "catalog entry generated inappropriate plan".to_string(),
+                })
+                .into())
+            }
         })
     }
 
