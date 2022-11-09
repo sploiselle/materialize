@@ -757,6 +757,7 @@ pub fn plan_create_source(
                 table_casts,
                 publication: publication.expect("validated exists during purification"),
                 publication_details,
+                text_cols: text_cols_dict,
             });
             // The postgres source only outputs data to its subsources. The catalog object
             // representing the source itself is just an empty relation with no columns

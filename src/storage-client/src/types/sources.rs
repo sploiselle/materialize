@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use bytes::BufMut;
 use differential_dataflow::lattice::Lattice;
 use globset::{Glob, GlobBuilder};
+use itertools::Itertools;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -1657,6 +1658,9 @@ pub struct PostgresSourceConnection {
     pub table_casts: HashMap<usize, Vec<MirScalarExpr>>,
     pub publication: String,
     pub publication_details: PostgresSourcePublicationDetails,
+    /// Maps the table's oid to the set of column names that must be treated as
+    /// text, as well as the original column type's OID and typmod.
+    pub text_cols: HashMap<u32, HashMap<String, (u32, i32)>>,
 }
 
 impl Arbitrary for PostgresSourceConnection {
@@ -1674,14 +1678,27 @@ impl Arbitrary for PostgresSourceConnection {
             ),
             any::<String>(),
             any::<PostgresSourcePublicationDetails>(),
+            proptest::collection::hash_map(
+                any::<u32>(),
+                proptest::collection::hash_map(any::<String>(), (any::<u32>(), any::<i32>()), 1..4),
+                1..4,
+            ),
         )
             .prop_map(
-                |(connection, connection_id, table_casts, publication, details)| Self {
+                |(
                     connection,
                     connection_id,
                     table_casts,
                     publication,
-                    publication_details: details,
+                    publication_details,
+                    text_cols,
+                )| Self {
+                    connection,
+                    connection_id,
+                    table_casts,
+                    publication,
+                    publication_details,
+                    text_cols,
                 },
             )
             .boxed()
@@ -1696,38 +1713,99 @@ impl SourceConnection for PostgresSourceConnection {
 
 impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
     fn into_proto(&self) -> ProtoPostgresSourceConnection {
-        use proto_postgres_source_connection::ProtoPostgresTableCast;
-        let mut table_casts_map = HashMap::new();
+        use proto_postgres_source_connection::{
+            ProtoPostgresTableCast, ProtoPostgresTypeDesc, ProtoReferencedColumns,
+        };
+        let mut table_casts = Vec::with_capacity(self.table_casts.len());
+        let mut table_cast_pos = Vec::with_capacity(self.table_casts.len());
         for (pos, table_cast_cols) in self.table_casts.iter() {
-            table_casts_map.insert(
-                mz_ore::cast::usize_to_u64(*pos),
-                ProtoPostgresTableCast {
-                    column_casts: table_cast_cols
-                        .iter()
-                        .cloned()
-                        .map(|cast| cast.into_proto())
-                        .collect(),
-                },
-            );
+            table_casts.push(ProtoPostgresTableCast {
+                column_casts: table_cast_cols
+                    .iter()
+                    .cloned()
+                    .map(|cast| cast.into_proto())
+                    .collect(),
+            });
+            table_cast_pos.push(mz_ore::cast::usize_to_u64(*pos));
         }
+
+        let text_cols = self
+            .text_cols
+            .iter()
+            .map(|(table_oid, cols)| {
+                (
+                    *table_oid,
+                    ProtoReferencedColumns {
+                        col_info: cols
+                            .iter()
+                            .map(|(col, (oid, typmod))| {
+                                (
+                                    col.to_string(),
+                                    ProtoPostgresTypeDesc {
+                                        oid: *oid,
+                                        typmod: *typmod,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect();
+
         ProtoPostgresSourceConnection {
             connection: Some(self.connection.into_proto()),
             connection_id: Some(self.connection_id.into_proto()),
             publication: self.publication.clone(),
             details: Some(self.publication_details.into_proto()),
-            table_casts_map,
+            table_casts,
+            table_cast_pos,
+            text_cols,
         }
     }
 
     fn from_proto(proto: ProtoPostgresSourceConnection) -> Result<Self, TryFromProtoError> {
+        use proto_postgres_source_connection::{ProtoPostgresTypeDesc, ProtoReferencedColumns};
+
+        // If we get the wrong number of table cast positions, we have to just
+        // accept all of the table casts. This is somewhat harmless, as the
+        // worst thing that happens is that we generate unused snapshots from
+        // the upstream PG publication, and this will (hopefully) correct
+        // itself on the next version upgrade.
+        let table_cast_pos = if proto.table_casts.len() == proto.table_cast_pos.len() {
+            proto.table_cast_pos
+        } else {
+            (1..proto.table_casts.len() + 1)
+                .map(mz_ore::cast::usize_to_u64)
+                .collect()
+        };
+
         let mut table_casts = HashMap::new();
-        for (pos, table_cast_cols) in proto.table_casts_map {
+        for (pos, cast) in table_cast_pos
+            .into_iter()
+            .zip_eq(proto.table_casts.into_iter())
+        {
             let mut column_casts = vec![];
-            for cast in table_cast_cols.column_casts {
+            for cast in cast.column_casts {
                 column_casts.push(cast.into_rust()?);
             }
             table_casts.insert(mz_ore::cast::u64_to_usize(pos), column_casts);
         }
+
+        let text_cols = proto
+            .text_cols
+            .into_iter()
+            .map(|(table_oid, ProtoReferencedColumns { col_info })| {
+                (
+                    table_oid,
+                    col_info
+                        .into_iter()
+                        .map(|(col, ProtoPostgresTypeDesc { oid, typmod })| (col, (oid, typmod)))
+                        .collect(),
+                )
+            })
+            .collect();
+
         Ok(PostgresSourceConnection {
             connection: proto
                 .connection
@@ -1740,6 +1818,7 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
                 .details
                 .into_rust_if_some("ProtoPostgresSourceConnection::details")?,
             table_casts,
+            text_cols,
         })
     }
 }

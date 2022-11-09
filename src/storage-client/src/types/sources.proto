@@ -193,18 +193,26 @@ message ProtoKinesisSourceConnection {
 }
 
 message ProtoPostgresSourceConnection {
-  reserved 5;
-  reserved "table_casts";
-
     message ProtoPostgresTableCast {
         repeated mz_expr.scalar.ProtoMirScalarExpr column_casts = 1;
+    }
+
+    message ProtoPostgresTypeDesc {
+        uint32 oid = 1;
+        int32 typmod = 2;
+    }
+
+    message ProtoReferencedColumns {
+        map<string, ProtoPostgresTypeDesc> col_info = 1;
     }
 
     mz_repr.global_id.ProtoGlobalId connection_id = 6;
     mz_storage_client.types.connections.ProtoPostgresConnection connection = 1;
     string publication = 2;
     ProtoPostgresSourcePublicationDetails details = 4;
-    map<uint64, ProtoPostgresTableCast> table_casts_map = 7;
+    repeated ProtoPostgresTableCast table_casts = 5;
+    repeated uint64 table_cast_pos = 7;
+    map<uint32, ProtoReferencedColumns> text_cols = 8;
 }
 
 message ProtoPostgresSourcePublicationDetails {

@@ -199,6 +199,7 @@ struct PostgresTaskInfo {
     /// Channel to receive lsn's from the PgOffsetCommitter
     /// that are safe to send status updates for.
     offset_rx: Receiver<HashMap<PartitionId, MzOffset>>,
+    text_cols: HashMap<u32, HashMap<String, (u32, i32)>>,
 }
 
 impl SourceConnectionBuilder for PostgresSourceConnection {
@@ -256,12 +257,24 @@ impl SourceConnectionBuilder for PostgresSourceConnection {
                 // not referenced in the source.
                 match self.table_casts.get(&(i + 1)) {
                     Some(casts) => {
+                        let mut desc = desc.clone();
+
+                        if let Some(columns) = self.text_cols.get(&desc.oid) {
+                            for c in desc.columns.iter_mut() {
+                                if columns.contains_key(&c.name) {
+                                    c.type_oid = mz_pgrepr::oid::TYPE_TEXT_OID;
+                                    c.type_mod = -1;
+                                }
+                            }
+                        }
+
+                        let oid = desc.oid;
                         let source_table = SourceTable {
                             output_index: i + 1,
-                            desc: desc.clone(),
+                            desc,
                             casts: casts.to_vec(),
                         };
-                        source_tables.insert(desc.oid, source_table);
+                        source_tables.insert(oid, source_table);
                     }
                     None => continue,
                 }
@@ -279,6 +292,7 @@ impl SourceConnectionBuilder for PostgresSourceConnection {
                 row_sender: RowSender::new(dataflow_tx.clone(), consumer_activator),
                 sender: dataflow_tx,
                 offset_rx,
+                text_cols: self.text_cols,
             };
 
             task::spawn(
@@ -585,7 +599,17 @@ impl PostgresTaskInfo {
         for (id, info) in self.source_tables.iter() {
             match pub_tables.get(id) {
                 Some(pub_schema) => {
-                    if pub_schema != &info.desc {
+                    // Pretend we are not treating columns as text.
+                    let mut desc = info.desc.clone();
+                    if let Some(columns) = self.text_cols.get(id) {
+                        for c in desc.columns.iter_mut() {
+                            if let Some((original_oid, original_typmod)) = columns.get(&c.name) {
+                                c.type_oid = *original_oid;
+                                c.type_mod = *original_typmod;
+                            }
+                        }
+                    }
+                    if pub_schema != &desc {
                         error!(
                             "Error validating table in publication. Expected: {:?} Actual: {:?}",
                             &info.desc, pub_schema
@@ -1040,10 +1064,22 @@ impl PostgresTaskInfo {
                             // check the name, type_oid, and type_mod explicitly and error if any
                             // of them differ
                             for (src, rel) in info.desc.columns.iter().zip(relation.columns()) {
-                                let same_name = src.name == rel.name().unwrap();
                                 let rel_typoid = u32::try_from(rel.type_id()).unwrap();
-                                let same_typoid = src.type_oid == rel_typoid;
-                                let same_typmod = src.type_mod == rel.type_modifier();
+                                let rel_typmod = rel.type_modifier();
+
+                                let col_name = rel
+                                    .name()
+                                    .map_err(|e| ReplicationError::Definite(e.into()))?;
+
+                                // Pretend we are not treating these types as text.
+                                let (src_typoid, src_typmod) = match self.text_cols.get(&rel_id) {
+                                    Some(cols) if cols.contains_key(col_name) => cols[col_name],
+                                    _ => (src.type_oid, src.type_mod),
+                                };
+
+                                let same_name = src.name == rel.name().unwrap();
+                                let same_typoid = src_typoid == rel_typoid;
+                                let same_typmod = src_typmod == rel_typmod;
 
                                 if !same_name || !same_typoid || !same_typmod {
                                     error!(
