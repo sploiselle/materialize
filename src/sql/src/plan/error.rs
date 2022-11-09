@@ -15,7 +15,6 @@ use std::num::TryFromIntError;
 use mz_expr::EvalError;
 use mz_ore::stack::RecursionLimitError;
 use mz_ore::str::StrExt;
-use mz_pgrepr::TypeFromOidError;
 use mz_repr::adt::char::InvalidCharLengthError;
 use mz_repr::adt::numeric::InvalidNumericMaxScaleError;
 use mz_repr::adt::varchar::InvalidVarCharMaxLengthError;
@@ -87,9 +86,7 @@ pub enum PlanError {
     ExplainViewOnMaterializedView(String),
     UnacceptableTimelineName(String),
     UnrecognizedTypeInPostgresSource {
-        table: String,
-        column: String,
-        e: TypeFromOidError,
+        cols: Vec<String>,
     },
     // TODO(benesch): eventually all errors should be structured.
     Unstructured(String),
@@ -104,14 +101,7 @@ impl PlanError {
     }
 
     pub fn detail(&self) -> Option<String> {
-        match self {
-            Self::UnrecognizedTypeInPostgresSource {
-                table: _,
-                column: _,
-                e,
-            } => Some(format!("{e}")),
-            _ => None,
-        }
+        None
     }
 
     pub fn hint(&self) -> Option<String> {
@@ -135,12 +125,10 @@ impl PlanError {
                 Some("The prefix \"mz_\" is reserved for system timelines.".into())
             }
             Self::UnrecognizedTypeInPostgresSource {
-                table: _,
-                column: _,
-                e: _,
+                cols: _,
             } => Some(
-                "You may be using an unsupported type in Materialize, such as an enum. \
-                Try excluding the table from the publication."
+                "Use the TEXT COLUMNS option naming the listed columns, and Materialize can ingest their values\
+                as text."
                     .into(),
             ),
             _ => None,
@@ -237,15 +225,19 @@ impl fmt::Display for PlanError {
             | Self::AlterViewOnMaterializedView(name)
             | Self::ShowCreateViewOnMaterializedView(name)
             | Self::ExplainViewOnMaterializedView(name) => write!(f, "{name} is not a view"),
-            Self::UnrecognizedTypeInPostgresSource {
-                table,
-                column,
-                e: _,
-            } => write!(
-                f,
-                "column {} uses unrecognized type",
-                format!("{}.{}", table, column).quoted()
-            ),
+            Self::UnrecognizedTypeInPostgresSource { cols } => {
+                let mut cols = cols.to_owned();
+                cols.sort();
+
+                write!(
+                    f,
+                    "the following columns contain unsupported types:\n{}",
+                    itertools::join(
+                        cols,
+                        "\n"
+                    )
+                )
+            },
             Self::DropSubsource{subsource, source: _} => write!(f, "SOURCE {subsource} is a subsource and cannot be dropped independently of its primary source"),
         }
     }

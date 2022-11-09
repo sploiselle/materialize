@@ -86,8 +86,9 @@ pub fn make_tls(config: &tokio_postgres::Config) -> Result<MakeTlsConnector, any
     Ok(tls_connector)
 }
 
-/// Fetches table schema information from an upstream Postgres source for all tables that are part
-/// of a publication, given a connection string and the publication name.
+/// Fetches table schema information from an upstream Postgres source for all
+/// tables that are part of a publication, given a connection string and the
+/// publication name.
 ///
 /// # Errors
 ///

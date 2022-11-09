@@ -601,7 +601,7 @@ pub fn plan_create_source(
             let PgConfigOptionExtracted {
                 details,
                 publication,
-                text_columns: _,
+                text_columns,
                 seen: _,
             } = options.clone().try_into()?;
 
@@ -611,6 +611,48 @@ pub fn plan_create_source(
             let details = hex::decode(details).map_err(|e| sql_err!("{}", e))?;
             let details = ProtoPostgresSourcePublicationDetails::decode(&*details)
                 .map_err(|e| sql_err!("{}", e))?;
+
+            // Create a "catalog" of the tables in the PG details.
+            let mut tables_by_name = HashMap::new();
+            for table in details.tables.iter() {
+                tables_by_name
+                    .entry(table.name.clone())
+                    .or_insert_with(HashMap::new)
+                    .entry(table.namespace.clone())
+                    .or_insert_with(HashMap::new)
+                    .entry(connection.database.clone())
+                    .or_insert(table);
+            }
+
+            let publication_catalog = crate::catalog::ErsatzCatalog(tables_by_name);
+
+            let mut text_cols_dict: HashMap<u32, HashMap<String, (u32, i32)>> = HashMap::new();
+
+            // Look up the referenced text_columns in the publication_catalog.
+            for name in text_columns {
+                let (qual, col) = match name.0.split_last().expect("must have at least one element")
+                {
+                    (col, qual) => (
+                        UnresolvedObjectName(qual.to_vec()),
+                        col.as_str().to_string(),
+                    ),
+                };
+
+                let (_name, table_desc) = publication_catalog
+                    .resolve(qual)
+                    .expect("known to exist from purification");
+
+                let col_desc = table_desc
+                    .columns
+                    .iter()
+                    .find(|column| column.name == col)
+                    .expect("known to exist from purification");
+
+                text_cols_dict
+                    .entry(table_desc.oid)
+                    .or_default()
+                    .insert(col, (col_desc.type_oid, col_desc.type_mod));
+            }
 
             // Register the available subsources
             let mut available_subsources = BTreeMap::new();
@@ -653,12 +695,21 @@ pub fn plan_create_source(
                 // column and casts it to the appropriate target type
                 let mut column_casts = vec![];
                 for (i, column) in table.columns.iter().enumerate() {
-                    let ty = match mz_pgrepr::Type::from_oid_and_typmod(
-                        column.type_oid,
-                        column.type_mod,
-                    ) {
-                        Ok(t) => t,
-                        Err(_) => continue 'table,
+                    let ty = match text_cols_dict.get(&table.oid) {
+                        Some(names) if names.contains_key(&column.name) => mz_pgrepr::Type::Text,
+                        _ => {
+                            match mz_pgrepr::Type::from_oid_and_typmod(
+                                column.type_oid,
+                                column.type_mod,
+                            ) {
+                                Ok(t) => t,
+                                // Skipping this table cast is OK because we
+                                // have validated that this table from the
+                                // publication is not being used during
+                                // purification
+                                Err(_) => continue 'table,
+                            }
+                        }
                     };
 
                     let data_type = scx.resolve_type(ty)?;
@@ -707,7 +758,6 @@ pub fn plan_create_source(
                 publication: publication.expect("validated exists during purification"),
                 publication_details,
             });
-
             // The postgres source only outputs data to its subsources. The catalog object
             // representing the source itself is just an empty relation with no columns
             let encoding = SourceDataEncoding::Single(DataEncoding::new(
