@@ -36,6 +36,7 @@ use mz_persist_client::write::WriteHandle;
 use mz_persist_types::{Codec, Codec64};
 use mz_proto::{IntoRustIfSome, ProtoMapEntry, ProtoType, RustType, TryFromProtoError};
 use mz_repr::adt::numeric::NumericMaxScale;
+use mz_repr::adt::system::{Oid, Typmod};
 use mz_repr::{ColumnType, Diff, GlobalId, RelationDesc, RelationType, Row, ScalarType};
 
 use crate::controller::{CollectionMetadata, ResumptionFrontierCalculator};
@@ -1660,7 +1661,7 @@ pub struct PostgresSourceConnection {
     pub publication_details: PostgresSourcePublicationDetails,
     /// Maps the table's oid to the set of column names that must be treated as
     /// text, as well as the original column type's OID and typmod.
-    pub text_cols: HashMap<u32, HashMap<String, (u32, i32)>>,
+    pub text_cols: HashMap<Oid, HashMap<String, (Oid, Typmod)>>,
 }
 
 impl Arbitrary for PostgresSourceConnection {
@@ -1679,8 +1680,12 @@ impl Arbitrary for PostgresSourceConnection {
             any::<String>(),
             any::<PostgresSourcePublicationDetails>(),
             proptest::collection::hash_map(
-                any::<u32>(),
-                proptest::collection::hash_map(any::<String>(), (any::<u32>(), any::<i32>()), 1..4),
+                any::<Oid>(),
+                proptest::collection::hash_map(
+                    any::<String>(),
+                    (any::<Oid>(), any::<Typmod>()),
+                    1..4,
+                ),
                 1..4,
             ),
         )
@@ -1732,13 +1737,13 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
         let text_cols = self
             .text_cols
             .iter()
-            .map(|(table_oid, cols)| {
+            .map(|(Oid(table_oid), cols)| {
                 (
                     *table_oid,
                     ProtoReferencedColumns {
                         col_info: cols
                             .iter()
-                            .map(|(col, (oid, typmod))| {
+                            .map(|(col, (Oid(oid), Typmod(typmod)))| {
                                 (
                                     col.to_string(),
                                     ProtoPostgresTypeDesc {
@@ -1797,10 +1802,12 @@ impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
             .into_iter()
             .map(|(table_oid, ProtoReferencedColumns { col_info })| {
                 (
-                    table_oid,
+                    Oid(table_oid),
                     col_info
                         .into_iter()
-                        .map(|(col, ProtoPostgresTypeDesc { oid, typmod })| (col, (oid, typmod)))
+                        .map(|(col, ProtoPostgresTypeDesc { oid, typmod })| {
+                            (col, (Oid(oid), Typmod(typmod)))
+                        })
                         .collect(),
                 )
             })

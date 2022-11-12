@@ -29,6 +29,7 @@ use tracing::{error, info, warn};
 use mz_expr::{MirScalarExpr, PartitionId};
 use mz_ore::{halt, task};
 use mz_postgres_util::desc::PostgresTableDesc;
+use mz_repr::adt::system::{Oid, Typmod};
 use mz_repr::{Datum, DatumVec, Diff, GlobalId, Row};
 use mz_storage_client::types::connections::ConnectionContext;
 use mz_storage_client::types::errors::SourceErrorDetails;
@@ -199,7 +200,7 @@ struct PostgresTaskInfo {
     /// Channel to receive lsn's from the PgOffsetCommitter
     /// that are safe to send status updates for.
     offset_rx: Receiver<HashMap<PartitionId, MzOffset>>,
-    text_cols: HashMap<u32, HashMap<String, (u32, i32)>>,
+    text_cols: HashMap<Oid, HashMap<String, (Oid, Typmod)>>,
 }
 
 impl SourceConnectionBuilder for PostgresSourceConnection {
@@ -259,7 +260,7 @@ impl SourceConnectionBuilder for PostgresSourceConnection {
                     Some(casts) => {
                         let mut desc = desc.clone();
 
-                        if let Some(columns) = self.text_cols.get(&desc.oid) {
+                        if let Some(columns) = self.text_cols.get(&Oid(desc.oid)) {
                             for c in desc.columns.iter_mut() {
                                 if columns.contains_key(&c.name) {
                                     c.type_oid = mz_pgrepr::oid::TYPE_TEXT_OID;
@@ -601,9 +602,11 @@ impl PostgresTaskInfo {
                 Some(pub_schema) => {
                     // Pretend we are not treating columns as text.
                     let mut desc = info.desc.clone();
-                    if let Some(columns) = self.text_cols.get(id) {
+                    if let Some(columns) = self.text_cols.get(&Oid(*id)) {
                         for c in desc.columns.iter_mut() {
-                            if let Some((original_oid, original_typmod)) = columns.get(&c.name) {
+                            if let Some((Oid(original_oid), Typmod(original_typmod))) =
+                                columns.get(&c.name)
+                            {
                                 c.type_oid = *original_oid;
                                 c.type_mod = *original_typmod;
                             }
@@ -1072,10 +1075,15 @@ impl PostgresTaskInfo {
                                     .map_err(|e| ReplicationError::Definite(e.into()))?;
 
                                 // Pretend we are not treating these types as text.
-                                let (src_typoid, src_typmod) = match self.text_cols.get(&rel_id) {
-                                    Some(cols) if cols.contains_key(col_name) => cols[col_name],
-                                    _ => (src.type_oid, src.type_mod),
-                                };
+                                let (src_typoid, src_typmod) =
+                                    match self.text_cols.get(&Oid(rel_id)) {
+                                        Some(cols) if cols.contains_key(col_name) => {
+                                            let (Oid(original_oid), Typmod(original_typmod)) =
+                                                cols[col_name];
+                                            (original_oid, original_typmod)
+                                        }
+                                        _ => (src.type_oid, src.type_mod),
+                                    };
 
                                 let same_name = src.name == rel.name().unwrap();
                                 let same_typoid = src_typoid == rel_typoid;

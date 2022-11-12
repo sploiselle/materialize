@@ -31,6 +31,7 @@ use mz_ore::collections::CollectionExt;
 use mz_ore::str::StrExt;
 use mz_proto::RustType;
 use mz_repr::adt::interval::Interval;
+use mz_repr::adt::system::{Oid, Typmod};
 use mz_repr::strconv;
 use mz_repr::{ColumnName, ColumnType, GlobalId, RelationDesc, RelationType, ScalarType};
 use mz_sql_parser::ast::display::comma_separated;
@@ -626,7 +627,7 @@ pub fn plan_create_source(
 
             let publication_catalog = crate::catalog::ErsatzCatalog(tables_by_name);
 
-            let mut text_cols_dict: HashMap<u32, HashMap<String, (u32, i32)>> = HashMap::new();
+            let mut text_cols_dict: HashMap<Oid, HashMap<String, (Oid, Typmod)>> = HashMap::new();
 
             // Look up the referenced text_columns in the publication_catalog.
             for name in text_columns {
@@ -649,9 +650,9 @@ pub fn plan_create_source(
                     .expect("known to exist from purification");
 
                 text_cols_dict
-                    .entry(table_desc.oid)
+                    .entry(Oid(table_desc.oid))
                     .or_default()
-                    .insert(col, (col_desc.type_oid, col_desc.type_mod));
+                    .insert(col, (Oid(col_desc.type_oid), Typmod(col_desc.type_mod)));
             }
 
             // Register the available subsources
@@ -695,7 +696,7 @@ pub fn plan_create_source(
                 // column and casts it to the appropriate target type
                 let mut column_casts = vec![];
                 for (i, column) in table.columns.iter().enumerate() {
-                    let ty = match text_cols_dict.get(&table.oid) {
+                    let ty = match text_cols_dict.get(&Oid(table.oid)) {
                         Some(names) if names.contains_key(&column.name) => mz_pgrepr::Type::Text,
                         _ => {
                             match mz_pgrepr::Type::from_oid_and_typmod(
