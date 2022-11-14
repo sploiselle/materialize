@@ -22,6 +22,7 @@ use dec::OrderedDecimal;
 use differential_dataflow::lattice::Lattice;
 use globset::{Glob, GlobBuilder};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -1366,6 +1367,18 @@ impl SourceConnection for KafkaSourceConnection {
     }
 }
 
+static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+    RelationDesc::empty()
+        .with_column(
+            "partition",
+            ScalarType::Range {
+                element_type: Box::new(ScalarType::Int32),
+            }
+            .nullable(false),
+        )
+        .with_column("offset", ScalarType::UInt64.nullable(true))
+});
+
 impl Arbitrary for KafkaSourceConnection {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
@@ -1832,6 +1845,12 @@ impl SourceConnection for KinesisSourceConnection {
     }
 }
 
+static KINESIS_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+    RelationDesc::empty()
+        .with_column("shard_id", ScalarType::Int32.nullable(false))
+        .with_column("sequence_number", ScalarType::UInt64.nullable(true))
+});
+
 impl RustType<ProtoKinesisSourceConnection> for KinesisSourceConnection {
     fn into_proto(&self) -> ProtoKinesisSourceConnection {
         ProtoKinesisSourceConnection {
@@ -1899,6 +1918,9 @@ impl SourceConnection for PostgresSourceConnection {
         "postgres"
     }
 }
+
+static PG_PROGRESS_DESC: Lazy<RelationDesc> =
+    Lazy::new(|| RelationDesc::empty().with_column("lsn", ScalarType::UInt64.nullable(true)));
 
 impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
     fn into_proto(&self) -> ProtoPostgresSourceConnection {
@@ -2326,6 +2348,10 @@ impl SourceConnection for S3SourceConnection {
         "s3"
     }
 }
+
+static S3_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
+    RelationDesc::empty().with_column("byte_offset", ScalarType::UInt64.nullable(true))
+});
 
 fn any_glob() -> impl Strategy<Value = Glob> {
     r"[a-z][a-z0-9]{0,10}/?([a-z0-9]{0,5}/?){0,3}".prop_map(|s| {
