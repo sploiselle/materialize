@@ -849,6 +849,33 @@ where
         stash.append(&[batch]).await?;
         Ok(())
     }
+
+    /// Returns true if the collection is not initialized.
+    pub async fn is_uninitialized<S>(&self, stash: &mut S) -> Result<bool, StashError>
+    where
+        K: Data,
+        V: Data,
+        S: Append,
+    {
+        Ok(self.upper(stash).await?.elements() == [Timestamp::MIN])
+    }
+
+    /// Returns an [`AppendBatch`] that can be used to initialize a collection
+    /// if it is not yet initialized.
+    pub async fn make_initializing_batch<S>(
+        &self,
+        stash: &mut S,
+    ) -> Result<Option<AppendBatch>, StashError>
+    where
+        S: Append,
+    {
+        Ok(if self.is_uninitialized(stash).await? {
+            let collection = self.get(stash).await?;
+            Some(collection.make_batch(stash).await?)
+        } else {
+            None
+        })
+    }
 }
 
 /// TableTransaction emulates some features of a typical SQL transaction over
