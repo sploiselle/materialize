@@ -52,7 +52,7 @@ use mz_persist_client::{PersistClient, PersistLocation, ShardId};
 use mz_persist_types::{Codec64, Opaque};
 use mz_proto::{IntoRustIfSome, ProtoType, RustType, TryFromProtoError};
 use mz_repr::{Datum, Diff, GlobalId, RelationDesc, Row, TimestampManipulation};
-use mz_stash::{self, PostgresFactory, StashError, TypedCollection};
+use mz_stash::{self, Append, PostgresFactory, StashError, TypedCollection};
 
 use crate::client::{
     CreateSinkCommand, CreateSourceCommand, ProtoStorageCommand, ProtoStorageResponse,
@@ -748,7 +748,26 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
             .open(postgres_url, None, tls)
             .await
             .expect("could not connect to postgres storage stash");
-        let stash = mz_stash::Cache::new(stash);
+        let mut stash = mz_stash::Cache::new(stash);
+
+        // Inserts empty values into all new collections, so the collections are readable.
+        let mut batches = Vec::new();
+        macro_rules! init_collections {
+            ($($collection:expr),*) => {
+                $(if let Some(batch) = $collection.make_initializing_batch(&mut stash).await.expect("stash operation must succeed") {
+                    batches.push(batch);
+                })*
+            }
+        }
+        init_collections!(
+            &METADATA_COLLECTION,
+            &METADATA_EXPORT,
+            &shard_trunc_wal::SHARD_TRUNC_WAL
+        );
+        stash
+            .append(&batches)
+            .await
+            .expect("initializing collections must succeed");
 
         let persist_write_handles = persist_handles::PersistWriteWorker::new(tx);
         let collection_manager_write_handle = persist_write_handles.clone();
