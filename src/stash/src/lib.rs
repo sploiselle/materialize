@@ -544,6 +544,81 @@ where
         stash.append(&[batch]).await?;
         Ok(())
     }
+
+    /// Deletes any kv pair from `self` which returns `true` for `predicate`.
+    ///
+    /// Note that this operation performs an entire table scan to perform the
+    /// deletions.
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub async fn delete<P>(&self, stash: &mut Stash, predicate: P) -> Result<(), StashError>
+    where
+        P: Fn(&K, &V) -> bool,
+        K: Hash + Clone,
+        V: Clone,
+    {
+        let initial = self.peek_one(stash).await?;
+        // Delete-only transaction cannot violate uniqueness.
+        let mut txn = TableTransaction::new(initial, |_, _| false);
+        txn.delete(predicate);
+        let collection = self.get(stash).await?;
+        let mut batch = collection.make_batch(stash).await?;
+        for (k, v, diff) in txn.pending() {
+            collection.append_to_batch(&mut batch, &k, &v, diff);
+        }
+        stash.append(&[batch]).await?;
+        Ok(())
+    }
+
+    /// Updates values in all KV pairs using `transform`.
+    ///
+    /// Note that this operation performs an entire table scan to perform the
+    /// updates.
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub async fn update<T>(
+        &self,
+        stash: &mut Stash,
+        transform: T,
+        uniqueness_violation: fn(a: &V, b: &V) -> bool,
+    ) -> Result<(), StashError>
+    where
+        T: Fn(&K, &V) -> Option<V>,
+        K: Hash + Clone,
+        V: Clone,
+    {
+        let initial = self.peek_one(stash).await?;
+        let mut txn = TableTransaction::new(initial, uniqueness_violation);
+        txn.update(transform)?;
+        let collection = self.get(stash).await?;
+        let mut batch = collection.make_batch(stash).await?;
+        for (k, v, diff) in txn.pending() {
+            collection.append_to_batch(&mut batch, &k, &v, diff);
+        }
+        stash.append(&[batch]).await?;
+        Ok(())
+    }
+
+    /// Returns true if the collection is not initialized.
+    pub async fn needs_init(&self, stash: &mut Stash) -> Result<bool, StashError>
+    where
+        K: Data,
+        V: Data,
+    {
+        Ok(self.upper(stash).await?.elements() == [Timestamp::MIN])
+    }
+
+    /// Returns an [`AppendBatch`] that can be used to initialize a collection
+    /// if it is not yet initialized.
+    pub async fn make_initializing_batch(
+        &self,
+        stash: &mut Stash,
+    ) -> Result<Option<AppendBatch>, StashError> {
+        Ok(if self.needs_init(stash).await? {
+            let collection = self.get(stash).await?;
+            Some(collection.make_batch(stash).await?)
+        } else {
+            None
+        })
+    }
 }
 
 /// TableTransaction emulates some features of a typical SQL transaction over

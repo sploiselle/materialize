@@ -743,10 +743,25 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
                 .expect("invalid postgres url for storage stash"),
         )
         .expect("could not make storage TLS connection");
-        let stash = factory
+        let mut stash = factory
             .open(postgres_url, None, tls)
             .await
             .expect("could not connect to postgres storage stash");
+
+        // Inserts empty values into all new collections, so the collections are readable.
+        let mut batches = Vec::new();
+        macro_rules! init_collections {
+            ($($collection:expr),*) => {
+                $(if let Some(batch) = $collection.make_initializing_batch(&mut stash).await.expect("stash operation must succeed") {
+                    batches.push(batch);
+                })*
+            }
+        }
+        init_collections!(&METADATA_COLLECTION, &METADATA_EXPORT);
+        stash
+            .append(&batches)
+            .await
+            .expect("initializing collections must succeed");
 
         let persist_write_handles = persist_handles::PersistWriteWorker::new(tx);
         let collection_manager_write_handle = persist_write_handles.clone();
