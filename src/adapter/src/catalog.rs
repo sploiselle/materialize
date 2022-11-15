@@ -1598,6 +1598,8 @@ pub struct Ingestion {
     /// This map does *not* include the export of the source associated with the ingestion itself
     pub subsource_exports: HashMap<GlobalId, usize>,
     pub host_config: StorageHostConfig,
+    // This is an option only to support opening the initial catalog before
+    // applying the migration that adds progress subsources to existing sources.
     pub remap_collection_id: Option<GlobalId>,
 }
 
@@ -3269,10 +3271,10 @@ impl Catalog {
                 }
 
                 Err(AdapterError::SqlCatalog(SqlCatalogError::UnknownItem(name)))
-                    if LOGGING_ERROR.is_match(&name.to_string()) =>
+                    if LOGGING_ERROR.is_match(&name) =>
                 {
                     return Err(Error::new(ErrorKind::UnsatisfiableLoggingDependency {
-                        depender_name: name.to_string(),
+                        depender_name: name,
                     }));
                 }
                 Err(e) => {
@@ -6463,9 +6465,16 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
     fn subsources(&self) -> Vec<GlobalId> {
         match &self.item {
             CatalogItem::Source(source) => match &source.data_source {
-                DataSourceDesc::Ingestion(ingestion) => {
-                    ingestion.subsource_exports.keys().copied().collect()
-                }
+                DataSourceDesc::Ingestion(ingestion) => ingestion
+                    .subsource_exports
+                    .keys()
+                    .copied()
+                    .chain(std::iter::once(
+                        ingestion
+                            .remap_collection_id
+                            .expect("remap collection must named by this point"),
+                    ))
+                    .collect(),
                 DataSourceDesc::Source | DataSourceDesc::Introspection(_) => vec![],
             },
             CatalogItem::Table(_)

@@ -1047,6 +1047,9 @@ pub fn plan_create_source(
         timestamp_interval,
     };
 
+    // TODO: this can be converted to an unwrap once the upgrade harness
+    // iterates over versions rather than checking the entire matrix of
+    // cross-compatibility.
     let progress_subsource = progress_subsource
         .as_ref()
         .map(|name| match name {

@@ -55,3 +55,10 @@ fish          value
 # Terminal sources have empty uppers
 > EXPLAIN TIMESTAMP FOR SELECT * FROM unit_terminated
 "                query timestamp: <> <>\n          oracle read timestamp: <> <>\nlargest not in advance of upper: <>\n                          upper:[]\n                          since:[<> <>]\n        can respond immediately: <>\n                       timeline: Some(EpochMilliseconds)\n\nsource materialize.public.unit_terminated (<>, storage):\n                  read frontier:[<> <>]\n                 write frontier:[]\n"
+
+# Query automatically generated progress topics
+> SELECT count FROM unit_progress
+3
+
+> SELECT count FROM unit_terminated_progress
+1

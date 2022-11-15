@@ -272,5 +272,5 @@ message ProtoIngestionDescription {
     mz_storage_client.controller.ProtoCollectionMetadata ingestion_metadata = 3;
     ProtoSourceDesc desc = 4;
     mz_storage_client.types.hosts.ProtoStorageHostConfig host_config = 5;
-    optional mz_repr.global_id.ProtoGlobalId remap_collection_id = 6;
+    mz_repr.global_id.ProtoGlobalId remap_collection_id = 6;
 }

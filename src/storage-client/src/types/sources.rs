@@ -75,7 +75,7 @@ pub struct IngestionDescription<S = ()> {
     pub source_exports: BTreeMap<GlobalId, SourceExport<S>>,
     /// The address of a `clusterd` process on which to install the source.
     pub host_config: StorageHostConfig,
-    pub remap_collection_id: Option<GlobalId>,
+    pub remap_collection_id: GlobalId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -185,7 +185,7 @@ where
                 .boxed(),
             any::<S>().boxed(),
             any::<StorageHostConfig>().boxed(),
-            any::<Option<GlobalId>>(),
+            any::<GlobalId>(),
         )
             .prop_map(
                 |(
@@ -216,7 +216,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             ingestion_metadata: Some(self.ingestion_metadata.into_proto()),
             desc: Some(self.desc.into_proto()),
             host_config: Some(self.host_config.into_proto()),
-            remap_collection_id: self.remap_collection_id.into_proto(),
+            remap_collection_id: Some(self.remap_collection_id.into_proto()),
         }
     }
 
@@ -233,7 +233,9 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             host_config: proto
                 .host_config
                 .into_rust_if_some("ProtoIngestionDescription::host_config")?,
-            remap_collection_id: proto.remap_collection_id.into_rust()?,
+            remap_collection_id: proto
+                .remap_collection_id
+                .into_rust_if_some("ProtoIngestionDescription::remap_collection_id")?,
         })
     }
 }
@@ -1372,7 +1374,7 @@ pub static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
         .with_column(
             "partition",
             ScalarType::Range {
-                element_type: Box::new(ScalarType::Int32),
+                element_type: Box::new(ScalarType::Numeric { max_scale: None }),
             }
             .nullable(false),
         )
@@ -1846,9 +1848,7 @@ impl SourceConnection for KinesisSourceConnection {
 }
 
 pub static KINESIS_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
-    RelationDesc::empty()
-        .with_column("shard_id", ScalarType::Int32.nullable(false))
-        .with_column("sequence_number", ScalarType::UInt64.nullable(true))
+    RelationDesc::empty().with_column("sequence_number", ScalarType::UInt64.nullable(true))
 });
 
 impl RustType<ProtoKinesisSourceConnection> for KinesisSourceConnection {
@@ -2021,6 +2021,9 @@ pub struct LoadGeneratorSourceConnection {
     pub load_generator: LoadGenerator,
     pub tick_micros: Option<u64>,
 }
+
+pub static LOADGEN_PROGRESS_DESC: Lazy<RelationDesc> =
+    Lazy::new(|| RelationDesc::empty().with_column("count", ScalarType::UInt64.nullable(true)));
 
 impl SourceConnection for LoadGeneratorSourceConnection {
     fn name(&self) -> &'static str {
@@ -2313,6 +2316,9 @@ impl RustType<ProtoLoadGeneratorSourceConnection> for LoadGeneratorSourceConnect
 pub struct TestScriptSourceConnection {
     pub desc_json: String,
 }
+
+pub static TEST_SCRIPT_PROGRESS_DESC: Lazy<RelationDesc> =
+    Lazy::new(|| RelationDesc::empty().with_column("count", ScalarType::UInt64.nullable(true)));
 
 impl SourceConnection for TestScriptSourceConnection {
     fn name(&self) -> &'static str {

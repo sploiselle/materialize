@@ -60,4 +60,4 @@ contains:Unable to validate AWS credentials
 $ set-regex match=\d+ replacement=<NUMBER>
 
 > SELECT * FROM f_progress
-<NUMBER> <NUMBER>
+<NUMBER>

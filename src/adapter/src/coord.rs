@@ -710,7 +710,9 @@ impl Coordinator {
                                     source_imports,
                                     source_exports,
                                     host_config: ingestion.host_config.clone(),
-                                    remap_collection_id: ingestion.remap_collection_id,
+                                    remap_collection_id: ingestion.remap_collection_id.expect(
+                                        "ingestion-based collection must name remap collection before going to storage",
+                                    ),
                                 }),
                                 source_status_collection_id,
                             )

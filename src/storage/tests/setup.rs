@@ -242,7 +242,7 @@ where
             };
             let collection_metadata = mz_storage_client::controller::CollectionMetadata {
                 persist_location,
-                remap_shard: None,
+                remap_shard: Some(mz_persist_client::ShardId::new()),
                 data_shard: mz_persist_client::ShardId::new(),
                 status_shard: None,
             };
@@ -271,7 +271,10 @@ where
                                 mz_storage_client::types::hosts::StorageHostConfig::Remote {
                                     addr: "test".to_string(),
                                 },
-                            remap_collection_id: None,
+                            // This id is only used to fille in the
+                            // collection metadata, which we're filling in
+                            // elsewhere, so this value is unused.
+                            remap_collection_id: GlobalId::User(99),
                         },
                         // TODO: test resumption as well!
                         resume_upper: Antichain::from_elem(Timestamp::minimum()),

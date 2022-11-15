@@ -141,19 +141,23 @@ pub async fn purify_create_source(
 
     let progress_desc = match &connection {
         CreateSourceConnection::Kafka(_) => {
-            Some(mz_storage_client::types::sources::KAFKA_PROGRESS_DESC.clone())
+            mz_storage_client::types::sources::KAFKA_PROGRESS_DESC.clone()
         }
         CreateSourceConnection::Kinesis { .. } => {
-            Some(mz_storage_client::types::sources::KINESIS_PROGRESS_DESC.clone())
+            mz_storage_client::types::sources::KINESIS_PROGRESS_DESC.clone()
         }
         CreateSourceConnection::S3 { .. } => {
-            Some(mz_storage_client::types::sources::S3_PROGRESS_DESC.clone())
+            mz_storage_client::types::sources::S3_PROGRESS_DESC.clone()
         }
         CreateSourceConnection::Postgres { .. } => {
-            Some(mz_storage_client::types::sources::PG_PROGRESS_DESC.clone())
+            mz_storage_client::types::sources::PG_PROGRESS_DESC.clone()
         }
-        CreateSourceConnection::LoadGenerator { .. } => None,
-        CreateSourceConnection::TestScript { .. } => None,
+        CreateSourceConnection::LoadGenerator { .. } => {
+            mz_storage_client::types::sources::LOADGEN_PROGRESS_DESC.clone()
+        }
+        CreateSourceConnection::TestScript { .. } => {
+            mz_storage_client::types::sources::TEST_SCRIPT_PROGRESS_DESC.clone()
+        }
     };
 
     match connection {
@@ -601,69 +605,54 @@ pub async fn purify_create_source(
         }
     }
 
-    match progress_desc {
-        // If source has progress desc, create source for it.
-        Some(desc) => {
-            // Create the targeted AST node for the original CREATE SOURCE statement
-            let transient_id = GlobalId::Transient(subsource_id_counter);
+    // Create the targeted AST node for the original CREATE SOURCE statement
+    let transient_id = GlobalId::Transient(subsource_id_counter);
 
-            let scx = StatementContext::new(None, &*catalog);
+    let scx = StatementContext::new(None, &*catalog);
 
-            // Take name from input or generate name
-            let (name, subsource) = match progress_subsource {
-                Some(name) => match name {
-                    DeferredObjectName::Deferred(name) => (
-                        name.clone(),
-                        scx.allocate_resolved_object_name(transient_id, name.clone())?,
-                    ),
-                    DeferredObjectName::Named(_) => unreachable!("already checked for this value"),
-                },
-                None => {
-                    let (item, prefix) = name.0.split_last().unwrap();
-                    let mut suggested_name = prefix.to_vec();
-                    suggested_name.push(format!("{}_progress", item).into());
-
-                    let partial =
-                        normalize::unresolved_object_name(UnresolvedObjectName(suggested_name))?;
-                    let qualified = scx.allocate_qualified_name(partial)?;
-                    let found_name = scx.catalog.find_available_name(qualified);
-                    let full_name = scx.catalog.resolve_full_name(&found_name);
-
-                    (
-                        UnresolvedObjectName::from(full_name.clone()),
-                        crate::names::ResolvedObjectName::Object {
-                            id: transient_id,
-                            qualifiers: found_name.qualifiers,
-                            full_name,
-                            print_id: true,
-                        },
-                    )
-                }
-            };
-
-            let (columns, table_constraints) = scx.relation_desc_into_table_defs(&desc)?;
-
-            *progress_subsource = Some(DeferredObjectName::Named(subsource));
-
-            // Create the subsource statement
-            let subsource = CreateSubsourceStatement {
-                name,
-                columns,
-                // unlike sources that come from an external upstream, we
-                // have more leniency to introduce different constraints
-                // every time the load generator is run; i.e. we are not as
-                // worried about introducing junk data.
-                constraints: table_constraints,
-                if_not_exists: false,
-            };
-            subsources.push((transient_id, subsource));
-        }
+    // Take name from input or generate name
+    let (name, subsource) = match progress_subsource {
+        Some(name) => match name {
+            DeferredObjectName::Deferred(name) => (
+                name.clone(),
+                scx.allocate_resolved_object_name(transient_id, name.clone())?,
+            ),
+            DeferredObjectName::Named(_) => unreachable!("already checked for this value"),
+        },
         None => {
-            if progress_subsource.is_some() {
-                sql_bail!("Source does not generate a progress collection; do not name one with EXPOSE AS");
-            }
+            let (item, prefix) = name.0.split_last().unwrap();
+            let mut suggested_name = prefix.to_vec();
+            suggested_name.push(format!("{}_progress", item).into());
+
+            let partial = normalize::unresolved_object_name(UnresolvedObjectName(suggested_name))?;
+            let qualified = scx.allocate_qualified_name(partial)?;
+            let found_name = scx.catalog.find_available_name(qualified);
+            let full_name = scx.catalog.resolve_full_name(&found_name);
+
+            (
+                UnresolvedObjectName::from(full_name.clone()),
+                crate::names::ResolvedObjectName::Object {
+                    id: transient_id,
+                    qualifiers: found_name.qualifiers,
+                    full_name,
+                    print_id: true,
+                },
+            )
         }
-    }
+    };
+
+    let (columns, constraints) = scx.relation_desc_into_table_defs(&progress_desc)?;
+
+    *progress_subsource = Some(DeferredObjectName::Named(subsource));
+
+    // Create the subsource statement
+    let subsource = CreateSubsourceStatement {
+        name,
+        columns,
+        constraints,
+        if_not_exists: false,
+    };
+    subsources.push((transient_id, subsource));
 
     purify_source_format(&*catalog, format, connection, envelope, &connection_context).await?;
 

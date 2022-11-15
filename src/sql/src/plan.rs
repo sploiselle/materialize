@@ -666,6 +666,8 @@ pub struct Ingestion {
     pub desc: SourceDesc,
     pub source_imports: HashSet<GlobalId>,
     pub subsource_exports: HashMap<GlobalId, usize>,
+    // This is an option only to support opening the initial catalog before
+    // applying the migration that adds progress subsources to existing sources.
     pub progress_subsource: Option<GlobalId>,
 }
 

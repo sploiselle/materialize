@@ -893,7 +893,7 @@ where
             let remap_shard = match &desc.data_source {
                 // Iff the ingestion specifies a remap collection...
                 DataSource::Ingestion(IngestionDescription {
-                    remap_collection_id: Some(remap_collection_id),
+                    remap_collection_id,
                     ..
                 }) => {
                     match current_metadata {
@@ -947,7 +947,7 @@ where
                         }) => unreachable!("metadata of ingestion-based sources must be initialized with remap shard"),
                     }
                 }
-                // All other cases (i.e. ingestion without remap shard, or any other data source)
+                // All other cases (e.g. subsources)
                 _ => {
                     // If the current metadata has a remap shard for this
                     // collection, delete it.
@@ -1010,12 +1010,13 @@ where
 
             let remap_shard = match &description.data_source {
                 // Only ingestions can have remap shards.
-                DataSource::Ingestion(ingestion) => {
+                DataSource::Ingestion(IngestionDescription {
+                    remap_collection_id,
+                    ..
+                }) => {
                     // Iff ingestion has a remap collection, its metadata must
                     // exist (and be correct) by this point.
-                    ingestion
-                        .remap_collection_id
-                        .map(|id| durable_metadata[&id].data_shard)
+                    Some(durable_metadata[remap_collection_id].data_shard)
                 }
                 _ => None,
             };
@@ -2100,13 +2101,10 @@ where
         } = new_metadata;
 
         // Update in memory collection metadata.
-        let metadata = self
-            .state
-            .collections
-            .get_mut(&id)
-            .expect("id {:?} must exist");
-        metadata.collection_metadata.data_shard = data_shard;
-        metadata.collection_metadata.remap_shard = remap_shard;
+        if let Some(metadata) = self.state.collections.get_mut(&id) {
+            metadata.collection_metadata.data_shard = data_shard;
+            metadata.collection_metadata.remap_shard = remap_shard;
+        }
     }
 
     /// Closes the identified shards from further reads or writes.
@@ -2162,7 +2160,7 @@ where
                     )
                     .await
                     .expect("failed to connect")
-                    .expect("failed to truncate write handle");
+                    .expect("failed to finalized write handle");
 
                 info!(
                     "successfully finalized write handle for shard {:?}",
