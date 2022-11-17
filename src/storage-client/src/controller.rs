@@ -26,10 +26,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::BufMut;
+use dec::OrderedDecimal;
 use derivative::Derivative;
+use differential_dataflow::consolidation;
 use differential_dataflow::lattice::Lattice;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use mz_repr::adt::numeric::Numeric;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -39,7 +42,7 @@ use timely::progress::frontier::{AntichainRef, MutableAntichain};
 use timely::progress::{Antichain, ChangeBatch, Timestamp};
 use tokio::sync::Mutex;
 use tokio_stream::StreamMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 use mz_build_info::BuildInfo;
 use mz_orchestrator::NamespacedOrchestrator;
@@ -61,7 +64,7 @@ use crate::types::hosts::StorageHostConfig;
 use crate::types::sinks::{
     MetadataUnfilled, ProtoDurableExportMetadata, SinkAsOf, StorageSinkDesc,
 };
-use crate::types::sources::{IngestionDescription, SourceExport};
+use crate::types::sources::{IngestionDescription, SourceData, SourceExport};
 
 mod hosts;
 mod rehydration;
@@ -845,6 +848,8 @@ where
                     return Err(StorageError::SourceIdReused(*id));
                 }
             }
+
+            self.migrate_remap_shard(*id).await;
         }
 
         // Install collection state for each bound description.
@@ -1520,6 +1525,237 @@ where
         }
 
         Ok(update)
+    }
+
+    /// Updates the `DurableCollectionMetadata` associated with `id` to
+    /// `new_metadata`.
+    ///
+    /// Any shards changed between the old and the new version will be
+    /// decommissioned/eventually deleted.
+    async fn rewrite_collection_metadata(
+        &mut self,
+        id: GlobalId,
+        new_metadata: DurableCollectionMetadata,
+    ) {
+        let current_metadata = METADATA_COLLECTION
+            .peek_key_one(&mut self.state.stash, &id)
+            .await
+            .expect("connect to stash");
+
+        let to_delete_shards = match current_metadata {
+            None => {
+                // If this ID has not yet been written, nothing to update.
+                return;
+            }
+            Some(metadata) => {
+                if metadata == new_metadata {
+                    return;
+                }
+
+                let mut to_delete_shards = vec![];
+                if metadata.data_shard != new_metadata.data_shard {
+                    to_delete_shards.push(metadata.data_shard);
+                }
+                if metadata.remap_shard != new_metadata.remap_shard {
+                    to_delete_shards.push(metadata.remap_shard);
+                }
+
+                to_delete_shards
+            }
+        };
+
+        // Perform the update.
+        METADATA_COLLECTION
+            .upsert(&mut self.state.stash, vec![(id, new_metadata)])
+            .await
+            .expect("connect to stash");
+
+        // ???: If we crash after this do we have any means of reaping the
+        // leaked shards?
+
+        // Open a persist client to delete unused shards.
+        let persist_client = self
+            .persist
+            .lock()
+            .await
+            .open(self.persist_location.clone())
+            .await
+            .unwrap();
+
+        // Decommission the identified shards.
+        for shard in to_delete_shards {
+            let (mut write, mut read) = persist_client
+                .open::<crate::types::sources::SourceData, (), T, Diff>(shard)
+                .await
+                .expect("invalid persist usage");
+
+            read.downgrade_since(&Antichain::new()).await;
+            write
+                .append(
+                    Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
+                    write.upper().clone(),
+                    Antichain::new(),
+                )
+                .await
+                .expect("failed to connect")
+                .expect("failed to downgrade write handle");
+        }
+    }
+
+    async fn migrate_remap_shard(&mut self, id: GlobalId) {
+        let current_metadata = METADATA_COLLECTION
+            .peek_key_one(&mut self.state.stash, &id)
+            .await
+            .expect("connect to stash");
+
+        // Get the current metadata.
+        let DurableCollectionMetadata {
+            remap_shard,
+            data_shard,
+        } = match current_metadata {
+            None => {
+                // If this ID has not yet been written, nothing to update.
+                return;
+            }
+            Some(metadata) => metadata,
+        };
+
+        let persist_client = self
+            .persist
+            .lock()
+            .await
+            .open(self.persist_location.clone())
+            .await
+            .unwrap();
+
+        // Open write and read handles to remap shard.
+        let (write, mut read) = persist_client
+            .open::<crate::types::sources::SourceData, (), T, Diff>(remap_shard)
+            .await
+            .expect("invalid persist usage");
+
+        drop(persist_client);
+
+        let upper = match write.upper().as_option() {
+            Some(cur_time) if cur_time > &T::minimum() => cur_time.clone(),
+            // Source is terminated or new; no need to migrate remap shard
+            _ => return,
+        };
+
+        let lower = upper.step_back().expect("upper guaranteed to be > min");
+
+        // Get remap shard's current state; this is what we'll migrate.
+        let mut snapshot = read
+            .snapshot_and_fetch(Antichain::from_elem(lower.clone()))
+            .await
+            .unwrap();
+
+        // Sort so we can determine the last partition ID.
+        consolidation::consolidate_updates(&mut snapshot);
+
+        let last_pid = match snapshot.last() {
+            Some(((data, _), _, _)) => {
+                let row = data.clone().unwrap().0.unwrap();
+                let mut row_iter = row.iter();
+                match row_iter.next().expect("remap rows must have elements") {
+                    Datum::Int32(pid) => pid,
+                    // Not of the shape we intend to migrate
+                    _ => return,
+                }
+            }
+            // Empty after consolidation.
+            None => return,
+        };
+
+        // Convert snapshot of old form into update of new form.
+        let updates = snapshot
+            .into_iter()
+            .map(|((data, _), t, diff)| {
+                let mut row = data.unwrap().0.unwrap();
+                let mut row_iter = row.iter();
+                let pid = match row_iter.next().expect("remap rows must have elements") {
+                    Datum::Int32(pid) => pid,
+                    _ => unreachable!("already verified first col is Int32"),
+                };
+
+                let offset = match row_iter
+                    .next()
+                    .expect("If first col is Int32, subsequent col must be UInt64")
+                {
+                    Datum::UInt64(o) => o,
+                    _ => unreachable!("If first col is Int32, subsequent col must be UInt64"),
+                };
+                let col = row_iter.next();
+                assert!(
+                    col.is_none(),
+                    "row from unknown remap schema; expected third element to be None, got {:?}",
+                    col
+                );
+
+                let mut packer = row.packer();
+                // Numeric is the JSON-compatible type for numbers.
+                let json_pid = Datum::Numeric(OrderedDecimal(Numeric::from(pid)));
+                packer.push(json_pid);
+                packer.push(Datum::UInt64(offset));
+
+                ((SourceData(Ok(row)), ()), t, diff)
+            })
+            .chain(std::iter::once({
+                // Add row expressing the range of unseen partitions.
+                let mut row = Row::default();
+                let mut packer = row.packer();
+                packer.push_list(&[
+                    Datum::Numeric(OrderedDecimal(Numeric::from(
+                        last_pid
+                            .checked_add(1)
+                            .expect("must have fewer than i32::MAX - 1 partitions"),
+                    ))),
+                    Datum::JsonNull,
+                ]);
+                ((SourceData(Ok(row)), ()), lower.clone(), 1)
+            }));
+
+        // Generate new shard.
+        let migrated_remap_shard = ShardId::new();
+
+        let persist_client = self
+            .persist
+            .lock()
+            .await
+            .open(self.persist_location.clone())
+            .await
+            .unwrap();
+
+        let (mut migrate_write, mut migrate_read) = persist_client
+            .open::<crate::types::sources::SourceData, (), T, Diff>(migrated_remap_shard)
+            .await
+            .expect("invalid persist usage");
+        drop(persist_client);
+
+        // Append the migrated data to the new shard at the same time as the old
+        // shard.
+        migrate_write
+            .append(
+                updates,
+                Antichain::from_elem(T::minimum()),
+                Antichain::from_elem(upper),
+            )
+            .await
+            .expect("invalid persist usage")
+            .expect("unused by others");
+
+        // Downgrade since to be the same as the previous shard's.
+        migrate_read.downgrade_since(read.since()).await;
+
+        // Rewrite collection to use new shard as remap shard.
+        self.rewrite_collection_metadata(
+            id,
+            DurableCollectionMetadata {
+                remap_shard: migrated_remap_shard,
+                data_shard,
+            },
+        )
+        .await;
     }
 }
 
