@@ -22,7 +22,7 @@ use timely::PartialOrder;
 use mz_repr::{Diff, GlobalId, Row, Timestamp};
 use mz_storage_client::controller::CollectionMetadata;
 use mz_storage_client::types::errors::DataflowError;
-use mz_storage_client::types::sources::SourceData;
+use mz_storage_client::types::sources::data::SourceData;
 use mz_timely_util::builder_async::{Event, OperatorBuilder};
 
 use crate::source::types::SourcePersistSinkMetrics;

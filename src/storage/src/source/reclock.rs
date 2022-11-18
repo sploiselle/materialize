@@ -33,8 +33,11 @@ use timely::progress::frontier::{Antichain, AntichainRef, MutableAntichain};
 use timely::progress::Timestamp;
 
 use mz_persist_client::Upper;
-use mz_repr::Diff;
-use mz_storage_client::util::remap_handle::RemapHandle;
+use mz_persist_types::Codec64;
+use mz_repr::{Diff, GlobalId};
+use mz_storage_client::controller::CollectionMetadata;
+use mz_storage_client::types::sources::data::SourceData;
+use mz_storage_client::util::antichain::MutableOffsetAntichain;
 
 pub mod compat;
 

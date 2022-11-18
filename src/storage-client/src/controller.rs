@@ -31,6 +31,7 @@ use derivative::Derivative;
 use differential_dataflow::lattice::Lattice;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use mz_expr::PartitionId;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -40,7 +41,7 @@ use timely::progress::frontier::{AntichainRef, MutableAntichain};
 use timely::progress::{Antichain, ChangeBatch, Timestamp};
 use tokio::sync::Mutex;
 use tokio_stream::StreamMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 use mz_build_info::BuildInfo;
 use mz_orchestrator::NamespacedOrchestrator;
@@ -63,9 +64,12 @@ use crate::types::hosts::StorageHostConfig;
 use crate::types::sinks::{
     MetadataUnfilled, ProtoDurableExportMetadata, SinkAsOf, StorageSinkDesc,
 };
-use crate::types::sources::{IngestionDescription, SourceData, SourceExport};
+use crate::types::sources::data::SourceData;
+use crate::types::sources::{IngestionDescription, SourceExport};
+use crate::util::remap_handle::RemapHandle;
 
 mod hosts;
+mod reclock_migration;
 mod rehydration;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -945,6 +949,7 @@ where
             self.state.persist_read_handles.register(id, since_handle);
 
             self.state.collections.insert(id, collection_state);
+            self.migrate_remap_shard(id).await;
             self.register_shard_mapping(id).await;
 
             match description.data_source {
@@ -1502,6 +1507,177 @@ where
             persist: persist_clients,
         }
     }
+
+    /// Updates the `DurableCollectionMetadata` associated with `id` to
+    /// `new_metadata`.
+    ///
+    /// Any shards changed between the old and the new version will be
+    /// decommissioned/eventually deleted.
+    async fn rewrite_collection_metadata(
+        &mut self,
+        id: GlobalId,
+        new_metadata: DurableCollectionMetadata,
+    ) {
+        let current_metadata = METADATA_COLLECTION
+            .peek_key_one(&mut self.state.stash, &id)
+            .await
+            .expect("connect to stash");
+
+        let to_delete_shards = match current_metadata {
+            None => {
+                // If this ID has not yet been written, nothing to update.
+                return;
+            }
+            Some(metadata) => {
+                if metadata == new_metadata {
+                    return;
+                }
+
+                let mut to_delete_shards = vec![];
+                if metadata.data_shard != new_metadata.data_shard {
+                    info!(
+                        "replacing {:?}'s data shard {:?} with {:?}",
+                        id, metadata.data_shard, new_metadata.data_shard
+                    );
+                    to_delete_shards.push(metadata.data_shard);
+                }
+                if metadata.remap_shard != new_metadata.remap_shard {
+                    info!(
+                        "replacing {:?}'s remap shard {:?} with {:?}",
+                        id, metadata.data_shard, new_metadata.data_shard
+                    );
+                    to_delete_shards.push(metadata.remap_shard);
+                }
+
+                to_delete_shards
+            }
+        };
+
+        // Perform the update.
+        METADATA_COLLECTION
+            .upsert(&mut self.state.stash, vec![(id, new_metadata.clone())])
+            .await
+            .expect("connect to stash");
+
+        // ???: If we crash after this do we have any means of reaping the
+        // leaked shards?
+
+        self.truncate_shards(&to_delete_shards).await;
+
+        let DurableCollectionMetadata {
+            remap_shard,
+            data_shard,
+        } = new_metadata;
+
+        // Update in memory collection metadata.
+        let metadata = self
+            .state
+            .collections
+            .get_mut(&id)
+            .expect("id {:?} must exist");
+        metadata.collection_metadata.data_shard = data_shard;
+        metadata.collection_metadata.remap_shard = remap_shard;
+    }
+
+    async fn truncate_shards(&mut self, shards: &[ShardId]) {
+        // Open a persist client to delete unused shards.
+        let persist_client = self
+            .persist
+            .lock()
+            .await
+            .open(self.persist_location.clone())
+            .await
+            .unwrap();
+
+        for shard in shards {
+            let (mut write, mut read) = persist_client
+                .open::<crate::types::sources::data::SourceData, (), T, Diff>(
+                    *shard_id,
+                    shard_purpose.as_str(),
+                )
+                .await
+                .expect("invalid persist usage");
+
+            read.downgrade_since(&Antichain::new()).await;
+            write
+                .append(
+                    Vec::<((crate::types::sources::data::SourceData, ()), T, Diff)>::new(),
+                    write.upper().clone(),
+                    Antichain::new(),
+                )
+                .await
+                .expect("failed to connect")
+                .expect("failed to truncate write handle");
+
+            info!("successfully truncated shard {:?}", shard);
+        }
+    }
+
+    pub async fn migrate_remap_shard(&mut self, id: GlobalId) {
+        let metadata = self
+            .state
+            .collections
+            .get(&id)
+            .expect("must have seen metadata inserted")
+            .collection_metadata
+            .clone();
+
+        let migrate_to_shard = ShardId::new();
+
+        let mut migrator = match reclock_migration::RemapHandleMigrator::<T>::new(
+            self.persist.clone(),
+            metadata.clone(),
+            migrate_to_shard,
+            id,
+        )
+        .await
+        .unwrap()
+        {
+            Some(m) => m,
+            None => return,
+        };
+
+        let (migrated_form, upper) = match migrator.next().await {
+            Some(r) => r,
+            None => return,
+        };
+
+        // We only need to migrate Kafka partitions
+        if migrated_form
+            .iter()
+            .any(|(partition, _, _)| matches!(partition.partition(), Some(PartitionId::None)))
+        {
+            return;
+        }
+
+        info!(
+            "migrating {:?}'s remap shard {:?} to {:?}",
+            id, metadata.remap_shard, migrate_to_shard
+        );
+
+        match migrator
+            .compare_and_append(migrated_form, Antichain::from_elem(T::minimum()), upper)
+            .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                self.truncate_shards(&[migrate_to_shard]).await;
+                panic!(
+                    "writing to new shard must succeed, but received error {:?}",
+                    e
+                );
+            }
+        };
+
+        self.rewrite_collection_metadata(
+            id,
+            DurableCollectionMetadata {
+                data_shard: metadata.data_shard,
+                remap_shard: migrate_to_shard,
+            },
+        )
+        .await;
+    }
 }
 
 impl<T> Controller<T>
@@ -1791,7 +1967,7 @@ mod persist_read_handles {
     use mz_repr::{Diff, GlobalId};
 
     use crate::controller::PersistEpoch;
-    use crate::types::sources::SourceData;
+    use crate::types::sources::data::SourceData;
 
     /// A wrapper that holds on to backing persist shards/collections that the
     /// storage controller is aware of. The handles hold back the since frontier and
@@ -1921,7 +2097,7 @@ mod persist_write_handles {
     use crate::client::StorageResponse;
     use crate::client::{TimestamplessUpdate, Update};
     use crate::controller::StorageError;
-    use crate::types::sources::SourceData;
+    use crate::types::sources::data::SourceData;
 
     #[derive(Debug, Clone)]
     pub struct PersistWorker<T: Timestamp + Lattice + Codec64 + TimestampManipulation> {
