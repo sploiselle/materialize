@@ -1664,7 +1664,7 @@ where
                 }
             }
             // Empty after consolidation.
-            None => return,
+            None => i32::MIN,
         };
 
         // Convert snapshot of old form into update of new form.
@@ -1702,16 +1702,21 @@ where
             })
             .chain(std::iter::once({
                 // Add row expressing the range of unseen partitions.
-                let mut row = Row::default();
+                let mut row = Row::with_capacity(2);
                 let mut packer = row.packer();
                 packer.push_list(&[
-                    Datum::Numeric(OrderedDecimal(Numeric::from(
-                        last_pid
-                            .checked_add(1)
-                            .expect("must have fewer than i32::MAX - 1 partitions"),
-                    ))),
+                    if last_pid == i32::MIN {
+                        Datum::JsonNull
+                    } else {
+                        Datum::Numeric(OrderedDecimal(Numeric::from(
+                            last_pid
+                                .checked_add(1)
+                                .expect("must have fewer than i32::MAX - 1 partitions"),
+                        )))
+                    },
                     Datum::JsonNull,
                 ]);
+                packer.push(Datum::UInt64(0));
                 ((SourceData(Ok(row)), ()), lower.clone(), 1)
             }));
 

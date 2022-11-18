@@ -14,10 +14,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
+use dec::OrderedDecimal;
 use differential_dataflow::consolidation;
 use differential_dataflow::lattice::Lattice;
 use futures::{stream::LocalBoxStream, StreamExt};
 use itertools::Itertools;
+use mz_repr::adt::numeric::Numeric;
 use timely::order::{PartialOrder, TotalOrder};
 use timely::progress::frontier::{Antichain, MutableAntichain};
 use timely::progress::Timestamp;
@@ -31,7 +33,7 @@ use mz_persist_client::Upper;
 use mz_repr::{Datum, Diff, GlobalId, Row};
 use mz_storage_client::controller::CollectionMetadata;
 use mz_storage_client::types::sources::{MzOffset, SourceData};
-use mz_timely_util::order::Partitioned;
+use mz_timely_util::order::{Interval, Partitioned, RangeBound};
 
 use crate::source::antichain::{MutableOffsetAntichain, OffsetAntichain};
 use crate::source::reclock::{
@@ -117,7 +119,7 @@ pub struct PersistHandle {
     snapshot_produced: bool,
     upper: Antichain<mz_repr::Timestamp>,
     as_of: Antichain<mz_repr::Timestamp>,
-    pending_batch: Vec<((PartitionId, MzOffset), mz_repr::Timestamp, Diff)>,
+    pending_batch: Vec<(Partitioned<PartitionId, MzOffset>, mz_repr::Timestamp, Diff)>,
     native_source_upper: MutableAntichain<Partitioned<PartitionId, MzOffset>>,
     compat_source_upper: MutableOffsetAntichain,
     minimum_produced: bool,
@@ -203,29 +205,90 @@ impl PersistHandle {
 /// A binding of None partition is encoded as a single datum containing the offset.
 ///
 /// A binding of a Kafka partition is encoded as the partition datum followed by the offset datum.
-fn pack_binding(pid: PartitionId, offset: MzOffset) -> SourceData {
+fn pack_binding(partition: Partitioned<PartitionId, MzOffset>) -> SourceData {
     let mut row = Row::with_capacity(2);
     let mut packer = row.packer();
-    match pid {
-        PartitionId::None => {}
-        PartitionId::Kafka(pid) => packer.push(Datum::Int32(pid)),
+
+    match partition.interval() {
+        Interval::Range(l, u) => match (l, u) {
+            (RangeBound::Bottom, RangeBound::Top) => {
+                packer.push_list(&[Datum::JsonNull, Datum::JsonNull]);
+            }
+            (RangeBound::Bottom, RangeBound::Elem(PartitionId::Kafka(pid))) => {
+                packer.push_list(&[
+                    Datum::JsonNull,
+                    Datum::Numeric(OrderedDecimal(Numeric::from(*pid))),
+                ]);
+            }
+            (RangeBound::Elem(PartitionId::Kafka(pid)), RangeBound::Top) => {
+                packer.push_list(&[
+                    Datum::Numeric(OrderedDecimal(Numeric::from(*pid))),
+                    Datum::JsonNull,
+                ]);
+            }
+            (
+                RangeBound::Elem(PartitionId::Kafka(l_pid)),
+                RangeBound::Elem(PartitionId::Kafka(u_pid)),
+            ) => {
+                packer.push_list(&[
+                    Datum::Numeric(OrderedDecimal(Numeric::from(*l_pid))),
+                    Datum::Numeric(OrderedDecimal(Numeric::from(*u_pid))),
+                ]);
+            }
+            _ => unreachable!("don't know how to handle this partition"),
+        },
+        Interval::Point(PartitionId::Kafka(pid)) => {
+            packer.push(Datum::Numeric(OrderedDecimal(Numeric::from(*pid))))
+        }
+        Interval::Point(PartitionId::None) => {}
     }
-    packer.push(Datum::UInt64(offset.offset));
+
+    packer.push(Datum::UInt64(partition.timestamp().offset));
     SourceData(Ok(row))
 }
 
 /// Unpacks a binding from a Row
 /// See documentation of [pack_binding] for the encoded format
-fn unpack_binding(data: SourceData) -> (PartitionId, MzOffset) {
+fn unpack_binding(data: SourceData) -> Partitioned<PartitionId, MzOffset> {
     let row = data.0.expect("invalid binding");
     let mut datums = row.iter();
-    let (pid, offset) = match (datums.next(), datums.next()) {
-        (Some(Datum::Int32(p)), Some(Datum::UInt64(offset))) => (PartitionId::Kafka(p), offset),
-        (Some(Datum::UInt64(offset)), None) => (PartitionId::None, offset),
-        _ => panic!("invalid binding"),
-    };
+    match (datums.next(), datums.next()) {
+        (Some(Datum::List(list)), Some(Datum::UInt64(offset))) => {
+            let mut list_iter = list.iter();
+            let (lower, upper) = match (list_iter.next(), list_iter.next()) {
+                (Some(Datum::JsonNull), Some(Datum::JsonNull)) => (None, None),
+                (Some(Datum::JsonNull), Some(Datum::Numeric(pid))) => {
+                    (None, Some(PartitionId::Kafka(pid.0.try_into().unwrap())))
+                }
+                (Some(Datum::Numeric(pid)), Some(Datum::JsonNull)) => {
+                    (Some(PartitionId::Kafka(pid.0.try_into().unwrap())), None)
+                }
+                (Some(Datum::Numeric(l_pid)), Some(Datum::Numeric(u_pid))) if l_pid == u_pid => {
+                    return Partitioned::with_partition(
+                        PartitionId::Kafka(l_pid.0.try_into().unwrap()),
+                        MzOffset::from(offset),
+                    )
+                }
+                (Some(Datum::Numeric(l_pid)), Some(Datum::Numeric(u_pid))) if l_pid == u_pid => (
+                    Some(PartitionId::Kafka(l_pid.0.try_into().unwrap())),
+                    Some(PartitionId::Kafka(u_pid.0.try_into().unwrap())),
+                ),
+                invalid_binding => {
+                    panic!("invalid binding inside Datum::List {:?}", invalid_binding)
+                }
+            };
 
-    (pid, MzOffset::from(offset))
+            Partitioned::with_range(lower, upper, MzOffset::from(offset))
+        }
+        (Some(Datum::Numeric(pid)), Some(Datum::UInt64(offset))) => Partitioned::with_partition(
+            PartitionId::Kafka(pid.0.try_into().unwrap()),
+            MzOffset::from(offset),
+        ),
+        (Some(Datum::UInt64(offset)), None) => {
+            Partitioned::with_partition(PartitionId::None, MzOffset::from(offset))
+        }
+        invalid_binding => panic!("invalid binding {:?}", invalid_binding),
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -239,71 +302,35 @@ impl RemapHandle for PersistHandle {
         upper: Antichain<Self::IntoTime>,
         new_upper: Antichain<Self::IntoTime>,
     ) -> Result<(), Upper<Self::IntoTime>> {
-        // The following section performs a translation of the native timely timestamps to the
-        // progress format presented to users which at the moment is not compatible with how
-        // Antichians work. A proper migration and subsequent deletion of this section will happen
-        // soon.
-        //
-        // Now, we need to come up with the updates to the OffsetAntichain representation that is
-        // already in the shard. In our state we store the latest value of the source frontier in
-        // both the native format (Antichain<Partitioned<PartitionId, MzOffset>>) and the compat
-        // one (OffsetAntichain).
-        //
-        // In order to calculate the updates to the OffsetAntichain that correspond to the change
-        // in native timestamps we will accumulate the provided diffs into concrete Antichains for
-        // each time that the frontier changed, convert into an OffsetAntichain, and diff those
-        // with the OffsetAntichain.
-
-        // Vector holding the result of the translation
-        let mut compat_frontier_updates = vec![];
-
         // First, we will sort the updates by time to be able to iterate over the groups
         updates.sort_unstable_by(|a, b| a.1.cmp(&b.1));
         let mut native_frontier = self.native_source_upper.clone();
-        let mut compat_frontier = self.compat_source_upper.frontier();
 
-        // Then, we will iterate over the group of updates in time order and produce the native
-        // Antichain at each point, convert it to a compat OffsetAntichain, and diff it with
-        // current OffsetAntichain representation.
+        let mut frontier_updates = vec![];
+
         for (ts, updates) in &updates.into_iter().group_by(|update| update.1) {
-            native_frontier.update_iter(
+            let deltas = native_frontier.update_iter(
                 updates
                     .into_iter()
                     .map(|(src_ts, _ts, diff)| (src_ts, diff)),
             );
-            let new_compat_frontier = OffsetAntichain::from(native_frontier.frontier().to_owned());
 
-            compat_frontier_updates.extend(
-                compat_frontier
-                    .iter()
-                    .map(|(pid, offset)| ((pid.clone(), *offset), ts, -1)),
-            );
-            compat_frontier_updates.extend(
-                new_compat_frontier
-                    .iter()
-                    .map(|(pid, offset)| ((pid.clone(), *offset), ts, 1)),
-            );
-
-            compat_frontier = new_compat_frontier;
+            frontier_updates.extend(deltas.map(|(p, diff)| (p, ts.clone(), diff)));
         }
-        // Then, consolidate the compat updates and we're done
-        consolidation::consolidate_updates(&mut compat_frontier_updates);
 
-        // And finally convert into rows and attempt to append to the shard
-        let mut row_updates = vec![];
-        for ((pid, offset), ts, diff) in compat_frontier_updates {
-            row_updates.push((pack_binding(pid, offset), ts, diff));
-        }
+        consolidation::consolidate_updates(&mut frontier_updates);
+
+        let row_updates: Vec<_> = frontier_updates
+            .into_iter()
+            .map(|(partition, ts, diff)| ((pack_binding(partition), ()), ts, diff))
+            .collect();
 
         loop {
-            let updates = row_updates
-                .iter()
-                .map(|(data, time, diff)| ((data, ()), time, diff));
             let upper = upper.clone();
             let new_upper = new_upper.clone();
             match self
                 .write_handle
-                .compare_and_append(updates, upper, new_upper)
+                .compare_and_append(row_updates.iter(), upper, new_upper)
                 .await
             {
                 Ok(Ok(result)) => return result,
@@ -346,23 +373,15 @@ impl RemapHandle for PersistHandle {
             match event {
                 ListenEvent::Progress(new_upper) => {
                     // Now it's the time to peel off a batch of pending data
-                    let mut updates = vec![];
+                    let mut native_frontier_updates = vec![];
                     self.pending_batch.retain(|(binding, ts, diff)| {
                         if !new_upper.less_equal(ts) {
-                            updates.push((binding.clone(), *ts, *diff));
+                            native_frontier_updates.push((binding.clone(), *ts, *diff));
                             false
                         } else {
                             true
                         }
                     });
-
-                    // The following section performs the opposite transalation as the one that
-                    // happened during compare_and_append.
-                    // Vector holding the result of the translation
-                    let mut native_frontier_updates = vec![];
-
-                    // First, we will sort the updates by time to be able to iterate over the groups
-                    updates.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
                     // This is very subtle. An empty collection of native Antichain elements
                     // represents something different than an empty collection of compat
@@ -376,32 +395,19 @@ impl RemapHandle for PersistHandle {
                         native_frontier_updates.push((Partitioned::minimum(), first_ts, 1));
                     }
 
-                    // Then, we will iterate over the group of updates in time order and produce
-                    // the OffsetAntichain at each point, convert it to a normal Antichain, and
-                    // diff it with current Antichain representation.
-                    for (ts, updates) in &updates.into_iter().group_by(|update| update.1) {
-                        let prev_native_frontier =
-                            Antichain::from(self.compat_source_upper.frontier());
-                        native_frontier_updates.extend(
-                            prev_native_frontier
-                                .into_iter()
-                                .map(|src_ts| (src_ts, ts, -1)),
-                        );
+                    native_frontier_updates.extend(
+                        self.native_source_upper
+                            .frontier()
+                            .into_iter()
+                            .map(|partition| {
+                                (
+                                    partition.clone(),
+                                    self.upper.as_option().cloned().unwrap(),
+                                    -1,
+                                )
+                            }),
+                    );
 
-                        self.compat_source_upper.update_iter(
-                            updates
-                                .into_iter()
-                                .map(|(binding, _ts, diff)| (binding, diff)),
-                        );
-                        let new_native_frontier =
-                            Antichain::from(self.compat_source_upper.frontier());
-
-                        native_frontier_updates.extend(
-                            new_native_frontier
-                                .into_iter()
-                                .map(|src_ts| (src_ts, ts, 1)),
-                        );
-                    }
                     // Then, consolidate the native updates and we're done
                     consolidation::consolidate_updates(&mut native_frontier_updates);
 
