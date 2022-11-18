@@ -4390,6 +4390,7 @@ dependencies = [
  "aws-smithy-http",
  "aws-types",
  "bytes",
+ "dec",
  "derivative",
  "differential-dataflow",
  "futures",

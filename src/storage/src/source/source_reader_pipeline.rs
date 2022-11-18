@@ -64,12 +64,12 @@ use mz_storage_client::types::connections::ConnectionContext;
 use mz_storage_client::types::errors::SourceError;
 use mz_storage_client::types::sources::encoding::SourceDataEncoding;
 use mz_storage_client::types::sources::{AsyncSourceToken, MzOffset, SourceData, SourceToken};
+use mz_storage_client::util::antichain::{MutableOffsetAntichain, OffsetAntichain};
 use mz_timely_util::builder_async::{Event, OperatorBuilder as AsyncOperatorBuilder};
 use mz_timely_util::operator::StreamExt as _;
 use mz_timely_util::operators_async_ext::OperatorBuilderExt;
 use mz_timely_util::order::Partitioned;
 
-use crate::source::antichain::{MutableOffsetAntichain, OffsetAntichain};
 use crate::source::healthcheck;
 
 use crate::source::metrics::SourceBaseMetrics;
