@@ -30,6 +30,7 @@ use derivative::Derivative;
 use differential_dataflow::lattice::Lattice;
 use futures::stream::StreamExt;
 use itertools::Itertools;
+use mz_expr::PartitionId;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -62,8 +63,10 @@ use crate::types::sinks::{
     MetadataUnfilled, ProtoDurableExportMetadata, SinkAsOf, StorageSinkDesc,
 };
 use crate::types::sources::{IngestionDescription, SourceExport};
+use crate::util::remap_handle::RemapHandle;
 
 mod hosts;
+mod reclock_migration;
 mod rehydration;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -1415,6 +1418,155 @@ where
             persist_location,
             persist: persist_clients,
         }
+    }
+
+    /// Updates the `DurableCollectionMetadata` associated with `id` to
+    /// `new_metadata`.
+    ///
+    /// Any shards changed between the old and the new version will be
+    /// decommissioned/eventually deleted.
+    async fn rewrite_collection_metadata(
+        &mut self,
+        id: GlobalId,
+        new_metadata: DurableCollectionMetadata,
+    ) {
+        let current_metadata = METADATA_COLLECTION
+            .peek_key_one(&mut self.state.stash, &id)
+            .await
+            .expect("connect to stash");
+
+        let to_delete_shards = match current_metadata {
+            None => {
+                // If this ID has not yet been written, nothing to update.
+                return;
+            }
+            Some(metadata) => {
+                if metadata == new_metadata {
+                    return;
+                }
+
+                let mut to_delete_shards = vec![];
+                if metadata.data_shard != new_metadata.data_shard {
+                    to_delete_shards.push(metadata.data_shard);
+                }
+                if metadata.remap_shard != new_metadata.remap_shard {
+                    to_delete_shards.push(metadata.remap_shard);
+                }
+
+                to_delete_shards
+            }
+        };
+
+        // Perform the update.
+        METADATA_COLLECTION
+            .upsert(&mut self.state.stash, vec![(id, new_metadata.clone())])
+            .await
+            .expect("connect to stash");
+
+        // ???: If we crash after this do we have any means of reaping the
+        // leaked shards?
+
+        // Open a persist client to delete unused shards.
+        let persist_client = self
+            .persist
+            .lock()
+            .await
+            .open(self.persist_location.clone())
+            .await
+            .unwrap();
+
+        // Decommission the identified shards.
+        for shard in to_delete_shards {
+            let (mut write, mut read) = persist_client
+                .open::<crate::types::sources::SourceData, (), T, Diff>(shard)
+                .await
+                .expect("invalid persist usage");
+
+            read.downgrade_since(&Antichain::new()).await;
+            write
+                .append(
+                    Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
+                    write.upper().clone(),
+                    Antichain::new(),
+                )
+                .await
+                .expect("failed to connect")
+                .expect("failed to downgrade write handle");
+        }
+
+        let DurableCollectionMetadata {
+            remap_shard,
+            data_shard,
+        } = new_metadata;
+
+        let metadata = self
+            .state
+            .collections
+            .get_mut(&id)
+            .expect("id {:?} must exist");
+        metadata.collection_metadata.data_shard = data_shard;
+        metadata.collection_metadata.remap_shard = remap_shard;
+    }
+
+    pub async fn migrate_remap_shard(&mut self, id: GlobalId) {
+        let metadata = self
+            .state
+            .collections
+            .get(&id)
+            .expect("must have seen metadata inserted")
+            .collection_metadata
+            .clone();
+
+        let migrate_to_shard = ShardId::new();
+
+        let mut migrator = match reclock_migration::RemapHandleMigrator::<T>::new(
+            self.persist.clone(),
+            metadata.clone(),
+            migrate_to_shard,
+            id,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) if e.to_string().as_str() == "nothing to migrate" => return,
+            Err(e) => panic!("{}", e),
+        };
+
+        let (migrated_form, upper) = dbg!(match migrator.next().await {
+            Some(r) => r,
+            None => {
+                println!("not migrating {:?}", id);
+                return;
+            }
+        });
+
+        let lower = match upper.as_option() {
+            Some(t) if t > &T::minimum() => t.step_back().unwrap(),
+            // Closed or new shard; no migration needed
+            _ => return,
+        };
+
+        if migrated_form
+            .iter()
+            .any(|(partition, _, _)| matches!(partition.partition(), PartitionId::None))
+        {
+            println!("not migrating {:?}", id);
+            return;
+        }
+
+        migrator
+            .compare_and_append(migrated_form, Antichain::from_elem(lower), upper)
+            .await
+            .expect("writing to new shard must succeed");
+
+        self.rewrite_collection_metadata(
+            id,
+            DurableCollectionMetadata {
+                data_shard: metadata.data_shard,
+                remap_shard: migrate_to_shard,
+            },
+        )
+        .await;
     }
 }
 
