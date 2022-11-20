@@ -20,6 +20,7 @@ clap = { version = "3.2.20", features = ["derive", "env"] }
 crossbeam-channel = { version = "0.5.6" }
 csv-core = { version = "0.1.10" }
 dec = "0.4.8"
+derivative = "2.2.0"
 differential-dataflow = { git = "https://github.com/TimelyDataflow/differential-dataflow.git" }
 fail = { version = "0.5.1", features = ["failpoints"] }
 futures = "0.3.25"

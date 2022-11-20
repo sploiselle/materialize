@@ -1050,7 +1050,10 @@ where
 
         // Same value as our use of `derive_new_compaction_since`.
         let as_of = Antichain::from_elem(upper_ts.saturating_sub(1));
-        let remap_handle = crate::source::reclock::compat::PersistHandle::new(
+
+        let clock = RemapClock::new(now.clone(), timestamp_interval);
+        let (mut timestamper, mut initial_batch) = ReclockOperator::new(
+            clock,
             Arc::clone(&persist_clients),
             storage_metadata.clone(),
             as_of.clone(),
@@ -1060,9 +1063,12 @@ where
             worker_count,
         )
         .await
-        .unwrap_or_else(|e| panic!("Failed to create remap handle for source {}: {:#}", name, e));
-        let clock = RemapClock::new(now.clone(), timestamp_interval);
-        let (mut timestamper, mut initial_batch) = ReclockOperator::new(remap_handle, clock).await;
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to create reclock operator handle for source {}: {:#}",
+                name, e
+            )
+        });
 
         let mut follower = ReclockFollower::new(as_of);
         follower.push_trace_batch(initial_batch.clone());

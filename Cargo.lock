@@ -4564,6 +4564,7 @@ dependencies = [
  "csv-core",
  "datadriven",
  "dec",
+ "derivative",
  "differential-dataflow",
  "fail",
  "futures",

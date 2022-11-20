@@ -23,15 +23,24 @@
 /// `ReclockOperator`.
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
+use anyhow::Context;
+use derivative::Derivative;
 use differential_dataflow::consolidation;
 use differential_dataflow::difference::Abelian;
 use differential_dataflow::lattice::Lattice;
+use futures::stream::LocalBoxStream;
 use futures::{FutureExt, StreamExt};
+use itertools::Itertools;
 use timely::order::{PartialOrder, TotalOrder};
 use timely::progress::frontier::{Antichain, AntichainRef, MutableAntichain};
 use timely::progress::Timestamp;
+use tokio::sync::Mutex;
 
+use mz_persist_client::cache::PersistClientCache;
+use mz_persist_client::read::{ListenEvent, ReadHandle};
+use mz_persist_client::write::WriteHandle;
 use mz_persist_client::Upper;
 use mz_persist_types::Codec64;
 use mz_repr::{Diff, GlobalId};
@@ -405,24 +414,29 @@ pub enum ReclockError<T> {
 /// collection accumulates into an Antichain where each `FromTime` timestamp has frequency `1`. In
 /// other words the remap collection describes a well formed `Antichain<FromTime>` as it is
 /// marching forwards.
-#[derive(Debug)]
-pub struct ReclockOperator<
-    FromTime: Timestamp,
-    IntoTime: Timestamp + Lattice,
-    Handle: RemapHandle<FromTime = FromTime, IntoTime = IntoTime>,
-    Clock,
-> {
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct ReclockOperator<FromTime: Timestamp, IntoTime: Timestamp + Lattice + Codec64, Clock> {
     /// Upper frontier of the partial remap trace
     upper: Antichain<IntoTime>,
     /// The upper frontier in terms of `FromTime`. Any attempt to reclock messages beyond this
     /// frontier will lead to minting new bindings.
     source_upper: MutableAntichain<FromTime>,
-
-    /// A handle allowing this operator to publish updates to and read back from the remap collection
-    remap_handle: Handle,
     /// A stream of IntoTime values and upper frontiers, used to drive minting bindings
     /// In the future this will be a timely input to the reclock operator
     clock_stream: Clock,
+
+    read_handle: ReadHandle<SourceData, (), IntoTime, Diff>,
+    #[derivative(Debug = "ignore")]
+    events: LocalBoxStream<'static, ListenEvent<SourceData, (), IntoTime, Diff>>,
+    write_handle: WriteHandle<SourceData, (), IntoTime, Diff>,
+    snapshot_produced: bool,
+    as_of: Antichain<IntoTime>,
+    // was (PartitionId, MzOffset)
+    pending_batch: Vec<(FromTime, IntoTime, Diff)>,
+    native_source_upper: MutableAntichain<FromTime>,
+    compat_source_upper: MutableOffsetAntichain,
+    minimum_produced: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -431,25 +445,87 @@ pub struct ReclockBatch<FromTime, IntoTime> {
     pub upper: Antichain<IntoTime>,
 }
 
-impl<FromTime, IntoTime, Handle, Clock> ReclockOperator<FromTime, IntoTime, Handle, Clock>
+impl<FromTime, IntoTime, Clock> ReclockOperator<FromTime, IntoTime, Clock>
 where
-    FromTime: Timestamp,
-    IntoTime: Timestamp + Lattice,
-    Handle: RemapHandle<FromTime = FromTime, IntoTime = IntoTime>,
+    FromTime: Timestamp + TryFrom<SourceData>,
+    <FromTime as TryFrom<SourceData>>::Error: std::fmt::Debug,
+    SourceData: From<FromTime>,
+    IntoTime: Timestamp + Lattice + Codec64 + TotalOrder,
     Clock: futures::Stream<Item = (IntoTime, Antichain<IntoTime>)> + Unpin,
 {
     /// Construct a new [ReclockOperator] from the given collection metadata
     pub async fn new(
-        remap_handle: Handle,
         clock_stream: Clock,
-    ) -> (Self, ReclockBatch<FromTime, IntoTime>) {
-        let upper = remap_handle.upper().clone();
+        persist_clients: Arc<Mutex<PersistClientCache>>,
+        metadata: CollectionMetadata,
+        as_of: Antichain<IntoTime>,
+        // additional information to improve logging
+        id: GlobalId,
+        operator: &str,
+        worker_id: usize,
+        worker_count: usize,
+    ) -> anyhow::Result<(Self, ReclockBatch<FromTime, IntoTime>)> {
+        let mut persist_clients = persist_clients.lock().await;
+        let persist_client = persist_clients
+            .open(metadata.persist_location)
+            .await
+            .context("error creating persist client")?;
+        drop(persist_clients);
+
+        let (write_handle, read_handle) = persist_client
+            .open(metadata.remap_shard, &format!("remap shard {}", id))
+            .await
+            .context("error opening persist shard")?;
+
+        let (since, upper) = (read_handle.since(), write_handle.upper().clone());
+
+        assert!(
+            PartialOrder::less_equal(since, &as_of),
+            "invalid as_of: as_of({as_of:?}) < since({since:?}), \
+            source {id}, \
+            remap_shard: {}",
+            metadata.remap_shard
+        );
+
+        assert!(
+            as_of.elements() == [IntoTime::minimum()] || PartialOrder::less_than(&as_of, &upper),
+            "invalid as_of: upper({upper:?}) <= as_of({as_of:?})",
+        );
+
+        let listener = read_handle
+            .clone(&format!("reclock operator {}", id))
+            .await
+            .listen(as_of.clone())
+            .await
+            .expect("since <= as_of asserted");
+
+        tracing::info!(
+            ?since,
+            ?as_of,
+            ?upper,
+            "{operator}({id}) {worker_id}/{worker_count} initializing ReclockOperator"
+        );
+
+        let events = futures::stream::unfold(listener, |mut listener| async move {
+            let events = futures::stream::iter(listener.next().await);
+            Some((events, listener))
+        })
+        .flatten()
+        .boxed_local();
 
         let mut operator = Self {
             upper: Antichain::from_elem(IntoTime::minimum()),
             source_upper: MutableAntichain::new(),
-            remap_handle,
             clock_stream,
+            read_handle,
+            events,
+            write_handle,
+            as_of,
+            snapshot_produced: false,
+            pending_batch: vec![],
+            native_source_upper: MutableAntichain::new(),
+            compat_source_upper: MutableOffsetAntichain::new(),
+            minimum_produced: false,
         };
 
         // Initialize or load the initial state that might exist in the shard
@@ -464,7 +540,7 @@ where
             operator.sync(upper.borrow()).await
         };
 
-        (operator, trace_batch)
+        Ok((operator, trace_batch))
     }
 
     /// Advances the upper of the reclock operator if appropriate
@@ -485,6 +561,72 @@ where
         }
     }
 
+    async fn next(&mut self) -> Option<(Vec<(FromTime, IntoTime, Diff)>, Antichain<IntoTime>)> {
+        if !std::mem::replace(&mut self.snapshot_produced, true) {
+            for ((update, _), ts, diff) in self
+                .read_handle
+                .snapshot_and_fetch(self.as_of.clone())
+                .await
+                .expect("local since is not beyond read handle's since")
+            {
+                let binding = update.expect("invalid row");
+                let binding = FromTime::try_from(binding).expect("invalid binding");
+                self.pending_batch.push((binding, ts, diff));
+            }
+        }
+
+        while let Some(event) = self.events.next().await {
+            match event {
+                ListenEvent::Progress(new_upper) => {
+                    // Peel off a batch of pending data
+                    let mut native_frontier_updates = vec![];
+                    self.pending_batch.retain(|(binding, ts, diff)| {
+                        if !new_upper.less_equal(ts) {
+                            native_frontier_updates.push((binding.clone(), ts.clone(), *diff));
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    native_frontier_updates.extend(
+                        self.native_source_upper
+                            .frontier()
+                            .into_iter()
+                            .map(|partition| {
+                                (
+                                    partition.clone(),
+                                    self.upper.as_option().cloned().unwrap(),
+                                    -1,
+                                )
+                            }),
+                    );
+
+                    // Then, consolidate the native updates and we're done
+                    consolidation::consolidate_updates(&mut native_frontier_updates);
+
+                    // Finally, apply the updates to our local view of the native frontier
+                    self.source_upper.update_iter(
+                        native_frontier_updates
+                            .iter()
+                            .map(|(src_ts, _ts, diff)| (src_ts.clone(), *diff)),
+                    );
+                    self.upper = new_upper.clone();
+
+                    return Some((native_frontier_updates, new_upper));
+                }
+                ListenEvent::Updates(msgs) => {
+                    for ((update, _), ts, diff) in msgs {
+                        let binding = FromTime::try_from(update.expect("invalid row"))
+                            .expect("invalid binding");
+                        self.pending_batch.push((binding, ts, diff));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Syncs the state of this operator to match that of the persist shard until the provided
     /// frontier
     async fn sync(
@@ -497,19 +639,12 @@ where
         // common case, we are also the writer, so we are waiting to read-back what we wrote
         while PartialOrder::less_than(&self.upper.borrow(), &target_upper) {
             let (mut batch, upper) = self
-                .remap_handle
                 .next()
                 .await
                 .expect("requested data after empty antichain");
             self.upper = upper;
             updates.append(&mut batch);
         }
-
-        self.source_upper.update_iter(
-            updates
-                .iter()
-                .map(|(src_ts, _dest_ts, diff)| (src_ts.clone(), *diff)),
-        );
 
         ReclockBatch {
             updates,
@@ -576,23 +711,70 @@ where
     /// chance of success.
     async fn append_batch(
         &mut self,
-        updates: Vec<(FromTime, IntoTime, Diff)>,
+        mut updates: Vec<(FromTime, IntoTime, Diff)>,
         new_upper: Antichain<IntoTime>,
     ) -> Result<ReclockBatch<FromTime, IntoTime>, Upper<IntoTime>> {
-        match self
-            .remap_handle
-            .compare_and_append(updates, self.upper.clone(), new_upper.clone())
-            .await
-        {
-            // We have successfully produced data in the remap collection so let's read back what
-            // we wrote to update our local state
-            Ok(()) => Ok(self.sync(new_upper.borrow()).await),
-            Err(actual_upper) => Err(actual_upper),
+        // First, we will sort the updates by time to be able to iterate over the groups
+        updates.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+        let mut native_frontier = self.native_source_upper.clone();
+
+        let mut frontier_updates = vec![];
+
+        for (ts, updates) in &updates.into_iter().group_by(|update| update.1.clone()) {
+            let deltas = native_frontier.update_iter(
+                updates
+                    .into_iter()
+                    .map(|(src_ts, _ts, diff)| (src_ts, diff)),
+            );
+
+            frontier_updates.extend(deltas.map(|(p, diff)| (p, ts.clone(), diff)));
+        }
+
+        consolidation::consolidate_updates(&mut frontier_updates);
+
+        let row_updates: Vec<_> = frontier_updates
+            .into_iter()
+            .map(|(partition, ts, diff)| ((SourceData::from(partition), ()), ts, diff))
+            .collect();
+
+        loop {
+            let upper = self.upper.clone();
+            let new_upper = new_upper.clone();
+            match self
+                .write_handle
+                .compare_and_append(row_updates.iter(), upper, new_upper.clone())
+                .await
+            {
+                Ok(Ok(Ok(()))) => return Ok(self.sync(new_upper.borrow()).await),
+                Ok(Ok(Err(upper))) => self.upper = upper.0,
+                Ok(Err(invalid_use)) => panic!("compare_and_append failed: {invalid_use}"),
+                // An external error means that the operation might have suceeded or failed but we
+                // don't know. In either case it is safe to retry because:
+                // * If it succeeded, then on retry we'll get an `Upper(_)` error as if some other
+                //   process raced us (but we actually raced ourselves). Since the operator is
+                //   built to handle concurrent instances of itself this safe to do and will
+                //   correctly re-sync its state. Once it resyncs we'll re-enter `mint` and notice
+                //   that there are no updates to add (because we just added them and don't know
+                //   it!) and the reclock operation will proceed normally.
+                // * If it failed, then we'll succeed on retry and proceed normally.
+                Err(external_err) => {
+                    tracing::debug!("compare_and_append failed: {external_err}");
+                    continue;
+                }
+            }
         }
     }
 
     pub async fn compact(&mut self, new_since: Antichain<IntoTime>) {
-        self.remap_handle.compact(new_since).await;
+        if !PartialOrder::less_equal(self.read_handle.since(), &new_since) {
+            panic!(
+                "ReclockFollower: `new_since` ({:?}) is not beyond \
+                `self.since` ({:?}).",
+                new_since,
+                self.read_handle.since(),
+            );
+        }
+        self.read_handle.maybe_downgrade_since(&new_since).await;
     }
 }
 
@@ -641,7 +823,6 @@ mod tests {
         ReclockOperator<
             Partitioned<PartitionId, MzOffset>,
             Timestamp,
-            impl RemapHandle<FromTime = Partitioned<PartitionId, MzOffset>, IntoTime = Timestamp>,
             impl Stream<Item = (Timestamp, Antichain<Timestamp>)>,
         >,
         ReclockFollower<Partitioned<PartitionId, MzOffset>, Timestamp>,
@@ -662,7 +843,8 @@ mod tests {
             (ts, upper)
         }));
 
-        let remap_handle = crate::source::reclock::compat::PersistHandle::new(
+        let (operator, initial_batch) = ReclockOperator::new(
+            clock_stream,
             Arc::clone(&*PERSIST_CACHE),
             metadata,
             as_of.clone(),
@@ -673,8 +855,6 @@ mod tests {
         )
         .await
         .unwrap();
-
-        let (operator, initial_batch) = ReclockOperator::new(remap_handle, clock_stream).await;
 
         let mut follower = ReclockFollower::new(as_of);
 

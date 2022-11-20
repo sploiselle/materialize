@@ -1539,14 +1539,14 @@ where
                         "replacing {:?}'s data shard {:?} with {:?}",
                         id, metadata.data_shard, new_metadata.data_shard
                     );
-                    to_delete_shards.push(metadata.data_shard);
+                    to_delete_shards.push((metadata.data_shard, format!("data shard {}", id)));
                 }
                 if metadata.remap_shard != new_metadata.remap_shard {
                     info!(
                         "replacing {:?}'s remap shard {:?} with {:?}",
                         id, metadata.data_shard, new_metadata.data_shard
                     );
-                    to_delete_shards.push(metadata.remap_shard);
+                    to_delete_shards.push((metadata.remap_shard, format!("remap shard {}", id)));
                 }
 
                 to_delete_shards
@@ -1579,7 +1579,7 @@ where
         metadata.collection_metadata.remap_shard = remap_shard;
     }
 
-    async fn truncate_shards(&mut self, shards: &[ShardId]) {
+    async fn truncate_shards(&mut self, shards: &[(ShardId, String)]) {
         // Open a persist client to delete unused shards.
         let persist_client = self
             .persist
@@ -1589,7 +1589,7 @@ where
             .await
             .unwrap();
 
-        for shard in shards {
+        for (shard_id, shard_purpose) in shards {
             let (mut write, mut read) = persist_client
                 .open::<crate::types::sources::data::SourceData, (), T, Diff>(
                     *shard_id,
@@ -1609,7 +1609,7 @@ where
                 .expect("failed to connect")
                 .expect("failed to truncate write handle");
 
-            info!("successfully truncated shard {:?}", shard);
+            info!("successfully truncated shard {:?}", shard_purpose);
         }
     }
 
@@ -1661,7 +1661,8 @@ where
         {
             Ok(()) => {}
             Err(e) => {
-                self.truncate_shards(&[migrate_to_shard]).await;
+                self.truncate_shards(&[(migrate_to_shard, "unused migration shard".to_string())])
+                    .await;
                 panic!(
                     "writing to new shard must succeed, but received error {:?}",
                     e
