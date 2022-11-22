@@ -4113,6 +4113,7 @@ name = "mz-repr"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitflags",
  "bytes",
  "chrono",
  "chrono-tz",
@@ -4132,6 +4133,7 @@ dependencies = [
  "num_enum",
  "once_cell",
  "ordered-float",
+ "paste",
  "proptest",
  "proptest-derive",
  "prost",
