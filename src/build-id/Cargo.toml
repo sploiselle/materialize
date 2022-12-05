@@ -13,5 +13,5 @@ repository = "https://github.com/MaterializeInc/materialize"
 
 [dependencies]
 anyhow = "1.0.66"
-libc = "0.2.137"
+libc = "0.2.138"
 mz-ore = { path = "../ore", features = ["async"] }
