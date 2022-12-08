@@ -194,7 +194,13 @@ impl Arbitrary for ComputeCommand<mz_repr::Timestamp> {
         prop_oneof![
             any::<InstanceConfig>().prop_map(ComputeCommand::CreateInstance),
             proptest::collection::vec(
-                any::<DataflowDescription<crate::plan::Plan, CollectionMetadata, mz_repr::Timestamp>>(),
+                any::<
+                    DataflowDescription<
+                        crate::plan::Plan,
+                        CollectionMetadata,
+                        mz_repr::Timestamp,
+                    >,
+                >(),
                 1..4
             )
             .prop_map(ComputeCommand::CreateDataflows),
