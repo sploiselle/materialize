@@ -1066,7 +1066,12 @@ where
             .collect();
         let context = match (spec, types.as_slice()) {
             (FuncSpec::Func(name), _) => {
-                format!("Cannot call function {}({})", name, types.join(", "))
+                let r = format!("Cannot call function {}({})", name, types.join(", "));
+                if name.item.starts_with("json_") {
+                    format!("{}\nUsing the jsonb version of the function might work", r)
+                } else {
+                    r
+                }
             }
             (FuncSpec::Op(name), [typ]) => format!("no overload for {} {}", name, typ),
             (FuncSpec::Op(name), [ltyp, rtyp]) => {
@@ -2503,9 +2508,6 @@ pub static PG_CATALOG_BUILTINS: Lazy<HashMap<&'static str, Func>> = Lazy::new(||
             params!(Timestamp) => AggregateFunc::MinTimestamp, 2142;
             params!(TimestampTz) => AggregateFunc::MinTimestampTz, 2143;
             params!(Numeric) => AggregateFunc::MinNumeric, oid::FUNC_MIN_NUMERIC_OID;
-        },
-        "json_agg" => Aggregate {
-            params!(Any) => Operation::unary(|_ecx, _e| bail_unsupported!("json_agg")) => Jsonb, 3175;
         },
         "jsonb_agg" => Aggregate {
             params!(Any) => Operation::unary_ordered(|ecx, e, order_by| {
