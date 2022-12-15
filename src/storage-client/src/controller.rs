@@ -31,6 +31,7 @@ use bytes::BufMut;
 use derivative::Derivative;
 use differential_dataflow::lattice::Lattice;
 use itertools::Itertools;
+use mz_ore::soft_assert;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -72,6 +73,7 @@ mod metrics_scraper;
 mod persist_handles;
 mod rehydration;
 mod remap_migration;
+mod shard_trunc_wal;
 mod statistics;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -82,7 +84,11 @@ pub static METADATA_COLLECTION: TypedCollection<GlobalId, DurableCollectionMetad
 pub static METADATA_EXPORT: TypedCollection<GlobalId, DurableExportMetadata<mz_repr::Timestamp>> =
     TypedCollection::new("storage-export-metadata-u64");
 
-pub static ALL_COLLECTIONS: &[&str] = &[METADATA_COLLECTION.name(), METADATA_EXPORT.name()];
+pub static ALL_COLLECTIONS: &[&str] = &[
+    METADATA_COLLECTION.name(),
+    METADATA_EXPORT.name(),
+    shard_trunc_wal::SHARD_TRUNC_WAL.name(),
+];
 
 // Do this dance so that we keep the storage controller expressed in terms of a generic timestamp `T`.
 struct MetadataExportFetcher;
@@ -1576,14 +1582,21 @@ where
             Arc::clone(&persist_clients),
         );
 
-        Self {
+        let mut c = Self {
             state: StorageControllerState::new(postgres_url, tx, now, postgres_factory, envd_epoch)
                 .await,
             hosts,
             internal_response_queue: rx,
             persist_location,
             persist: persist_clients,
-        }
+        };
+
+        // We expect this collection to be empty so waiting here for a read from
+        // stash is OK. If this becomes onerous, could be moved into a
+        // background task.
+        c.reconcile_shard_trunc_register().await;
+
+        c
     }
 
     /// Validate that a collection exists for all identifiers, and error if any do not.
@@ -1791,6 +1804,12 @@ where
     ///
     /// Any shards changed between the old and the new version will be
     /// decommissioned/eventually deleted.
+    ///
+    /// Note that this function expects to be called:
+    /// - While no source is currently using the shards identified in the
+    ///   current metadata.
+    /// - Before any sources begins using the shards identified in
+    ///   `new_metadata`.
     async fn rewrite_collection_metadata(
         &mut self,
         id: GlobalId,
@@ -1830,14 +1849,14 @@ where
             }
         };
 
+        self.register_shards_for_truncation(to_delete_shards.iter().map(|(shard, _)| *shard))
+            .await;
+
         // Perform the update.
         METADATA_COLLECTION
             .upsert(&mut self.state.stash, vec![(id, new_metadata.clone())])
             .await
             .expect("connect to stash");
-
-        // ???: If we crash after this do we have any means of reaping the
-        // leaked shards?
 
         self.truncate_shards(&to_delete_shards).await;
 
@@ -1857,6 +1876,18 @@ where
     }
 
     async fn truncate_shards(&mut self, shards: &[(ShardId, String)]) {
+        soft_assert!(
+            {
+                let mut all_registered = true;
+                for (shard, _) in shards {
+                    all_registered =
+                        self.shards_registered_for_truncation(shard).await && all_registered
+                }
+                all_registered
+            },
+            "truncated shards must be registered for truncation before calling truncate_shards"
+        );
+
         // Open a persist client to delete unused shards.
         let persist_client = self
             .persist
@@ -1891,6 +1922,10 @@ where
                 shard_id
             );
         }
+
+        let truncated_shards = shards.iter().map(|(shard, _)| *shard).collect();
+        self.clear_from_shard_trunc_register(&truncated_shards)
+            .await;
     }
 
     /// For appropriate data sources, migrate the remap collection correlated
