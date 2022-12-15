@@ -1081,6 +1081,10 @@ impl Coordinator {
         self.catalog_transact(Some(&Session::dummy()), linked_cluster_ops)
             .await?;
 
+        // Signal to the storage controller that it is now freee to reconcile
+        // its state with what it has learned from the adapter.
+        self.controller.storage.reconcile_state().await;
+
         info!("coordinator init: bootstrap complete");
         Ok(())
     }

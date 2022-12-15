@@ -216,6 +216,12 @@ def test_upgrade_from_version(
             f"check-{style}from-{version_glob}-{filter}.td",
         )
 
+    # Ensure we can restart after checking the upgrade tests.
+    c.kill("materialized")
+    c.rm("materialized")
+    c.up("materialized")
+    c.wait_for_materialized("materialized")
+
 
 def ssl_services() -> Tuple[Kafka, SchemaRegistry, Testdrive]:
     """sets"""

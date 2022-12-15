@@ -31,6 +31,7 @@ use bytes::BufMut;
 use derivative::Derivative;
 use differential_dataflow::lattice::Lattice;
 use itertools::Itertools;
+use mz_ore::soft_assert;
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
@@ -68,6 +69,7 @@ use crate::types::sinks::{
 use crate::types::sources::{IngestionDescription, MzOffset, SourceData, SourceExport};
 
 mod collection_mgmt;
+mod command_wals;
 mod hosts;
 mod metrics_scraper;
 mod persist_handles;
@@ -83,7 +85,11 @@ pub static METADATA_COLLECTION: TypedCollection<GlobalId, DurableCollectionMetad
 pub static METADATA_EXPORT: TypedCollection<GlobalId, DurableExportMetadata<mz_repr::Timestamp>> =
     TypedCollection::new("storage-export-metadata-u64");
 
-pub static ALL_COLLECTIONS: &[&str] = &[METADATA_COLLECTION.name(), METADATA_EXPORT.name()];
+pub static ALL_COLLECTIONS: &[&str] = &[
+    METADATA_COLLECTION.name(),
+    METADATA_EXPORT.name(),
+    command_wals::SHARD_FINALIZATION.name(),
+];
 
 // Do this dance so that we keep the storage controller expressed in terms of a generic timestamp `T`.
 struct MetadataExportFetcher;
@@ -359,6 +365,11 @@ pub trait StorageController: Debug + Send {
 
     /// Considers all nodes not currently used as orphans and removes those from the orchestrator.
     async fn remove_orphans(&mut self, next_id: GlobalId) -> Result<(), anyhow::Error>;
+
+    /// Signal to the controller that the adapter has populated all of its
+    /// initial state and the controller can reconcile (i.e. drop) any unclaimed
+    /// resources.
+    async fn reconcile_state(&mut self);
 }
 
 /// Compaction policies for collections maintained by `Controller`.
@@ -757,7 +768,11 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
                 })*
             }
         }
-        init_collections!(&METADATA_COLLECTION, &METADATA_EXPORT);
+        init_collections!(
+            &METADATA_COLLECTION,
+            &METADATA_EXPORT,
+            &command_wals::SHARD_FINALIZATION
+        );
         stash
             .append(&batches)
             .await
@@ -1099,6 +1114,7 @@ where
 
                     // Provision a storage host for the ingestion.
                     let client = self.hosts.provision(id, desc.host_config.clone()).await?;
+
                     let augmented_ingestion = CreateSourceCommand {
                         id,
                         description: desc,
@@ -1618,6 +1634,10 @@ where
     async fn remove_orphans(&mut self, next_id: GlobalId) -> Result<(), anyhow::Error> {
         self.hosts.remove_orphans(next_id).await
     }
+
+    async fn reconcile_state(&mut self) {
+        self.reconcile_shards().await
+    }
 }
 
 /// A wrapper struct that presents the adapter token to a format that is understandable by persist
@@ -1663,6 +1683,9 @@ where
     Self: StorageController<Timestamp = T>,
 {
     /// Create a new storage controller from a client it should wrap.
+    ///
+    /// Note that when creating a new storage controller, you must also
+    /// reconcile it with the previous state.
     pub async fn new(
         build_info: &'static BuildInfo,
         postgres_url: String,
@@ -1902,6 +1925,12 @@ where
     ///
     /// Any shards changed between the old and the new version will be
     /// decommissioned/eventually deleted.
+    ///
+    /// Note that this function expects to be called:
+    /// - While no source is currently using the shards identified in the
+    ///   current metadata.
+    /// - Before any sources begins using the shards identified in
+    ///   `new_metadata`.
     async fn rewrite_collection_metadata(
         &mut self,
         id: GlobalId,
@@ -1941,6 +1970,9 @@ where
             }
         };
 
+        self.register_shards_for_finalization(to_delete_shards.iter().map(|(shard, _)| *shard))
+            .await;
+
         // Perform the update.
         METADATA_COLLECTION
             .upsert(&mut self.state.stash, vec![(id, new_metadata.clone())])
@@ -1969,6 +2001,18 @@ where
     /// The string accompanying the `ShardId` is the shard's "purpose",
     /// necessary to open read and write handles to the shard.
     async fn finalize_shards(&mut self, shards: &[(ShardId, String)]) {
+        soft_assert!(
+            {
+                let mut all_registered = true;
+                for (shard, _) in shards {
+                    all_registered =
+                        self.shards_registered_for_finalization(*shard).await && all_registered
+                }
+                all_registered
+            },
+            "finalized shards must be registered before calling finalize_shards"
+        );
+
         // Open a persist client to delete unused shards.
         let persist_client = self
             .persist
@@ -1988,21 +2032,35 @@ where
                 .expect("invalid persist usage");
 
             read.downgrade_since(&Antichain::new()).await;
-            write
-                .append(
-                    Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
-                    write.upper().clone(),
-                    Antichain::new(),
-                )
-                .await
-                .expect("failed to connect")
-                .expect("failed to truncate write handle");
 
             info!(
-                "successfully truncated shard's write handle for {:?}",
+                "successfully finalized read handle for shard {:?}",
                 shard_id
             );
+
+            if write.upper().is_empty() {
+                info!("write handle for shard {:?} already finalized", shard_id);
+            } else {
+                write
+                    .append(
+                        Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
+                        write.upper().clone(),
+                        Antichain::new(),
+                    )
+                    .await
+                    .expect("failed to connect")
+                    .expect("failed to truncate write handle");
+
+                info!(
+                    "successfully finalized write handle for shard {:?}",
+                    shard_id
+                );
+            }
         }
+
+        let truncated_shards = shards.iter().map(|(shard, _)| *shard).collect();
+        self.clear_from_shard_finalization_register(&truncated_shards)
+            .await;
     }
 
     /// For appropriate data sources, determine if the remap collection correlated

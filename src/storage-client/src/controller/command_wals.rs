@@ -29,7 +29,7 @@ use crate::controller::{ProtoStorageCommand, ProtoStorageResponse};
 
 use super::Controller;
 
-pub(super) static SHARD_FINALIZATION_WAL: TypedCollection<ShardId, ()> =
+pub(super) static SHARD_FINALIZATION: TypedCollection<ShardId, ()> =
     TypedCollection::new("storage-shards-to-finalize");
 
 impl<T> Controller<T>
@@ -41,9 +41,9 @@ where
     Self: super::StorageController<Timestamp = T>,
 {
     /// `true` if shard is in register for shards marked for finalization.
-    pub(super) async fn shards_registered_for_finalization(&mut self, shard: &ShardId) -> bool {
-        SHARD_FINALIZATION_WAL
-            .peek_key_one(&mut self.state.stash, shard)
+    pub(super) async fn shards_registered_for_finalization(&mut self, shard: ShardId) -> bool {
+        SHARD_FINALIZATION
+            .peek_key_one(&mut self.state.stash, &shard)
             .await
             .expect("must be able to connect to stash")
             .is_some()
@@ -60,13 +60,13 @@ where
     where
         I: IntoIterator<Item = ShardId>,
     {
-        SHARD_FINALIZATION_WAL
+        SHARD_FINALIZATION
             .insert_without_overwrite(
                 &mut self.state.stash,
-                entries.into_iter().map(|shard_id| (shard_id, ())),
+                entries.into_iter().map(|key| (key, ())),
             )
             .await
-            .expect("must be able to write to stash");
+            .expect("must be able to write to stash")
     }
 
     /// Removes the shard from the finalization register.
@@ -77,17 +77,17 @@ where
         &mut self,
         shards: &BTreeSet<ShardId>,
     ) {
-        SHARD_FINALIZATION_WAL
+        SHARD_FINALIZATION
             .delete(&mut self.state.stash, |k, _v| shards.contains(k))
             .await
-            .expect("must be able to write to stash");
+            .expect("must be able to write to stash")
     }
 
     /// Reconcile the state of `SHARD_FINALIZATION_WAL` with
     /// `super::METADATA_COLLECTION` on boot.
-    pub(super) async fn reconcile_shard_finalization_register(&mut self) {
-        // Get all shards marked for truncation.
-        let registered_shards: BTreeSet<_> = SHARD_FINALIZATION_WAL
+    pub(super) async fn reconcile_shards(&mut self) {
+        // Get all shards in the WAL.
+        let registered_shards: BTreeSet<_> = SHARD_FINALIZATION
             .peek_one(&mut self.state.stash)
             .await
             .expect("must be able to read from stash")
@@ -117,43 +117,37 @@ where
             .flatten()
             .collect();
 
-        // From all shards, remove shards that belong to collections which have
-        // been truncated.
+        // Consider shards in use if they are still attached to a collection.
         let in_use_shards: BTreeSet<_> = all_shard_data
-            .iter()
+            .into_iter()
             .filter_map(|(id, shards)| {
                 self.state
                     .collections
-                    .get(id)
-                    .map(|c| {
-                        // Truncated shard, not in use.
-                        if c.implied_capability.is_empty() {
-                            None
-                        } else {
-                            Some(shards.to_vec())
-                        }
-                    })
-                    .flatten()
+                    .get(&id)
+                    .map(|_| Some(shards.to_vec()))
             })
             .flatten()
+            .flatten()
             .collect();
+
+        // Determine all shards that were marked to drop but are still in use by
+        // some present collection.
+        let shard_ids_to_keep = registered_shards
+            .intersection(&in_use_shards)
+            .cloned()
+            .collect();
+
+        // Remove any shards that are currently in use from shard finalization register.
+        self.clear_from_shard_finalization_register(&shard_ids_to_keep)
+            .await;
 
         // Determine all shards that are registered that are not in use.
         let shard_id_desc_to_truncate: Vec<_> = registered_shards
             .difference(&in_use_shards)
             .cloned()
-            .map(|shard_id| (shard_id, "truncating replaced shard".to_string()))
+            .map(|shard_id| (shard_id, "finalizing unused shard".to_string()))
             .collect();
 
         self.finalize_shards(&shard_id_desc_to_truncate).await;
-
-        // Clear finalization register now that everything is reconciled.
-        self.clear_from_shard_finalization_register(
-            &registered_shards
-                .difference(&in_use_shards)
-                .cloned()
-                .collect(),
-        )
-        .await;
     }
 }
