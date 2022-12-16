@@ -35,12 +35,12 @@ use crate::adt::date::Date;
 use crate::adt::interval::Interval;
 use crate::adt::jsonb::{Jsonb, JsonbRef};
 use crate::adt::numeric::{Numeric, NumericMaxScale};
-use crate::adt::range::Range;
+use crate::adt::range::{Range, RangeBoundDesc, RangeBoundDescValue};
 use crate::adt::system::{Oid, PgLegacyChar, RegClass, RegProc, RegType};
 use crate::adt::timestamp::{CheckedTimestamp, TimestampError};
 use crate::adt::varchar::{VarChar, VarCharMaxLength};
-use crate::GlobalId;
 use crate::{ColumnName, ColumnType, DatumList, DatumMap};
+use crate::{GlobalId, RowPacker};
 use crate::{Row, RowArena};
 
 pub use crate::relation_and_scalar::proto_scalar_type::ProtoRecordField;
@@ -729,6 +729,19 @@ impl<'a> Datum<'a> {
         }
     }
 
+    /// Unwraps the rarange value within this datum.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the datum is not [`Datum::Range`].
+    #[track_caller]
+    pub fn unwrap_range(&self) -> Range {
+        match self {
+            Datum::Range(range) => *range,
+            _ => panic!("Datum::unwrap_range called on {:?}", self),
+        }
+    }
+
     /// Reports whether this datum is an instance of the specified column type.
     pub fn is_instance_of(self, column_type: &ColumnType) -> bool {
         fn is_instance_of_scalar(datum: Datum, scalar_type: &ScalarType) -> bool {
@@ -1207,7 +1220,9 @@ pub enum ScalarType {
     /// scale specifies the number of digits after the decimal point.
     ///
     /// [`NUMERIC_DATUM_MAX_PRECISION`]: crate::adt::numeric::NUMERIC_DATUM_MAX_PRECISION
-    Numeric { max_scale: Option<NumericMaxScale> },
+    Numeric {
+        max_scale: Option<NumericMaxScale>,
+    },
     /// The type of [`Datum::Date`].
     Date,
     /// The type of [`Datum::Time`].
@@ -1232,7 +1247,9 @@ pub enum ScalarType {
     ///
     /// Note that a `length` of `None` is used in special cases, such as
     /// creating lists.
-    Char { length: Option<CharLength> },
+    Char {
+        length: Option<CharLength>,
+    },
     /// Stored as [`Datum::String`], but can optionally express a limit on the
     /// string's length.
     VarChar {
@@ -1295,6 +1312,9 @@ pub enum ScalarType {
     Int2Vector,
     /// A Materialize timestamp.
     MzTimestamp,
+    Range {
+        element_type: Box<ScalarType>,
+    },
 }
 
 impl RustType<ProtoRecordField> for (ColumnName, ColumnType) {
@@ -1377,6 +1397,9 @@ impl RustType<ProtoScalarType> for ScalarType {
                     custom_id: custom_id.map(|id| id.into_proto()),
                 })),
                 ScalarType::MzTimestamp => MzTimestamp(()),
+                ScalarType::Range { element_type } => Range(Box::new(ProtoRange {
+                    element_type: Some(element_type.into_proto()),
+                })),
             }),
         }
     }
@@ -1449,6 +1472,13 @@ impl RustType<ProtoScalarType> for ScalarType {
                 custom_id: x.custom_id.map(|id| id.into_rust().unwrap()),
             }),
             MzTimestamp(()) => Ok(ScalarType::MzTimestamp),
+            Range(x) => Ok(ScalarType::Range {
+                element_type: Box::new(
+                    x.element_type
+                        .map(|x| *x)
+                        .into_rust_if_some("ProtoRange::element_type")?,
+                ),
+            }),
         }
     }
 }
@@ -2097,6 +2127,9 @@ impl<'a> ScalarType {
             // to support Char values of different lengths in e.g. lists.
             Char { .. } => Char { length: None },
             VarChar { .. } => VarChar { max_length: None },
+            Range { element_type } => Range {
+                element_type: Box::new(element_type.without_modifiers()),
+            },
             v => v.clone(),
         }
     }
@@ -2169,6 +2202,18 @@ impl<'a> ScalarType {
         match self {
             ScalarType::VarChar { max_length, .. } => *max_length,
             _ => panic!("ScalarType::unwrap_varchar_max_length called on {:?}", self),
+        }
+    }
+
+    /// Returns the [`ScalarType`] of elements in a [`ScalarType::Range`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on anything other than a [`ScalarType::Map`].
+    pub fn unwrap_range_element_type(&self) -> &ScalarType {
+        match self {
+            ScalarType::Range { element_type } => &**element_type,
+            _ => panic!("ScalarType::unwrap_range_element_type called on {:?}", self),
         }
     }
 
@@ -2292,7 +2337,9 @@ impl<'a> ScalarType {
                     custom_id: oid_r,
                 },
             ) => l.eq_inner(r, structure_only) && (oid_l == oid_r || structure_only),
-            (Array(a), Array(b)) => a.eq_inner(b, structure_only),
+            (Array(a), Array(b)) | (Range { element_type: a }, Range { element_type: b }) => {
+                a.eq_inner(b, structure_only)
+            }
             (
                 Record {
                     fields: fields_a,
@@ -2540,6 +2587,7 @@ impl<'a> ScalarType {
                 Datum::MzTimestamp(crate::Timestamp::MAX),
             ])
         });
+        static RANGE: Lazy<Row> = Lazy::new(|| Row::pack_slice(&[]));
 
         match self {
             ScalarType::Bool => (*BOOL).iter(),
@@ -2574,6 +2622,7 @@ impl<'a> ScalarType {
             ScalarType::RegClass => (*REGCLASS).iter(),
             ScalarType::Int2Vector => (*INT2VECTOR).iter(),
             ScalarType::MzTimestamp => (*MZTIMESTAMP).iter(),
+            ScalarType::Range { .. } => (*RANGE).iter(),
         }
     }
 
@@ -2632,6 +2681,9 @@ impl<'a> ScalarType {
                 value_type: todo!(),
                 custom_id: todo!(),
             },
+            ScalarType::Range {
+                element_type: todo!(),
+            }
             */
         ]
     }
@@ -2696,6 +2748,10 @@ impl Arbitrary for ScalarType {
                             custom_id: id,
                         }
                     }),
+                    // Range
+                    inner.clone().prop_map(|x| ScalarType::Range {
+                        element_type: Box::new(x),
+                    }),
                     // Record
                     {
                         // Now we have to use `inner` to create a Record type. First we
@@ -2715,7 +2771,7 @@ impl Arbitrary for ScalarType {
                         (fields_strat, any::<Option<GlobalId>>()).prop_map(|(fields, custom_id)| {
                             ScalarType::Record { fields, custom_id }
                         })
-                    }
+                    },
                 ]
             },
         )
@@ -2771,6 +2827,7 @@ pub enum PropDatum {
     Array(PropArray),
     List(PropList),
     Map(PropDict),
+    Range(PropRange),
 
     JsonNull,
     Uuid(Uuid),
@@ -2865,6 +2922,105 @@ fn arb_list(element_strategy: BoxedStrategy<PropDatum>) -> BoxedStrategy<PropLis
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct PropRange(
+    Row,
+    Option<(
+        (Option<Box<PropDatum>>, bool),
+        (Option<Box<PropDatum>>, bool),
+    )>,
+);
+
+fn arb_range_data() -> BoxedStrategy<(PropDatum, PropDatum)> {
+    prop_oneof![(
+        any::<i32>().prop_map(PropDatum::Int32),
+        any::<i32>().prop_map(PropDatum::Int32),
+    ),]
+    .boxed()
+}
+
+fn arb_range() -> BoxedStrategy<PropRange> {
+    // ???: any way to enforce ordering on these?
+    (
+        any::<u16>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        arb_range_data(),
+    )
+        .prop_map(
+            |(split, lower_inf, lower_inc, upper_inf, upper_inc, (a, b))| {
+                let mut row = Row::default();
+                let mut packer = row.packer();
+                let r = if split % 32 == 0 {
+                    packer.push_empty_range();
+                    None
+                } else {
+                    let a_datum = Datum::from(&a);
+                    let b_datum = Datum::from(&b);
+                    let b_is_lower = b_datum < a_datum;
+
+                    drop(a_datum);
+                    drop(b_datum);
+
+                    let (lower, upper) = if b_is_lower { (b, a) } else { (a, b) };
+
+                    packer
+                        .push_range_with(
+                            RangeBoundDesc {
+                                inclusive: lower_inc,
+                                value: if lower_inf {
+                                    RangeBoundDescValue::Infinite
+                                } else {
+                                    RangeBoundDescValue::Finite {
+                                        value: |row: &mut RowPacker| -> Result<(), String> {
+                                            Ok(row.push(&Datum::from(&lower)))
+                                        },
+                                    }
+                                },
+                            },
+                            RangeBoundDesc {
+                                inclusive: upper_inc,
+                                value: if upper_inf {
+                                    RangeBoundDescValue::Infinite
+                                } else {
+                                    RangeBoundDescValue::Finite {
+                                        value: |row: &mut RowPacker| -> Result<(), String> {
+                                            Ok(row.push(&Datum::from(&upper)))
+                                        },
+                                    }
+                                },
+                            },
+                        )
+                        .unwrap();
+
+                    Some((
+                        (
+                            if lower_inf {
+                                None
+                            } else {
+                                Some(Box::new(lower))
+                            },
+                            lower_inc,
+                        ),
+                        (
+                            if upper_inf {
+                                None
+                            } else {
+                                Some(Box::new(upper))
+                            },
+                            lower_inc,
+                        ),
+                    ))
+                };
+
+                PropRange(row, r)
+            },
+        )
+        .boxed()
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct PropDict(Row, Vec<(String, PropDatum)>);
 
 fn arb_dict(element_strategy: BoxedStrategy<PropDatum>) -> BoxedStrategy<PropDict> {
@@ -2949,6 +3105,11 @@ impl<'a> From<&'a PropDatum> for Datum<'a> {
                 let map = row.unpack_first().unwrap_map();
                 Datum::Map(map)
             }
+            Range(PropRange(row, _)) => {
+                let d = row.unpack_first();
+                assert!(matches!(d, Datum::Range(_)));
+                d
+            }
             JsonNull => Datum::JsonNull,
             Uuid(u) => Datum::from(*u),
             Dummy => Datum::Dummy,
@@ -3031,6 +3192,33 @@ mod tests {
             let row = Row::pack(&datums);
             let unpacked = row.unpack();
             assert_eq!(datums, unpacked);
+        }
+
+        #[test]
+        fn range_packing_unpacks_correctly(range in arb_range()) {
+            let PropRange(row, range) = range;
+            let row = row.unpack_first();
+            let d = row.unwrap_range();
+
+            let (lower, lower_inc, upper, upper_inc, inner_u) = match (range, d.inner) {
+                (Some(((lower, lower_inc), (upper, upper_inc))), Some(inner_u)) => (lower, lower_inc, upper, upper_inc, inner_u),
+                (None, None) => return Ok(()),
+                _ => panic!("inequivalent row packing"),
+            };
+
+            for (bound, inc, bound_u, bound_u_inc) in [
+                (lower, lower_inc, inner_u.lower.bound, inner_u.lower.inclusive),
+                (upper, upper_inc, inner_u.upper.bound, inner_u.upper.inclusive),
+            ] {
+                assert_eq!(inc, bound_u_inc);
+                match (bound, bound_u) {
+                    (None, None) => continue,
+                    (Some(p), Some(b)) => {
+                        assert_eq!(Datum::from(&*p), b.datum());
+                    }
+                    _ => panic!("inequivalent row packing"),
+                }
+            }
         }
     }
 }
