@@ -31,7 +31,7 @@ bitflags! {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Range<'a> {
     /// None value represents empty range
-    pub inner: Option<RangeInner<'a>>,
+    pub inner: Option<RangeInner<DatumNested<'a>>>,
 }
 
 impl<'a> Display for Range<'a> {
@@ -59,12 +59,15 @@ impl<'a> Range<'a> {
 
 /// Holds the upper and lower `DatumRangeBound`s for non-empty ranges.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct RangeInner<'a> {
-    pub lower: RangeLowerBound<'a>,
-    pub upper: RangeUpperBound<'a>,
+pub struct RangeInner<B: for<'a> Bounds<'a>> {
+    pub lower: RangeLowerBound<B>,
+    pub upper: RangeUpperBound<B>,
 }
 
-impl<'a> Display for RangeInner<'a> {
+impl<B> Display for RangeInner<B>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(if self.lower.inclusive { "[" } else { "(" })?;
         Display::fmt(&self.lower, f)?;
@@ -74,7 +77,10 @@ impl<'a> Display for RangeInner<'a> {
     }
 }
 
-impl<'a> Ord for RangeInner<'a> {
+impl<B> Ord for RangeInner<B>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.lower
             .cmp(&other.lower)
@@ -82,7 +88,10 @@ impl<'a> Ord for RangeInner<'a> {
     }
 }
 
-impl<'a> PartialOrd for RangeInner<'a> {
+impl<B> PartialOrd for RangeInner<B>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -90,22 +99,28 @@ impl<'a> PartialOrd for RangeInner<'a> {
 
 /// Represents a terminal point of a range.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct RangeBound<'a, const UPPER: bool = false> {
+pub struct RangeBound<B: for<'a> Bounds<'a>, const UPPER: bool = false> {
     pub inclusive: bool,
     /// None value represents an infinite bound.
-    pub bound: Option<DatumNested<'a>>,
+    pub bound: Option<B>,
 }
 
-impl<'a, const UPPER: bool> Display for RangeBound<'a, UPPER> {
+impl<B, const UPPER: bool> Display for RangeBound<B, UPPER>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.bound {
             None => Ok(()),
-            Some(bound) => Display::fmt(&bound.datum(), f),
+            Some(bound) => Display::fmt(&bound, f),
         }
     }
 }
 
-impl<'a, const UPPER: bool> Ord for RangeBound<'a, UPPER> {
+impl<B, const UPPER: bool> Ord for RangeBound<B, UPPER>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn cmp(&self, other: &Self) -> Ordering {
         let ordering = match self.bound.cmp(&other.bound) {
             Ordering::Equal => {
@@ -127,27 +142,39 @@ impl<'a, const UPPER: bool> Ord for RangeBound<'a, UPPER> {
     }
 }
 
-impl<'a, const UPPER: bool> PartialOrd for RangeBound<'a, UPPER> {
+impl<B, const UPPER: bool> PartialOrd for RangeBound<B, UPPER>
+where
+    B: for<'a> Bounds<'a>,
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+pub trait Bounds<'a>: Debug + Ord + PartialOrd + Eq + PartialEq + Display {}
+impl<'a, B: Debug + Ord + PartialOrd + Eq + PartialEq + Display> Bounds<'a> for B {}
+
+pub trait BoundOps<'a>: Bounds<'a> + Into<Datum<'a>> {}
+impl<'a, B: Bounds<'a> + Into<Datum<'a>>> BoundOps<'a> for B {}
+
 /// A `RangeBound` that sorts correctly for use as a lower bound.
-pub type RangeLowerBound<'a> = RangeBound<'a, false>;
+pub type RangeLowerBound<B> = RangeBound<B, false>;
 
 /// A `RangeBound` that sorts correctly for use as an upper bound.
-pub type RangeUpperBound<'a> = RangeBound<'a, true>;
+pub type RangeUpperBound<B> = RangeBound<B, true>;
 
-impl<'a, const UPPER: bool> RangeBound<'a, UPPER> {
+impl<'a, B, const UPPER: bool> RangeBound<B, UPPER>
+where
+    B: BoundOps<'a>,
+{
     /// Determines where `elem` lies in relation to the range bound.
     ///
     /// # Panics
     /// - If `self.bound.datum()` is not convertible to `T`.
     fn elem_cmp<T: RangeOps<'a>>(&self, elem: &T) -> Ordering {
         match self.bound.map(|bound| {
-            <T>::try_from(bound.datum())
-                .unwrap_or_else(|_| panic!("cannot take {} to {}", bound.datum(), type_name::<T>()))
+            <T>::try_from(bound.into())
+                .unwrap_or_else(|_| panic!("cannot take {} to {}", bound, type_name::<T>()))
         }) {
             None if UPPER => Ordering::Greater,
             None => Ordering::Less,
@@ -243,7 +270,7 @@ mod tests {
     // TODO: Once SQL supports this, the test can be moved into SLT.
     #[test]
     fn test_range_contains() {
-        fn test_range_contains_inner(
+        fn test_range_contains_inner<'a>(
             range: Range,
             contains: Option<i32>,
             does_not_contain: Option<i32>,
