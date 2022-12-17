@@ -3009,7 +3009,7 @@ fn arb_range() -> BoxedStrategy<PropRange> {
                             } else {
                                 Some(Box::new(upper))
                             },
-                            lower_inc,
+                            upper_inc,
                         ),
                     ))
                 };
@@ -3196,22 +3196,22 @@ mod tests {
 
         #[test]
         fn range_packing_unpacks_correctly(range in arb_range()) {
-            let PropRange(row, range) = range;
+            let PropRange(row, prop_range) = range;
             let row = row.unpack_first();
             let d = row.unwrap_range();
 
-            let (lower, lower_inc, upper, upper_inc, inner_u) = match (range, d.inner) {
-                (Some(((lower, lower_inc), (upper, upper_inc))), Some(inner_u)) => (lower, lower_inc, upper, upper_inc, inner_u),
+            let (((prop_lower, prop_lower_inc), (prop_upper, prop_upper_inc)), crate::adt::range::RangeInner {lower, upper}) = match (prop_range, d.inner) {
+                (Some(prop_values), Some(inner_range)) => (prop_values, inner_range),
                 (None, None) => return Ok(()),
                 _ => panic!("inequivalent row packing"),
             };
 
-            for (bound, inc, bound_u, bound_u_inc) in [
-                (lower, lower_inc, inner_u.lower.bound, inner_u.lower.inclusive),
-                (upper, upper_inc, inner_u.upper.bound, inner_u.upper.inclusive),
+            for (prop_bound, prop_bound_inc, inner_bound, inner_bound_inc) in [
+                (prop_lower, prop_lower_inc, lower.bound, lower.inclusive),
+                (prop_upper, prop_upper_inc, upper.bound, upper.inclusive),
             ] {
-                assert_eq!(inc, bound_u_inc);
-                match (bound, bound_u) {
+                assert_eq!(prop_bound_inc, inner_bound_inc);
+                match (prop_bound, inner_bound) {
                     (None, None) => continue,
                     (Some(p), Some(b)) => {
                         assert_eq!(Datum::from(&*p), b.datum());

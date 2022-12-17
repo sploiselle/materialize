@@ -105,6 +105,7 @@ impl TypeCategory {
             }
             ScalarType::Map { .. } => Self::Pseudo,
             ScalarType::MzTimestamp => Self::Numeric,
+            ScalarType::Range { .. } => todo!(),
         }
     }
 
@@ -828,6 +829,9 @@ impl From<ScalarBaseType> for ParamType {
         let s = match s {
             Array | List | Map | Record => {
                 panic!("use polymorphic parameters rather than {:?}", s);
+            }
+            Range => {
+                panic!("use a pseudo polymorphic range type rather than {:?}", s);
             }
             Bool => ScalarType::Bool,
             Int16 => ScalarType::Int16,

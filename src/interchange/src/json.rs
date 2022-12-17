@@ -210,6 +210,7 @@ impl ToJson for TypedDatum<'_> {
                     serde_json::Value::Object(elements)
                 }
                 ScalarType::MzTimestamp => json!(datum.unwrap_mz_timestamp().to_string()),
+                ScalarType::Range { .. } => json!(datum.unwrap_range().to_string()),
             }
         }
     }
@@ -324,6 +325,7 @@ fn build_row_schema_field(
             })
         }
         ScalarType::MzTimestamp => json!("string"),
+        ScalarType::Range { .. } => json!("string"),
     };
     if typ.nullable {
         field_type = json!(["null", field_type]);

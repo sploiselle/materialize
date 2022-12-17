@@ -22,8 +22,6 @@ use fallible_iterator::FallibleIterator;
 use hmac::{Hmac, Mac};
 use itertools::Itertools;
 use md5::{Digest, Md5};
-use mz_ore::result::ResultExt;
-use mz_repr::adt::timestamp::{CheckedTimestamp, TimestampLike};
 use num::traits::CheckedNeg;
 use proptest_derive::Arbitrary;
 use regex::RegexBuilder;
@@ -35,6 +33,7 @@ use mz_lowertest::MzReflect;
 use mz_ore::cast;
 use mz_ore::fmt::FormatBuffer;
 use mz_ore::option::OptionExt;
+use mz_ore::result::ResultExt;
 use mz_pgrepr::Type;
 use mz_proto::{IntoRustIfSome, ProtoType, RustType, TryFromProtoError};
 use mz_repr::adt::array::ArrayDimension;
@@ -43,6 +42,7 @@ use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::JsonbRef;
 use mz_repr::adt::numeric::{self, DecimalLike, Numeric, NumericMaxScale};
 use mz_repr::adt::regex::any_regex;
+use mz_repr::adt::timestamp::{CheckedTimestamp, TimestampLike};
 use mz_repr::chrono::any_naive_datetime;
 use mz_repr::{strconv, ColumnName, ColumnType, Datum, DatumType, Row, RowArena, ScalarType};
 
@@ -5470,6 +5470,14 @@ where
             stringify_datum(buf.nonnull_buffer(), d, &ScalarType::Int16)
         }),
         MzTimestamp { .. } => Ok(strconv::format_mz_timestamp(buf, d.unwrap_mz_timestamp())),
+        Range { element_type } => strconv::format_range(
+            buf,
+            &d.unwrap_range().inner.map(Box::new),
+            |buf, d| match d {
+                Some(d) => stringify_datum(buf.nonnull_buffer(), d.datum(), element_type),
+                None => Ok::<_, EvalError>(buf.write_null()),
+            },
+        ),
     }
 }
 

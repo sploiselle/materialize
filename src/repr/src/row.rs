@@ -347,6 +347,18 @@ pub struct DatumNested<'a> {
     val: &'a [u8],
 }
 
+impl<'a> From<DatumNested<'a>> for Datum<'a> {
+    fn from(d: DatumNested<'a>) -> Self {
+        d.datum()
+    }
+}
+
+impl<'a> std::fmt::Display for DatumNested<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        std::fmt::Display::fmt(&self.datum(), f)
+    }
+}
+
 impl<'a> DatumNested<'a> {
     // Figure out which bytes `read_datum` returns (e.g. including the tag),
     // and then store a reference to those bytes, so we can "replay" this same

@@ -31,7 +31,7 @@ bitflags! {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Range<'a> {
     /// None value represents empty range
-    pub inner: Option<RangeInner<DatumNested<'a>>>,
+    pub inner: Option<RangeInner<'a>>,
 }
 
 impl<'a> Display for Range<'a> {
@@ -59,15 +59,14 @@ impl<'a> Range<'a> {
 
 /// Holds the upper and lower `DatumRangeBound`s for non-empty ranges.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct RangeInner<B: for<'a> Bounds<'a>> {
+pub struct RangeInnerGeneric<B> {
     pub lower: RangeLowerBound<B>,
     pub upper: RangeUpperBound<B>,
 }
 
-impl<B> Display for RangeInner<B>
-where
-    B: for<'a> Bounds<'a>,
-{
+pub type RangeInner<'a> = RangeInnerGeneric<DatumNested<'a>>;
+
+impl<'a> Display for RangeInner<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(if self.lower.inclusive { "[" } else { "(" })?;
         Display::fmt(&self.lower, f)?;
@@ -77,10 +76,7 @@ where
     }
 }
 
-impl<B> Ord for RangeInner<B>
-where
-    B: for<'a> Bounds<'a>,
-{
+impl<'a> Ord for RangeInner<'a> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.lower
             .cmp(&other.lower)
@@ -88,10 +84,7 @@ where
     }
 }
 
-impl<B> PartialOrd for RangeInner<B>
-where
-    B: for<'a> Bounds<'a>,
-{
+impl<'a> PartialOrd for RangeInner<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -99,28 +92,22 @@ where
 
 /// Represents a terminal point of a range.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct RangeBound<B: for<'a> Bounds<'a>, const UPPER: bool = false> {
+pub struct RangeBound<B, const UPPER: bool = false> {
     pub inclusive: bool,
     /// None value represents an infinite bound.
     pub bound: Option<B>,
 }
 
-impl<B, const UPPER: bool> Display for RangeBound<B, UPPER>
-where
-    B: for<'a> Bounds<'a>,
-{
+impl<'a, const UPPER: bool> Display for RangeBound<DatumNested<'a>, UPPER> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.bound {
+        match &self.bound {
             None => Ok(()),
-            Some(bound) => Display::fmt(&bound, f),
+            Some(bound) => Display::fmt(bound, f),
         }
     }
 }
 
-impl<B, const UPPER: bool> Ord for RangeBound<B, UPPER>
-where
-    B: for<'a> Bounds<'a>,
-{
+impl<'a, const UPPER: bool> Ord for RangeBound<DatumNested<'a>, UPPER> {
     fn cmp(&self, other: &Self) -> Ordering {
         let ordering = match self.bound.cmp(&other.bound) {
             Ordering::Equal => {
@@ -142,20 +129,11 @@ where
     }
 }
 
-impl<B, const UPPER: bool> PartialOrd for RangeBound<B, UPPER>
-where
-    B: for<'a> Bounds<'a>,
-{
+impl<'a, const UPPER: bool> PartialOrd for RangeBound<DatumNested<'a>, UPPER> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-
-pub trait Bounds<'a>: Debug + Ord + PartialOrd + Eq + PartialEq + Display {}
-impl<'a, B: Debug + Ord + PartialOrd + Eq + PartialEq + Display> Bounds<'a> for B {}
-
-pub trait BoundOps<'a>: Bounds<'a> + Into<Datum<'a>> {}
-impl<'a, B: Bounds<'a> + Into<Datum<'a>>> BoundOps<'a> for B {}
 
 /// A `RangeBound` that sorts correctly for use as a lower bound.
 pub type RangeLowerBound<B> = RangeBound<B, false>;
@@ -163,10 +141,7 @@ pub type RangeLowerBound<B> = RangeBound<B, false>;
 /// A `RangeBound` that sorts correctly for use as an upper bound.
 pub type RangeUpperBound<B> = RangeBound<B, true>;
 
-impl<'a, B, const UPPER: bool> RangeBound<B, UPPER>
-where
-    B: BoundOps<'a>,
-{
+impl<'a, const UPPER: bool> RangeBound<DatumNested<'a>, UPPER> {
     /// Determines where `elem` lies in relation to the range bound.
     ///
     /// # Panics
