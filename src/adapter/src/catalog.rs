@@ -2790,6 +2790,7 @@ impl<S: Append> Catalog<S> {
             CatalogType::Uuid => CatalogType::Uuid,
             CatalogType::VarChar => CatalogType::VarChar,
             CatalogType::Int2Vector => CatalogType::Int2Vector,
+            CatalogType::Int4Range => CatalogType::Int4Range,
         };
 
         BuiltinType {

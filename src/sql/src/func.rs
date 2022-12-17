@@ -105,7 +105,7 @@ impl TypeCategory {
             }
             ScalarType::Map { .. } => Self::Pseudo,
             ScalarType::MzTimestamp => Self::Numeric,
-            ScalarType::Range { .. } => todo!(),
+            ScalarType::Range { .. } => Self::Range,
         }
     }
 
@@ -164,6 +164,7 @@ impl TypeCategory {
             CatalogType::Record { .. } => TypeCategory::Composite,
             CatalogType::Map { .. } | CatalogType::Pseudo => Self::Pseudo,
             CatalogType::MzTimestamp => Self::String,
+            CatalogType::Int4Range => Self::Range,
         }
     }
 

@@ -14,6 +14,7 @@ use std::str;
 
 use bytes::{Buf, BufMut, BytesMut};
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use mz_repr::adt::range::Range;
 use mz_repr::adt::range::RangeBound;
 use postgres_types::{FromSql, IsNull, ToSql, Type as PgType};
 use uuid::Uuid;
@@ -187,6 +188,31 @@ impl Value {
                     .collect();
                 Some(Value::Map(entries))
             }
+            (Datum::Range(Range { inner }), ScalarType::Range { element_type }) => {
+                let range = match inner {
+                    None => None,
+                    Some(inner) => Some(Box::new(RangeInnerGeneric {
+                        lower: RangeBound {
+                            inclusive: inner.lower.inclusive,
+                            bound: inner
+                                .lower
+                                .bound
+                                .map(|b| Value::from_datum(b.datum(), element_type))
+                                .expect("RangeBounds never contain Datum::Null"),
+                        },
+                        upper: RangeBound {
+                            inclusive: inner.upper.inclusive,
+                            bound: inner
+                                .upper
+                                .bound
+                                .map(|b| Value::from_datum(b.datum(), element_type))
+                                .expect("RangeBounds never contain Datum::Null"),
+                        },
+                    })),
+                };
+
+                Some(Value::Range(range))
+            }
             _ => panic!("can't serialize {}::{:?}", datum, typ),
         }
     }
@@ -266,37 +292,26 @@ impl Value {
             Value::Range(range) => buf.make_datum(|packer| match range {
                 None => packer.push_empty_range(),
                 Some(inner) => {
-                    let RangeInnerGeneric {
-                        lower:
-                            RangeBound {
-                                bound: lower_bound,
-                                inclusive: lower_bound_inclusive,
-                            },
-                        upper:
-                            RangeBound {
-                                bound: upper_bound,
-                                inclusive: upper_bound_inclusive,
-                            },
-                    } = *inner;
                     let elem_pg_type = match typ {
                         Type::Range { element_type } => &*element_type,
                         _ => panic!("Value::List should have type Type::List. Found {:?}", typ),
                     };
+
                     packer
                         .push_range(
                             RangeBoundDesc::new(
-                                match lower_bound {
+                                match inner.lower.bound {
                                     Some(elem) => elem.into_datum(buf, elem_pg_type),
                                     None => Datum::Null,
                                 },
-                                lower_bound_inclusive,
+                                inner.lower.inclusive,
                             ),
                             RangeBoundDesc::new(
-                                match upper_bound {
+                                match inner.upper.bound {
                                     Some(elem) => elem.into_datum(buf, elem_pg_type),
                                     None => Datum::Null,
                                 },
-                                upper_bound_inclusive,
+                                inner.upper.inclusive,
                             ),
                         )
                         .unwrap()

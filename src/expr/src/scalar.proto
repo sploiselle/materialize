@@ -210,6 +210,7 @@ message ProtoUnaryFunc {
         ProtoCastToVariableType cast_string_to_array = 89;
         ProtoCastToVariableType cast_string_to_list = 90;
         ProtoCastToVariableType cast_string_to_map = 91;
+        ProtoCastToVariableType cast_string_to_range = 281;
         google.protobuf.Empty cast_string_to_time = 4;
         google.protobuf.Empty cast_string_to_timestamp = 5;
         google.protobuf.Empty cast_string_to_timestamp_tz = 6;
@@ -259,6 +260,7 @@ message ProtoUnaryFunc {
         google.protobuf.Empty cast_array_to_list_one_dim = 137;
         mz_repr.relation_and_scalar.ProtoScalarType cast_map_to_string = 138;
         google.protobuf.Empty cast_int2_vector_to_string = 139;
+        mz_repr.relation_and_scalar.ProtoScalarType cast_range_to_string = 282;
         google.protobuf.Empty ceil_float32 = 140;
         google.protobuf.Empty ceil_float64 = 141;
         google.protobuf.Empty ceil_numeric = 142;

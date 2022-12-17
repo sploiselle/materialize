@@ -1201,18 +1201,17 @@ where
 {
     let buf = &mut LexBuf::new(s);
 
+    if buf.consume_str("empty") {
+        if buf.next().is_none() {
+            return Ok(None);
+        } else {
+            bail!("Junk after \"empty\" key word.")
+        }
+    }
+
     let lower_inclusive = match buf.next() {
         Some('[') => true,
         Some('(') => false,
-        Some('e') => {
-            buf.prev();
-            let v = lex_unquoted_element(buf, |_| false, |_| false)?;
-            if v == Some(Cow::Borrowed("empty")) && buf.next().is_none() {
-                return Ok(None);
-            } else {
-                bail!("Missing left parenthesis or bracket.")
-            }
-        }
         _ => bail!("Missing left parenthesis or bracket."),
     };
 
@@ -1221,8 +1220,8 @@ where
     let lower_bound = match buf.peek() {
         Some(',') => None,
         Some(_) => {
-            let v = lex_unquoted_element(buf, |_| false, |c| matches!(c, ',' | ')' | ']'))?;
-            let v = gen_elem(v.unwrap()).map_err_to_string()?;
+            let v = buf.take_while(|c| !matches!(c, ','));
+            let v = gen_elem(Cow::from(v)).map_err_to_string()?;
             Some(v)
         }
         None => bail!("Unexpected end of input."),
@@ -1232,21 +1231,29 @@ where
         bail!("Missing comma after lower bound.")
     }
 
+    buf.take_while(|ch| ch.is_ascii_whitespace());
+
     let upper_bound = match buf.peek() {
         Some(']' | ')') => None,
         Some(_) => {
-            let v = lex_unquoted_element(buf, |_| false, |c| matches!(c, ')' | ']'))?;
-            let v = gen_elem(v.unwrap()).map_err_to_string()?;
+            let v = buf.take_while(|c| !matches!(c, ')' | ']'));
+            let v = gen_elem(Cow::from(v)).map_err_to_string()?;
             Some(v)
         }
         None => bail!("Unexpected end of input."),
     };
 
-    let upper_inclusive = match buf.next() {
+    let upper_inclusive = match dbg!(buf.next()) {
         Some(']') => true,
         Some(')') => false,
         _ => bail!("Missing left parenthesis or bracket."),
     };
+
+    buf.take_while(|ch| ch.is_ascii_whitespace());
+
+    if buf.next().is_some() {
+        bail!("Junk after right parenthesis or bracket.")
+    }
 
     let range = Some(RangeInnerGeneric {
         lower: RangeBound {

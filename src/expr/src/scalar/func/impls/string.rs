@@ -12,6 +12,7 @@ use std::fmt;
 
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
 use mz_repr::adt::date::Date;
+use mz_repr::adt::range::{Range, RangeBoundDesc};
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use once_cell::sync::Lazy;
 use proptest_derive::Arbitrary;
@@ -496,6 +497,96 @@ impl<'a> EagerUnaryFunc<'a> for CastStringToChar {
 impl fmt::Display for CastStringToChar {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("text_to_char")
+    }
+}
+
+#[derive(Ord, PartialOrd, Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Hash, MzReflect)]
+pub struct CastStringToRange {
+    // Target range's type
+    pub return_ty: ScalarType,
+    // The expression to cast the discovered range elements to the range's
+    // element type.
+    pub cast_expr: Box<MirScalarExpr>,
+}
+
+impl LazyUnaryFunc for CastStringToRange {
+    fn eval<'a>(
+        &'a self,
+        datums: &[Datum<'a>],
+        temp_storage: &'a RowArena,
+        a: &'a MirScalarExpr,
+    ) -> Result<Datum<'a>, EvalError> {
+        let a = a.eval(datums, temp_storage)?;
+        if a.is_null() {
+            return Ok(Datum::Null);
+        }
+        let range = strconv::parse_range(a.unwrap_str(), |elem_text| {
+            let elem_text = match elem_text {
+                Cow::Owned(s) => temp_storage.push_string(s),
+                Cow::Borrowed(s) => s,
+            };
+            self.cast_expr
+                .eval(&[Datum::String(elem_text)], temp_storage)
+        })?;
+
+        // Taking `RangeInnerGeneric<Datum>` to `RangeInnerGeneric<DatumNested>`
+        // feels wasteful but it's much more ergonomic to have some named
+        // version of `RangeInnerGeneric` with a concrete type to avoid having
+        // to type each instance of `Range`.
+        Ok(temp_storage.make_datum(|packer| match range {
+            None => packer.push_empty_range(),
+            Some(inner) => packer
+                .push_range(
+                    RangeBoundDesc::new(
+                        match inner.lower.bound {
+                            Some(elem) => elem,
+                            None => Datum::Null,
+                        },
+                        inner.lower.inclusive,
+                    ),
+                    RangeBoundDesc::new(
+                        match inner.upper.bound {
+                            Some(elem) => elem,
+                            None => Datum::Null,
+                        },
+                        inner.upper.inclusive,
+                    ),
+                )
+                .unwrap(),
+        }))
+    }
+
+    /// The output ColumnType of this function
+    fn output_type(&self, _input_type: ColumnType) -> ColumnType {
+        self.return_ty.without_modifiers().nullable(false)
+    }
+
+    /// Whether this function will produce NULL on NULL input
+    fn propagates_nulls(&self) -> bool {
+        true
+    }
+
+    /// Whether this function will produce NULL on non-NULL input
+    fn introduces_nulls(&self) -> bool {
+        false
+    }
+
+    /// Whether this function preserves uniqueness
+    fn preserves_uniqueness(&self) -> bool {
+        false
+    }
+
+    fn inverse(&self) -> Option<crate::UnaryFunc> {
+        // to_unary!(super::CastRangeToString {
+        //     ty: self.return_ty.clone(),
+        // })
+        None
+    }
+}
+
+impl fmt::Display for CastStringToRange {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("strtorange")
     }
 }
 

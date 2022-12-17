@@ -842,9 +842,21 @@ impl<'a> Datum<'a> {
                     (Datum::Numeric(_), _) => false,
                     (Datum::MzTimestamp(_), ScalarType::MzTimestamp) => true,
                     (Datum::MzTimestamp(_), _) => false,
-                    (Datum::Range(_), _) => {
-                        unreachable!("ranges not available in dataflows or types")
+                    (Datum::Range(Range { inner }), ScalarType::Range { element_type }) => {
+                        match inner {
+                            None => true,
+                            Some(inner) => {
+                                true && match inner.lower.bound {
+                                    None => true,
+                                    Some(b) => is_instance_of_scalar(b.datum(), element_type),
+                                } && match inner.upper.bound {
+                                    None => true,
+                                    Some(b) => is_instance_of_scalar(b.datum(), element_type),
+                                }
+                            }
+                        }
                     }
+                    (Datum::Range(_), _) => false,
                 }
             }
         }

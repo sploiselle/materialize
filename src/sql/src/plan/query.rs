@@ -4837,6 +4837,9 @@ fn scalar_type_from_catalog(
                 CatalogType::TimestampTz => Ok(ScalarType::TimestampTz),
                 CatalogType::Uuid => Ok(ScalarType::Uuid),
                 CatalogType::Int2Vector => Ok(ScalarType::Int2Vector),
+                CatalogType::Int4Range => Ok(ScalarType::Range {
+                    element_type: Box::new(ScalarType::Int32),
+                }),
                 CatalogType::Numeric => unreachable!("handled above"),
                 CatalogType::Char => unreachable!("handled above"),
                 CatalogType::VarChar => unreachable!("handled above"),
