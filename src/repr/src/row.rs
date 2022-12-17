@@ -1558,6 +1558,9 @@ impl RowPacker<'_> {
             "non-Datum data packed into row"
         );
 
+        let mut start = start;
+        let range = unsafe { read_datum(&self.row.data, &mut start).unwrap_range() };
+
         Ok(())
     }
 
