@@ -342,20 +342,20 @@ impl<'a> Serialize for DatumMap<'a> {
 
 /// Represents a single `Datum`, appropriate to be nested inside other
 /// `Datum`s.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct DatumNested<'a> {
     val: &'a [u8],
-}
-
-impl<'a> From<DatumNested<'a>> for Datum<'a> {
-    fn from(d: DatumNested<'a>) -> Self {
-        d.datum()
-    }
 }
 
 impl<'a> std::fmt::Display for DatumNested<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         std::fmt::Display::fmt(&self.datum(), f)
+    }
+}
+
+impl<'a> std::fmt::Debug for DatumNested<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DatumNested {{\n    val: {:?}\n}}", self.datum())
     }
 }
 
@@ -1435,26 +1435,29 @@ impl RowPacker<'_> {
         lower: RangeBoundDesc<Datum<'a>>,
         upper: RangeBoundDesc<Datum<'a>>,
     ) -> Result<(), RangeError> {
-        self.push_range_with(
-            RangeBoundDesc {
-                inclusive: lower.inclusive,
-                value: match lower.value {
-                    RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
-                        value: move |row: &mut RowPacker| Ok(row.push(value)),
+        match Range::canonicalize(lower, upper) {
+            None => Ok(self.push_empty_range()),
+            Some((lower, upper)) => self.push_range_with(
+                RangeBoundDesc {
+                    inclusive: lower.inclusive,
+                    value: match lower.value {
+                        RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
+                            value: move |row: &mut RowPacker| Ok(row.push(value)),
+                        },
+                        RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
                     },
-                    RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
                 },
-            },
-            RangeBoundDesc {
-                inclusive: upper.inclusive,
-                value: match upper.value {
-                    RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
-                        value: move |row: &mut RowPacker| Ok(row.push(value)),
+                RangeBoundDesc {
+                    inclusive: upper.inclusive,
+                    value: match upper.value {
+                        RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
+                            value: move |row: &mut RowPacker| Ok(row.push(value)),
+                        },
+                        RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
                     },
-                    RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
                 },
-            },
-        )
+            ),
+        }
     }
 
     /// Pushes a `DatumRange` built from the specified arguments.
@@ -1557,9 +1560,6 @@ impl RowPacker<'_> {
             datum_check == self.row.data.len(),
             "non-Datum data packed into row"
         );
-
-        let mut start = start;
-        let range = unsafe { read_datum(&self.row.data, &mut start).unwrap_range() };
 
         Ok(())
     }

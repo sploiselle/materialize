@@ -194,19 +194,17 @@ impl Value {
                     Some(inner) => Some(Box::new(RangeInnerGeneric {
                         lower: RangeBound {
                             inclusive: inner.lower.inclusive,
-                            bound: inner
-                                .lower
-                                .bound
-                                .map(|b| Value::from_datum(b.datum(), element_type))
-                                .expect("RangeBounds never contain Datum::Null"),
+                            bound: inner.lower.bound.map(|b| {
+                                Value::from_datum(dbg!(b.datum()), dbg!(element_type))
+                                    .expect("RangeBounds never contain Datum::Null")
+                            }),
                         },
                         upper: RangeBound {
                             inclusive: inner.upper.inclusive,
-                            bound: inner
-                                .upper
-                                .bound
-                                .map(|b| Value::from_datum(b.datum(), element_type))
-                                .expect("RangeBounds never contain Datum::Null"),
+                            bound: inner.upper.bound.map(|b| {
+                                Value::from_datum(b.datum(), element_type)
+                                    .expect("RangeBounds never contain Datum::Null")
+                            }),
                         },
                     })),
                 };

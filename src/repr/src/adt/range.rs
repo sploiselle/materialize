@@ -13,6 +13,7 @@ use std::error::Error;
 use std::fmt::{self, Debug, Display};
 
 use bitflags::bitflags;
+use num_traits::CheckedAdd;
 
 use crate::row::DatumNested;
 use crate::Datum;
@@ -44,8 +45,22 @@ impl<'a> Display for Range<'a> {
 }
 
 /// Trait alias for traits required for generic range function implementations.
-pub trait RangeOps<'a>: Debug + Ord + PartialOrd + Eq + PartialEq + TryFrom<Datum<'a>> {}
-impl<'a, T: Debug + Ord + PartialOrd + Eq + PartialEq + TryFrom<Datum<'a>>> RangeOps<'a> for T {}
+pub trait RangeOps<'a>:
+    Debug + Ord + PartialOrd + Eq + PartialEq + CheckedAdd + TryFrom<Datum<'a>> + Into<Datum<'a>>
+{
+    fn step() -> Option<Self>;
+
+    fn unwrap_datum(d: Datum<'a>) -> Self {
+        <Self>::try_from(d)
+            .unwrap_or_else(|_| panic!("cannot take {} to {}", d, type_name::<Self>()))
+    }
+}
+
+impl<'a> RangeOps<'a> for i32 {
+    fn step() -> Option<i32> {
+        Some(1)
+    }
+}
 
 impl<'a> Range<'a> {
     #[allow(dead_code)]
@@ -53,6 +68,31 @@ impl<'a> Range<'a> {
         match self.inner {
             None => false,
             Some(inner) => inner.lower.satisfied_by(elem) && inner.upper.satisfied_by(elem),
+        }
+    }
+
+    // - Infinite bounds are always exclusive
+    // - Ranges are empty if lower == upper unless:
+    //   - Range type does not have step and both bounds are inclusive
+    // - If type has step:
+    //  - Exclusive bounds are rewritten as inclusive ++
+    pub fn canonicalize(
+        mut lower: RangeBoundDesc<Datum<'a>>,
+        mut upper: RangeBoundDesc<Datum<'a>>,
+    ) -> Option<(RangeBoundDesc<Datum<'a>>, RangeBoundDesc<Datum<'a>>)> {
+        lower.canonicalize(false);
+        upper.canonicalize(true);
+
+        // If (x,x], range is empty
+        if !(lower.inclusive && upper.inclusive)
+            && lower.value >= upper.value
+            && matches!(lower.value, RangeBoundDescValue::Finite { .. })
+        {
+            // emtpy range
+            None
+        } else {
+            // No change
+            Some((lower, upper))
         }
     }
 }
@@ -147,10 +187,7 @@ impl<'a, const UPPER: bool> RangeBound<DatumNested<'a>, UPPER> {
     /// # Panics
     /// - If `self.bound.datum()` is not convertible to `T`.
     fn elem_cmp<T: RangeOps<'a>>(&self, elem: &T) -> Ordering {
-        match self.bound.map(|bound| {
-            <T>::try_from(bound.into())
-                .unwrap_or_else(|_| panic!("cannot take {} to {}", bound, type_name::<T>()))
-        }) {
+        match self.bound.map(|bound| <T>::unwrap_datum(bound.datum())) {
             None if UPPER => Ordering::Greater,
             None => Ordering::Less,
             Some(bound) => bound.cmp(elem),
@@ -203,6 +240,31 @@ impl<'a> RangeBoundDesc<Datum<'a>> {
         RangeBoundDesc {
             inclusive,
             value: d.into(),
+        }
+    }
+
+    fn canonicalize(&mut self, upper: bool) {
+        match self.value {
+            RangeBoundDescValue::Infinite => {
+                self.inclusive = false;
+            }
+            RangeBoundDescValue::Finite { value } => match value {
+                d @ Datum::Int32(_) => self.canonicalize_inner::<i32>(d, upper),
+                _ => todo!(),
+            },
+        }
+    }
+
+    fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>, upper: bool) {
+        if let Some(step) = T::step() {
+            if (upper && self.inclusive) || (!upper && !self.inclusive) {
+                let cur = <T>::unwrap_datum(d);
+                self.value = match cur.checked_add(&step).map(|t| t.into()) {
+                    None => RangeBoundDescValue::Infinite,
+                    Some(value) => RangeBoundDescValue::Finite { value },
+                };
+                self.inclusive = !upper;
+            }
         }
     }
 }
