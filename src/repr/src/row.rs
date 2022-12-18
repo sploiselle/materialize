@@ -39,6 +39,7 @@ use crate::adt::numeric;
 use crate::adt::numeric::Numeric;
 use crate::adt::range::{
     self, Range, RangeBound, RangeBoundDesc, RangeBoundDescValue, RangeError, RangeInner,
+    RangeLowerBoundDesc, RangeUpperBoundDesc,
 };
 use crate::adt::timestamp::CheckedTimestamp;
 use crate::scalar::arb_datum;
@@ -1432,10 +1433,10 @@ impl RowPacker<'_> {
     /// - To generate an empty range, use `push_empty_range`.
     pub fn push_range<'a>(
         &mut self,
-        lower: RangeBoundDesc<Datum<'a>>,
-        upper: RangeBoundDesc<Datum<'a>>,
+        lower: RangeLowerBoundDesc<Datum<'a>>,
+        upper: RangeUpperBoundDesc<Datum<'a>>,
     ) -> Result<(), RangeError> {
-        match Range::canonicalize(lower, upper) {
+        match Range::canonicalize(lower, upper)? {
             None => Ok(self.push_empty_range()),
             Some((lower, upper)) => self.push_range_with(
                 RangeBoundDesc {
@@ -1479,8 +1480,8 @@ impl RowPacker<'_> {
     ///   each infinite bound will be absent).
     pub fn push_range_with<L, U, E>(
         &mut self,
-        lower: RangeBoundDesc<L>,
-        upper: RangeBoundDesc<U>,
+        lower: RangeLowerBoundDesc<L>,
+        upper: RangeUpperBoundDesc<U>,
     ) -> Result<(), E>
     where
         L: FnOnce(&mut RowPacker) -> Result<(), E>,

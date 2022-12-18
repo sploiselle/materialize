@@ -11,9 +11,6 @@ use std::borrow::Cow;
 use std::fmt;
 
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
-use mz_repr::adt::date::Date;
-use mz_repr::adt::range::{Range, RangeBoundDesc};
-use mz_repr::adt::timestamp::CheckedTimestamp;
 use once_cell::sync::Lazy;
 use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
@@ -25,11 +22,14 @@ use mz_ore::result::ResultExt;
 use mz_ore::str::StrExt;
 use mz_repr::adt::array::ArrayDimension;
 use mz_repr::adt::char::{format_str_trim, Char};
+use mz_repr::adt::date::Date;
 use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::numeric::{self, Numeric, NumericMaxScale};
+use mz_repr::adt::range::{RangeLowerBoundDesc, RangeUpperBoundDesc};
 use mz_repr::adt::regex::Regex;
 use mz_repr::adt::system::{Oid, PgLegacyChar};
+use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::adt::varchar::{VarChar, VarCharMaxLength};
 use mz_repr::{strconv, ColumnType, Datum, Row, RowArena, ScalarType};
 
@@ -537,14 +537,14 @@ impl LazyUnaryFunc for CastStringToRange {
             None => packer.push_empty_range(),
             Some(inner) => packer
                 .push_range(
-                    RangeBoundDesc::new(
+                    RangeLowerBoundDesc::new(
                         match inner.lower.bound {
                             Some(elem) => elem,
                             None => Datum::Null,
                         },
                         inner.lower.inclusive,
                     ),
-                    RangeBoundDesc::new(
+                    RangeUpperBoundDesc::new(
                         match inner.upper.bound {
                             Some(elem) => elem,
                             None => Datum::Null,

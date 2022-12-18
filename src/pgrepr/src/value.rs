@@ -14,8 +14,6 @@ use std::str;
 
 use bytes::{Buf, BufMut, BytesMut};
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
-use mz_repr::adt::range::Range;
-use mz_repr::adt::range::RangeBound;
 use postgres_types::{FromSql, IsNull, ToSql, Type as PgType};
 use uuid::Uuid;
 
@@ -23,7 +21,9 @@ use mz_repr::adt::array::ArrayDimension;
 use mz_repr::adt::char;
 use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
-use mz_repr::adt::range::{RangeBoundDesc, RangeInnerGeneric};
+use mz_repr::adt::range::{
+    Range, RangeBound, RangeInnerGeneric, RangeLowerBoundDesc, RangeUpperBoundDesc,
+};
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::strconv::{self, Nestable};
 use mz_repr::{Datum, RelationType, Row, RowArena, ScalarType};
@@ -297,14 +297,14 @@ impl Value {
 
                     packer
                         .push_range(
-                            RangeBoundDesc::new(
+                            RangeLowerBoundDesc::new(
                                 match inner.lower.bound {
                                     Some(elem) => elem.into_datum(buf, elem_pg_type),
                                     None => Datum::Null,
                                 },
                                 inner.lower.inclusive,
                             ),
-                            RangeBoundDesc::new(
+                            RangeUpperBoundDesc::new(
                                 match inner.upper.bound {
                                     Some(elem) => elem.into_datum(buf, elem_pg_type),
                                     None => Datum::Null,

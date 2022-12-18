@@ -77,23 +77,41 @@ impl<'a> Range<'a> {
     // - If type has step:
     //  - Exclusive bounds are rewritten as inclusive ++
     pub fn canonicalize(
-        mut lower: RangeBoundDesc<Datum<'a>>,
-        mut upper: RangeBoundDesc<Datum<'a>>,
-    ) -> Option<(RangeBoundDesc<Datum<'a>>, RangeBoundDesc<Datum<'a>>)> {
-        lower.canonicalize(false);
-        upper.canonicalize(true);
+        mut lower: RangeLowerBoundDesc<Datum<'a>>,
+        mut upper: RangeUpperBoundDesc<Datum<'a>>,
+    ) -> Result<
+        Option<(
+            RangeLowerBoundDesc<Datum<'a>>,
+            RangeUpperBoundDesc<Datum<'a>>,
+        )>,
+        RangeError,
+    > {
+        match (lower.value, upper.value) {
+            (
+                RangeBoundDescValue::Finite { value: l },
+                RangeBoundDescValue::Finite { value: u },
+            ) if l > u => {
+                return Err(RangeError::MisorderedRangeBounds);
+            }
+            _ => {}
+        };
+
+        lower.canonicalize();
+        upper.canonicalize();
 
         // If (x,x], range is empty
-        if !(lower.inclusive && upper.inclusive)
-            && lower.value >= upper.value
-            && matches!(lower.value, RangeBoundDescValue::Finite { .. })
-        {
-            // emtpy range
-            None
-        } else {
-            // No change
-            Some((lower, upper))
-        }
+        Ok(
+            if !(lower.inclusive && upper.inclusive)
+                && lower.value >= upper.value
+                && matches!(lower.value, RangeBoundDescValue::Finite { .. })
+            {
+                // emtpy range
+                None
+            } else {
+                // No change
+                Some((lower, upper))
+            },
+        )
     }
 }
 
@@ -228,42 +246,48 @@ impl<'a> From<Datum<'a>> for RangeBoundDescValue<Datum<'a>> {
 
 /// Structures arguments for functions that construct ranges.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd)]
-pub struct RangeBoundDesc<D> {
+pub struct RangeBoundDesc<D, const UPPER: bool = false> {
     pub inclusive: bool,
     pub value: RangeBoundDescValue<D>,
 }
 
-impl<'a> RangeBoundDesc<Datum<'a>> {
+/// A `RangeBound` that sorts correctly for use as a lower bound.
+pub type RangeLowerBoundDesc<D> = RangeBoundDesc<D, false>;
+
+/// A `RangeBound` that sorts correctly for use as an upper bound.
+pub type RangeUpperBoundDesc<D> = RangeBoundDesc<D, true>;
+
+impl<'a, const UPPER: bool> RangeBoundDesc<Datum<'a>, UPPER> {
     /// Create a new `RangeBoundDesc` whose value is infinite if `d ==
     /// Datum::Null`, otherwise finite.
-    pub fn new(d: Datum<'a>, inclusive: bool) -> RangeBoundDesc<Datum<'a>> {
+    pub fn new(d: Datum<'a>, inclusive: bool) -> RangeBoundDesc<Datum<'a>, UPPER> {
         RangeBoundDesc {
             inclusive,
             value: d.into(),
         }
     }
 
-    fn canonicalize(&mut self, upper: bool) {
+    fn canonicalize(&mut self) {
         match self.value {
             RangeBoundDescValue::Infinite => {
                 self.inclusive = false;
             }
             RangeBoundDescValue::Finite { value } => match value {
-                d @ Datum::Int32(_) => self.canonicalize_inner::<i32>(d, upper),
+                d @ Datum::Int32(_) => self.canonicalize_inner::<i32>(d),
                 _ => todo!(),
             },
         }
     }
 
-    fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>, upper: bool) {
+    fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>) {
         if let Some(step) = T::step() {
-            if (upper && self.inclusive) || (!upper && !self.inclusive) {
+            if (UPPER && self.inclusive) || (!UPPER && !self.inclusive) {
                 let cur = <T>::unwrap_datum(d);
                 self.value = match cur.checked_add(&step).map(|t| t.into()) {
                     None => RangeBoundDescValue::Infinite,
                     Some(value) => RangeBoundDescValue::Finite { value },
                 };
-                self.inclusive = !upper;
+                self.inclusive = !UPPER;
             }
         }
     }

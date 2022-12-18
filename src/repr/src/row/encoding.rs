@@ -23,7 +23,9 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 
 use crate::adt::array::ArrayDimension;
 use crate::adt::numeric::Numeric;
-use crate::adt::range::{RangeBoundDesc, RangeBoundDescValue, RangeInner};
+use crate::adt::range::{
+    RangeBoundDesc, RangeBoundDescValue, RangeInner, RangeLowerBoundDesc, RangeUpperBoundDesc,
+};
 use crate::chrono::ProtoNaiveTime;
 use crate::row::proto_datum::DatumType;
 use crate::row::{
@@ -271,7 +273,7 @@ impl RowPacker<'_> {
                         } = &**inner;
 
                         self.push_range_with(
-                            RangeBoundDesc {
+                            RangeLowerBoundDesc {
                                 inclusive: *lower_inclusive,
                                 value: match lower {
                                     None => RangeBoundDescValue::Infinite,
@@ -280,7 +282,7 @@ impl RowPacker<'_> {
                                     },
                                 },
                             },
-                            RangeBoundDesc {
+                            RangeUpperBoundDesc {
                                 inclusive: *upper_inclusive,
                                 value: match upper {
                                     None => RangeBoundDescValue::Infinite,
