@@ -13,10 +13,16 @@ use std::error::Error;
 use std::fmt::{self, Debug, Display};
 
 use bitflags::bitflags;
+use mz_lowertest::MzReflect;
+use mz_proto::{RustType, TryFromProtoError};
 use num_traits::CheckedAdd;
+use proptest_derive::Arbitrary;
+use serde::{Deserialize, Serialize};
 
 use crate::row::DatumNested;
 use crate::Datum;
+
+include!(concat!(env!("OUT_DIR"), "/mz_repr.adt.range.rs"));
 
 bitflags! {
     pub(crate) struct Flags: u8 {
@@ -84,14 +90,14 @@ impl<'a> Range<'a> {
             RangeLowerBoundDesc<Datum<'a>>,
             RangeUpperBoundDesc<Datum<'a>>,
         )>,
-        RangeError,
+        InvalidRangeError,
     > {
         match (lower.value, upper.value) {
             (
                 RangeBoundDescValue::Finite { value: l },
                 RangeBoundDescValue::Finite { value: u },
             ) if l > u => {
-                return Err(RangeError::MisorderedRangeBounds);
+                return Err(InvalidRangeError::MisorderedRangeBounds);
             }
             _ => {}
         };
@@ -293,31 +299,56 @@ impl<'a, const UPPER: bool> RangeBoundDesc<Datum<'a>, UPPER> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum RangeError {
+#[derive(
+    Arbitrary, Ord, PartialOrd, Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Hash, MzReflect,
+)]
+pub enum InvalidRangeError {
     MisorderedRangeBounds,
 }
 
-impl Display for RangeError {
+impl Display for InvalidRangeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            RangeError::MisorderedRangeBounds => {
+            InvalidRangeError::MisorderedRangeBounds => {
                 f.write_str("range lower bound must be less than or equal to range upper bound")
             }
         }
     }
 }
 
-impl Error for RangeError {
+impl Error for InvalidRangeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
     }
 }
 
 // Required due to Proto decoding using string as its error type
-impl From<RangeError> for String {
-    fn from(e: RangeError) -> Self {
+impl From<InvalidRangeError> for String {
+    fn from(e: InvalidRangeError) -> Self {
         e.to_string()
+    }
+}
+
+impl RustType<ProtoInvalidRangeError> for InvalidRangeError {
+    fn into_proto(&self) -> ProtoInvalidRangeError {
+        use proto_invalid_range_error::*;
+        use Kind::*;
+        let kind = match self {
+            InvalidRangeError::MisorderedRangeBounds => MisorderedRangeBounds(()),
+        };
+        ProtoInvalidRangeError { kind: Some(kind) }
+    }
+
+    fn from_proto(proto: ProtoInvalidRangeError) -> Result<Self, TryFromProtoError> {
+        use proto_invalid_range_error::Kind::*;
+        match proto.kind {
+            Some(kind) => match kind {
+                MisorderedRangeBounds(()) => Ok(InvalidRangeError::MisorderedRangeBounds),
+            },
+            None => Err(TryFromProtoError::missing_field(
+                "`ProtoInvalidRangeError::kind`",
+            )),
+        }
     }
 }
 

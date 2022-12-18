@@ -38,7 +38,7 @@ use crate::adt::interval::Interval;
 use crate::adt::numeric;
 use crate::adt::numeric::Numeric;
 use crate::adt::range::{
-    self, Range, RangeBound, RangeBoundDesc, RangeBoundDescValue, RangeError, RangeInner,
+    self, InvalidRangeError, Range, RangeBound, RangeBoundDesc, RangeBoundDescValue, RangeInner,
     RangeLowerBoundDesc, RangeUpperBoundDesc,
 };
 use crate::adt::timestamp::CheckedTimestamp;
@@ -1435,7 +1435,7 @@ impl RowPacker<'_> {
         &mut self,
         lower: RangeLowerBoundDesc<Datum<'a>>,
         upper: RangeUpperBoundDesc<Datum<'a>>,
-    ) -> Result<(), RangeError> {
+    ) -> Result<(), InvalidRangeError> {
         match Range::canonicalize(lower, upper)? {
             None => Ok(self.push_empty_range()),
             Some((lower, upper)) => self.push_range_with(
@@ -1463,6 +1463,11 @@ impl RowPacker<'_> {
 
     /// Pushes a `DatumRange` built from the specified arguments.
     ///
+    /// # Warning
+    /// Unlike `push_range`, `push_range_with` _does not_ canonicalize its
+    /// inputs. Consequentially, this means it's possible to generate ranges
+    /// that will not reflect the proper ordering and equality.
+    ///
     /// # Panics
     /// - If lower or upper expresses a finite value and does not push exactly
     ///   one value into the `RowPacker`.
@@ -1486,7 +1491,7 @@ impl RowPacker<'_> {
     where
         L: FnOnce(&mut RowPacker) -> Result<(), E>,
         U: FnOnce(&mut RowPacker) -> Result<(), E>,
-        E: From<RangeError>,
+        E: From<InvalidRangeError>,
     {
         let start = self.row.data.len();
         self.row.data.push(Tag::Range.into());
@@ -1546,7 +1551,7 @@ impl RowPacker<'_> {
 
                     if seen > d {
                         self.row.data.truncate(start);
-                        return Err(RangeError::MisorderedRangeBounds.into());
+                        return Err(InvalidRangeError::MisorderedRangeBounds.into());
                     }
                 }
             }
@@ -2307,7 +2312,7 @@ mod tests {
 
             let r = arena.make_datum(|packer| {
                 packer
-                    .push_range_with::<_, _, RangeError>(
+                    .push_range_with::<_, _, InvalidRangeError>(
                         RangeBoundDesc {
                             inclusive: lower_inclusive,
                             value: match lower {
@@ -2350,7 +2355,9 @@ mod tests {
 
     #[test]
     fn test_range_errors() {
-        fn test_range_errors_inner<'a>(datums: Vec<Vec<Datum<'a>>>) -> Result<(), RangeError> {
+        fn test_range_errors_inner<'a>(
+            datums: Vec<Vec<Datum<'a>>>,
+        ) -> Result<(), InvalidRangeError> {
             let mut row = Row::default();
             let row_len = row.byte_len();
             let mut packer = row.packer();
@@ -2405,7 +2412,7 @@ mod tests {
         }
 
         let e = test_range_errors_inner(vec![vec![Datum::Int32(2)], vec![Datum::Int32(1)]]);
-        assert_eq!(e, Err(RangeError::MisorderedRangeBounds));
+        assert_eq!(e, Err(InvalidRangeError::MisorderedRangeBounds));
     }
 }
 

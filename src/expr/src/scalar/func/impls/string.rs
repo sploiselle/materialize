@@ -26,7 +26,7 @@ use mz_repr::adt::date::Date;
 use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::numeric::{self, Numeric, NumericMaxScale};
-use mz_repr::adt::range::{RangeLowerBoundDesc, RangeUpperBoundDesc};
+use mz_repr::adt::range::{Range, RangeLowerBoundDesc, RangeUpperBoundDesc};
 use mz_repr::adt::regex::Regex;
 use mz_repr::adt::system::{Oid, PgLegacyChar};
 use mz_repr::adt::timestamp::CheckedTimestamp;
@@ -529,30 +529,33 @@ impl LazyUnaryFunc for CastStringToRange {
                 .eval(&[Datum::String(elem_text)], temp_storage)
         })?;
 
-        // Taking `RangeInnerGeneric<Datum>` to `RangeInnerGeneric<DatumNested>`
-        // feels wasteful but it's much more ergonomic to have some named
-        // version of `RangeInnerGeneric` with a concrete type to avoid having
-        // to type each instance of `Range`.
+        let range = range
+            .map(|inner| {
+                let lower = RangeLowerBoundDesc::new(
+                    match inner.lower.bound {
+                        Some(elem) => elem,
+                        None => Datum::Null,
+                    },
+                    inner.lower.inclusive,
+                );
+
+                let upper = RangeUpperBoundDesc::new(
+                    match inner.upper.bound {
+                        Some(elem) => elem,
+                        None => Datum::Null,
+                    },
+                    inner.upper.inclusive,
+                );
+                Range::canonicalize(lower, upper)
+            })
+            .transpose()?
+            .flatten();
+
         Ok(temp_storage.make_datum(|packer| match range {
             None => packer.push_empty_range(),
-            Some(inner) => packer
-                .push_range(
-                    RangeLowerBoundDesc::new(
-                        match inner.lower.bound {
-                            Some(elem) => elem,
-                            None => Datum::Null,
-                        },
-                        inner.lower.inclusive,
-                    ),
-                    RangeUpperBoundDesc::new(
-                        match inner.upper.bound {
-                            Some(elem) => elem,
-                            None => Datum::Null,
-                        },
-                        inner.upper.inclusive,
-                    ),
-                )
-                .unwrap(),
+            Some((lower, upper)) => packer
+                .push_range(lower, upper)
+                .expect("must have already handled errors"),
         }))
     }
 
