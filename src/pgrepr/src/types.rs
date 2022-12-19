@@ -146,7 +146,10 @@ pub enum Type {
     /// A Materialize timestamp.
     MzTimestamp,
     /// A range of values of the inner type
-    Range { element_type: Box<Type> },
+    Range {
+        /// The domain type
+        element_type: Box<Type>,
+    },
 }
 
 /// An unpacked [`typmod`](Type::typmod) for a [`Type`].

@@ -23,7 +23,7 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 
 use crate::adt::array::ArrayDimension;
 use crate::adt::numeric::Numeric;
-use crate::adt::range::{RangeInner, RangeLowerBound, RangeUpperBound};
+use crate::adt::range::{Range, RangeLowerBound, RangeUpperBound, RangerInner};
 use crate::chrono::ProtoNaiveTime;
 use crate::row::proto_datum::DatumType;
 use crate::row::{
@@ -139,7 +139,7 @@ impl<'a> From<Datum<'a>> for ProtoDatum {
             Datum::Dummy => DatumType::Other(ProtoDatumOther::Dummy.into()),
             Datum::Null => DatumType::Other(ProtoDatumOther::Null.into()),
             Datum::Range(super::Range { inner }) => DatumType::Range(Box::new(ProtoRange {
-                inner: inner.map(|RangeInner { lower, upper }| {
+                inner: inner.map(|RangerInner { lower, upper }| {
                     Box::new(ProtoRangeInner {
                         lower_inclusive: lower.inclusive,
                         lower: lower.bound.map(|bound| Box::new(bound.datum().into())),
@@ -261,7 +261,7 @@ impl RowPacker<'_> {
             Some(DatumType::Range(inner)) => {
                 let ProtoRange { inner } = &**inner;
                 match inner {
-                    None => self.push_empty_range(),
+                    None => self.push_range(Range { inner: None }).unwrap(),
                     Some(inner) => {
                         let ProtoRangeInner {
                             lower_inclusive,

@@ -26,7 +26,6 @@ use mz_repr::adt::date::Date;
 use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::numeric::{self, Numeric, NumericMaxScale};
-use mz_repr::adt::range::{Range, RangeLowerBound, RangeUpperBound};
 use mz_repr::adt::regex::Regex;
 use mz_repr::adt::system::{Oid, PgLegacyChar};
 use mz_repr::adt::timestamp::CheckedTimestamp;
@@ -520,7 +519,7 @@ impl LazyUnaryFunc for CastStringToRange {
         if a.is_null() {
             return Ok(Datum::Null);
         }
-        let range = strconv::parse_range(a.unwrap_str(), |elem_text| {
+        let mut range = strconv::parse_range(a.unwrap_str(), |elem_text| {
             let elem_text = match elem_text {
                 Cow::Owned(s) => temp_storage.push_string(s),
                 Cow::Borrowed(s) => s,
@@ -529,33 +528,12 @@ impl LazyUnaryFunc for CastStringToRange {
                 .eval(&[Datum::String(elem_text)], temp_storage)
         })?;
 
-        let range = range
-            .map(|inner| {
-                let lower = RangeLowerBound::new(
-                    match inner.lower.bound {
-                        Some(elem) => elem,
-                        None => Datum::Null,
-                    },
-                    inner.lower.inclusive,
-                );
+        range.canonicalize()?;
 
-                let upper = RangeUpperBound::new(
-                    match inner.upper.bound {
-                        Some(elem) => elem,
-                        None => Datum::Null,
-                    },
-                    inner.upper.inclusive,
-                );
-                Range::canonicalize(lower, upper)
-            })
-            .transpose()?
-            .flatten();
-
-        Ok(temp_storage.make_datum(|packer| match range {
-            None => packer.push_empty_range(),
-            Some((lower, upper)) => packer
-                .push_range(lower, upper)
-                .expect("must have already handled errors"),
+        Ok(temp_storage.make_datum(|packer| {
+            packer
+                .push_range(range)
+                .expect("must have already handled errors")
         }))
     }
 

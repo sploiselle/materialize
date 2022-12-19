@@ -14,8 +14,6 @@ use std::str;
 
 use bytes::{Buf, BufMut, BytesMut};
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
-use mz_repr::adt::range::RangeLowerBound;
-use mz_repr::adt::range::RangeUpperBound;
 use postgres_types::{FromSql, IsNull, ToSql, Type as PgType};
 use uuid::Uuid;
 
@@ -23,7 +21,7 @@ use mz_repr::adt::array::ArrayDimension;
 use mz_repr::adt::char;
 use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
-use mz_repr::adt::range::{Range, RangeBound, RangeInnerGeneric};
+use mz_repr::adt::range::Range;
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::strconv::{self, Nestable};
 use mz_repr::{Datum, RelationType, Row, RowArena, ScalarType};
@@ -104,7 +102,8 @@ pub enum Value {
     },
     /// A Materialize timestamp.
     MzTimestamp(mz_repr::Timestamp),
-    Range(Option<Box<RangeInnerGeneric<Value>>>),
+    /// A contiguous range of values along a domain.
+    Range(Range<Box<Value>>),
 }
 
 impl Value {
@@ -188,28 +187,14 @@ impl Value {
                     .collect();
                 Some(Value::Map(entries))
             }
-            (Datum::Range(Range { inner }), ScalarType::Range { element_type }) => {
-                let range = match inner {
-                    None => None,
-                    Some(inner) => Some(Box::new(RangeInnerGeneric {
-                        lower: RangeBound {
-                            inclusive: inner.lower.inclusive,
-                            bound: inner.lower.bound.map(|b| {
-                                Value::from_datum(dbg!(b.datum()), dbg!(element_type))
-                                    .expect("RangeBounds never contain Datum::Null")
-                            }),
-                        },
-                        upper: RangeBound {
-                            inclusive: inner.upper.inclusive,
-                            bound: inner.upper.bound.map(|b| {
-                                Value::from_datum(b.datum(), element_type)
-                                    .expect("RangeBounds never contain Datum::Null")
-                            }),
-                        },
-                    })),
-                };
-
-                Some(Value::Range(range))
+            (Datum::Range(range), ScalarType::Range { element_type }) => {
+                let value_range = range.into_bounds(|b| {
+                    Box::new(
+                        Value::from_datum(b.datum(), element_type)
+                            .expect("RangeBounds never contain Datum::Null"),
+                    )
+                });
+                Some(Value::Range(value_range))
             }
             _ => panic!("can't serialize {}::{:?}", datum, typ),
         }
@@ -287,34 +272,15 @@ impl Value {
             Value::Uuid(u) => Datum::Uuid(u),
             Value::Numeric(n) => Datum::Numeric(n.0),
             Value::MzTimestamp(t) => Datum::MzTimestamp(t),
-            Value::Range(range) => buf.make_datum(|packer| match range {
-                None => packer.push_empty_range(),
-                Some(inner) => {
-                    let elem_pg_type = match typ {
-                        Type::Range { element_type } => &*element_type,
-                        _ => panic!("Value::List should have type Type::List. Found {:?}", typ),
-                    };
+            Value::Range(range) => {
+                let elem_pg_type = match typ {
+                    Type::Range { element_type } => &*element_type,
+                    _ => panic!("Value::List should have type Type::List. Found {:?}", typ),
+                };
+                let range = range.into_bounds(|elem| elem.into_datum(buf, elem_pg_type));
 
-                    packer
-                        .push_range(
-                            RangeLowerBound {
-                                inclusive: inner.lower.inclusive,
-                                bound: inner
-                                    .lower
-                                    .bound
-                                    .map(|elem| elem.into_datum(buf, elem_pg_type)),
-                            },
-                            RangeUpperBound {
-                                inclusive: inner.upper.inclusive,
-                                bound: inner
-                                    .upper
-                                    .bound
-                                    .map(|elem| elem.into_datum(buf, elem_pg_type)),
-                            },
-                        )
-                        .unwrap()
-                }
-            }),
+                buf.make_datum(|packer| packer.push_range(range).unwrap())
+            }
         }
     }
 
@@ -390,13 +356,11 @@ impl Value {
             Value::Uuid(u) => strconv::format_uuid(buf, *u),
             Value::Numeric(d) => strconv::format_numeric(buf, &d.0),
             Value::MzTimestamp(t) => strconv::format_mz_timestamp(buf, *t),
-            Value::Range(range) => {
-                strconv::format_range(buf, range, |buf, elem: Option<&Value>| match elem {
-                    Some(elem) => Ok(elem.encode_text(buf.nonnull_buffer())),
-                    None => Ok::<_, ()>(buf.write_null()),
-                })
-                .expect("provided closure never fails")
-            }
+            Value::Range(range) => strconv::format_range(buf, range, |buf, elem| match elem {
+                Some(elem) => Ok(elem.encode_text(buf.nonnull_buffer())),
+                None => Ok::<_, ()>(buf.write_null()),
+            })
+            .expect("provided closure never fails"),
         }
     }
 
@@ -605,12 +569,9 @@ impl Value {
             Type::TimestampTz { .. } => Value::TimestampTz(strconv::parse_timestamptz(s)?),
             Type::Uuid => Value::Uuid(Uuid::parse_str(s)?),
             Type::MzTimestamp => Value::MzTimestamp(strconv::parse_mz_timestamp(s)?),
-            Type::Range { element_type } => Value::Range(
-                strconv::parse_range(s, |elem_text| {
-                    Value::decode_text(element_type, elem_text.as_bytes())
-                })?
-                .map(Box::new),
-            ),
+            Type::Range { element_type } => Value::Range(strconv::parse_range(s, |elem_text| {
+                Value::decode_text(element_type, elem_text.as_bytes()).map(Box::new)
+            })?),
         })
     }
 

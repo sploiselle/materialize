@@ -55,7 +55,7 @@ use crate::adt::datetime::{self, DateTimeField, ParsedDateTime};
 use crate::adt::interval::Interval;
 use crate::adt::jsonb::{Jsonb, JsonbRef};
 use crate::adt::numeric::{self, Numeric, NUMERIC_DATUM_MAX_PRECISION};
-use crate::adt::range::{RangeBound, RangeInnerGeneric};
+use crate::adt::range::{Range, RangeBound, RangerInner};
 use crate::adt::timestamp::CheckedTimestamp;
 
 include!(concat!(env!("OUT_DIR"), "/mz_repr.strconv.rs"));
@@ -1184,18 +1184,21 @@ where
 pub fn parse_range<'a, V, E>(
     s: &'a str,
     gen_elem: impl FnMut(Cow<'a, str>) -> Result<V, E>,
-) -> Result<Option<RangeInnerGeneric<V>>, ParseError>
+) -> Result<Range<V>, ParseError>
 where
     E: fmt::Display,
 {
-    parse_range_inner(s, gen_elem)
-        .map_err(|details| ParseError::invalid_input_syntax("range", s).with_details(details))
+    Ok(Range {
+        inner: parse_range_inner(s, gen_elem).map_err(|details| {
+            ParseError::invalid_input_syntax("range", s).with_details(details)
+        })?,
+    })
 }
 
 fn parse_range_inner<'a, V, E>(
     s: &'a str,
     mut gen_elem: impl FnMut(Cow<'a, str>) -> Result<V, E>,
-) -> Result<Option<RangeInnerGeneric<V>>, String>
+) -> Result<Option<RangerInner<V>>, String>
 where
     E: fmt::Display,
 {
@@ -1255,7 +1258,7 @@ where
         bail!("Junk after right parenthesis or bracket.")
     }
 
-    let range = Some(RangeInnerGeneric {
+    let range = Some(RangerInner {
         lower: RangeBound {
             inclusive: lower_inclusive,
             bound: lower_bound,
@@ -1272,13 +1275,13 @@ where
 /// Writes an [`i16`] to `buf`.
 pub fn format_range<F, V, E>(
     buf: &mut F,
-    i: &Option<Box<RangeInnerGeneric<V>>>,
+    r: &Range<V>,
     mut format_elem: impl FnMut(RangeElementWriter<F>, Option<&V>) -> Result<Nestable, E>,
 ) -> Result<Nestable, E>
 where
     F: FormatBuffer,
 {
-    let range = match i {
+    let range = match &r.inner {
         None => {
             buf.write_str("empty");
             return Ok(Nestable::Yes);

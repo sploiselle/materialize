@@ -38,7 +38,7 @@ use crate::adt::interval::Interval;
 use crate::adt::numeric;
 use crate::adt::numeric::Numeric;
 use crate::adt::range::{
-    self, InvalidRangeError, Range, RangeBound, RangeInner, RangeLowerBound, RangeUpperBound,
+    self, InvalidRangeError, Range, RangeBound, RangeLowerBound, RangeUpperBound, RangerInner,
 };
 use crate::adt::timestamp::CheckedTimestamp;
 use crate::scalar::arb_datum;
@@ -690,7 +690,7 @@ unsafe fn read_datum<'a>(data: &'a [u8], offset: &mut usize) -> Datum<'a> {
             };
 
             Datum::Range(Range {
-                inner: Some(RangeInner { lower, upper }),
+                inner: Some(RangerInner { lower, upper }),
             })
         }
     }
@@ -921,7 +921,7 @@ where
                 None => {
                     data.push(range::Flags::EMPTY.bits());
                 }
-                Some(RangeInner { lower, upper }) => {
+                Some(RangerInner { lower, upper }) => {
                     let mut flags = range::Flags::empty();
 
                     flags.set(range::Flags::LB_INFINITE, lower.bound.is_none());
@@ -1032,7 +1032,7 @@ pub fn datum_size(datum: &Datum) -> usize {
             // Tag + flags
             2 + match inner {
                 None => 0,
-                Some(RangeInner { lower, upper }) => [lower.bound, upper.bound]
+                Some(RangerInner { lower, upper }) => [lower.bound, upper.bound]
                     .iter()
                     .map(|bound| match bound {
                         None => 0,
@@ -1406,15 +1406,6 @@ impl RowPacker<'_> {
         })
     }
 
-    /// Pushes a `DatumRange` that is considered empty.
-    ///
-    /// - To construct other ranges, use [`Self::push_range`].
-    pub fn push_empty_range(&mut self) {
-        self.row.data.push(Tag::Range.into());
-        // Untagged bytes only contains the `RANGE_EMPTY` flag value.
-        self.row.data.push(range::Flags::EMPTY.bits());
-    }
-
     /// Pushes a `DatumRange` built from the specified arguments.
     ///
     /// # Panics
@@ -1430,23 +1421,27 @@ impl RowPacker<'_> {
     ///   [`RangeBound::new`], which handles `Datum::Null` in a
     ///   SQL-friendly way.
     /// - To generate an empty range, use `push_empty_range`.
-    pub fn push_range<'a>(
-        &mut self,
-        lower: RangeLowerBound<Datum<'a>>,
-        upper: RangeUpperBound<Datum<'a>>,
-    ) -> Result<(), InvalidRangeError> {
-        match Range::canonicalize(lower, upper)? {
-            None => Ok(self.push_empty_range()),
-            Some((lower, upper)) => self.push_range_with(
+    pub fn push_range<'a>(&mut self, mut range: Range<Datum<'a>>) -> Result<(), InvalidRangeError> {
+        range.canonicalize()?;
+        match range.inner {
+            None => {
+                self.row.data.push(Tag::Range.into());
+                // Untagged bytes only contains the `RANGE_EMPTY` flag value.
+                self.row.data.push(range::Flags::EMPTY.bits());
+                Ok(())
+            }
+            Some(inner) => self.push_range_with(
                 RangeLowerBound {
-                    inclusive: lower.inclusive,
-                    bound: upper
+                    inclusive: inner.lower.inclusive,
+                    bound: inner
+                        .lower
                         .bound
                         .map(|value| move |row: &mut RowPacker| Ok(row.push(value))),
                 },
                 RangeUpperBound {
-                    inclusive: upper.inclusive,
-                    bound: upper
+                    inclusive: inner.upper.inclusive,
+                    bound: inner
+                        .upper
                         .bound
                         .map(|value| move |row: &mut RowPacker| Ok(row.push(value))),
                 },
@@ -2218,10 +2213,10 @@ mod tests {
             Datum::Range(Range { inner: None }),
             arena.make_datum(|packer| {
                 packer
-                    .push_range(
+                    .push_range(Range::new(Some((
                         RangeLowerBound::new(Datum::Int32(-1), true),
                         RangeUpperBound::new(Datum::Int32(1), true),
-                    )
+                    ))))
                     .unwrap();
             }),
         ];
@@ -2291,10 +2286,10 @@ mod tests {
             (Datum::Int32(1), false, Datum::Null, true, "(1,]"),
         ] {
             packer
-                .push_range(
+                .push_range(Range::new(Some((
                     RangeLowerBound::new(lower, lower_inclusive),
                     RangeUpperBound::new(upper, upper_inclusive),
-                )
+                ))))
                 .unwrap();
 
             let r = arena.make_datum(|packer| {
@@ -2326,13 +2321,8 @@ mod tests {
 
         test_ranges_inner(empty_range, &Datum::Range(Range { inner: None }), &"empty");
 
-        let mut last_seen = empty_range;
-
         for (row_value, (vec_value, string_rep)) in row.iter().zip_eq(datum_vec.iter()) {
-            // Validates Ord implementation; relies on input being hand-sorted.
-            assert!(last_seen < row_value, "{last_seen} < {row_value}");
             test_ranges_inner(row_value, vec_value, string_rep);
-            last_seen = row_value;
         }
     }
 

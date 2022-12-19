@@ -39,9 +39,8 @@ use crate::adt::range::{Range, RangeLowerBound, RangeUpperBound};
 use crate::adt::system::{Oid, PgLegacyChar, RegClass, RegProc, RegType};
 use crate::adt::timestamp::{CheckedTimestamp, TimestampError};
 use crate::adt::varchar::{VarChar, VarCharMaxLength};
-use crate::{ColumnName, ColumnType, DatumList, DatumMap};
-use crate::{GlobalId, RowPacker};
-use crate::{Row, RowArena};
+use crate::row::DatumNested;
+use crate::{ColumnName, ColumnType, DatumList, DatumMap, GlobalId, Row, RowArena};
 
 pub use crate::relation_and_scalar::proto_scalar_type::ProtoRecordField;
 pub use crate::relation_and_scalar::ProtoScalarType;
@@ -150,7 +149,7 @@ pub enum Datum<'a> {
     /// An unknown value.
     Null,
     // A range of values, e.g. [-1, 1).
-    Range(Range<'a>),
+    Range(Range<DatumNested<'a>>),
 }
 
 /// This implementation of serialize is designed to be able to print out Datums
@@ -729,15 +728,20 @@ impl<'a> Datum<'a> {
         }
     }
 
-    /// Unwraps the rarange value within this datum.
+    /// Unwraps the range value within this datum.
+    ///
+    /// Note that the return type is a range generic over `Datum`, which is
+    /// convenient to work with. However, the type stored in the datum is
+    /// generic over `DatumNested`, which is necessary to avoid needless boxing
+    /// of the inner `Datum`.
     ///
     /// # Panics
     ///
     /// Panics if the datum is not [`Datum::Range`].
     #[track_caller]
-    pub fn unwrap_range(&self) -> Range {
+    pub fn unwrap_range(&self) -> Range<Datum<'a>> {
         match self {
-            Datum::Range(range) => *range,
+            Datum::Range(range) => range.into_bounds(|b| b.datum()),
             _ => panic!("Datum::unwrap_range called on {:?}", self),
         }
     }
@@ -1657,7 +1661,7 @@ impl<'a, E> DatumType<'a, E> for DatumMap<'a> {
     }
 }
 
-impl<'a, E> DatumType<'a, E> for Range<'a> {
+impl<'a, E> DatumType<'a, E> for Range<DatumNested<'a>> {
     fn nullable() -> bool {
         false
     }
@@ -2965,7 +2969,9 @@ fn arb_range() -> BoxedStrategy<PropRange> {
                 let mut row = Row::default();
                 let mut packer = row.packer();
                 let r = if split % 32 == 0 {
-                    packer.push_empty_range();
+                    packer
+                        .push_range(Range::new(None))
+                        .expect("pushing empty ranges never fails");
                     None
                 } else {
                     let a_datum = Datum::from(&a);
@@ -2978,15 +2984,13 @@ fn arb_range() -> BoxedStrategy<PropRange> {
                     let (lower, upper) = if b_is_lower { (b, a) } else { (a, b) };
 
                     packer
-                        .push_range_with(
+                        .push_range(Range::new(Some((
                             RangeLowerBound {
                                 inclusive: lower_inc,
                                 bound: if lower_inf {
                                     None
                                 } else {
-                                    Some(|row: &mut RowPacker| -> Result<(), String> {
-                                        Ok(row.push(&Datum::from(&lower)))
-                                    })
+                                    Some(Datum::from(&lower))
                                 },
                             },
                             RangeUpperBound {
@@ -2994,12 +2998,10 @@ fn arb_range() -> BoxedStrategy<PropRange> {
                                 bound: if upper_inf {
                                     None
                                 } else {
-                                    Some(|row: &mut RowPacker| -> Result<(), String> {
-                                        Ok(row.push(&Datum::from(&lower)))
-                                    })
+                                    Some(Datum::from(&upper))
                                 },
                             },
-                        )
+                        ))))
                         .unwrap();
 
                     Some((
@@ -3208,7 +3210,7 @@ mod tests {
             let row = row.unpack_first();
             let d = row.unwrap_range();
 
-            let (((prop_lower, prop_lower_inc), (prop_upper, prop_upper_inc)), crate::adt::range::RangeInner {lower, upper}) = match (prop_range, d.inner) {
+            let (((prop_lower, prop_lower_inc), (prop_upper, prop_upper_inc)), crate::adt::range::RangerInner {lower, upper}) = match (prop_range, d.inner) {
                 (Some(prop_values), Some(inner_range)) => (prop_values, inner_range),
                 (None, None) => return Ok(()),
                 _ => panic!("inequivalent row packing"),

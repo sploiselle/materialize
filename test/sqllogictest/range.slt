@@ -322,3 +322,53 @@ query T
 SELECT '[1,1]'::int4range::text;
 ----
 [1,2)
+
+statement ok
+CREATE TABLE r (a int4range);
+
+statement ok
+INSERT INTO r VALUES
+    ('[,1)'::int4range),
+    ('[,1]'::int4range),
+    ('[,)'::int4range),
+    ('[,]'::int4range),
+    ('(,1)'::int4range),
+    ('(,1]'::int4range),
+    ('(,)'::int4range),
+    ('(,]'::int4range),
+    ('[-1,1)'::int4range),
+    ('[-1,1]'::int4range),
+    ('(-1,1)'::int4range),
+    ('(-1,1]'::int4range),
+    ('[0,0)'::int4range),
+    ('[0,0]'::int4range),
+    ('(0,0)'::int4range),
+    ('(0,0]'::int4range),
+    ('[1,)'::int4range),
+    ('[1,]'::int4range),
+    ('(1,)'::int4range),
+    ('(1,]'::int4range);
+
+query T
+SELECT a::text AS t FROM r ORDER BY a;
+----
+empty
+empty
+empty
+(,1)
+(,1)
+(,2)
+(,2)
+(,)
+(,)
+(,)
+(,)
+[-1,1)
+[-1,2)
+[0,1)
+[0,1)
+[0,2)
+[1,)
+[1,)
+[2,)
+[2,)
