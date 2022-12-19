@@ -102,6 +102,8 @@ impl<D: Hash> Hash for Range<D> {
 /// Trait alias for traits required for generic range function implementations.
 pub trait RangeOps<'a>:
     Debug + Ord + PartialOrd + Eq + PartialEq + CheckedAdd + TryFrom<Datum<'a>> + Into<Datum<'a>>
+where
+    <Self as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
 {
     fn step() -> Option<Self>;
 
@@ -154,8 +156,10 @@ impl<'a, B: Copy> Range<B>
 where
     Datum<'a>: From<B>,
 {
-    #[allow(dead_code)]
-    fn contains<T: RangeOps<'a>>(&self, elem: &T) -> bool {
+    pub fn contains<T: RangeOps<'a>>(&self, elem: &T) -> bool
+    where
+        <T as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
+    {
         match self.inner {
             None => false,
             Some(inner) => inner.lower.satisfied_by(elem) && inner.upper.satisfied_by(elem),
@@ -306,7 +310,10 @@ where
     ///
     /// # Panics
     /// - If `self.bound.datum()` is not convertible to `T`.
-    fn elem_cmp<T: RangeOps<'a>>(&self, elem: &T) -> Ordering {
+    fn elem_cmp<T: RangeOps<'a>>(&self, elem: &T) -> Ordering
+    where
+        <T as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
+    {
         match self.bound.map(|bound| <T>::unwrap_datum(bound.into())) {
             None if UPPER => Ordering::Greater,
             None => Ordering::Less,
@@ -315,7 +322,10 @@ where
     }
 
     /// Does `elem` satisfy this bound?
-    fn satisfied_by<T: RangeOps<'a>>(&self, elem: &T) -> bool {
+    fn satisfied_by<T: RangeOps<'a>>(&self, elem: &T) -> bool
+    where
+        <T as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
+    {
         match self.elem_cmp(elem) {
             // Inclusive always satisfied with equality, regardless of upper or
             // lower.
@@ -356,7 +366,10 @@ impl<'a, const UPPER: bool> RangeBound<Datum<'a>, UPPER> {
         }
     }
 
-    fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>) {
+    fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>)
+    where
+        <T as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
+    {
         if let Some(step) = T::step() {
             // Upper bounds must be exclusive, lower bounds inclusive
             if UPPER == self.inclusive {
@@ -417,137 +430,6 @@ impl RustType<ProtoInvalidRangeError> for InvalidRangeError {
             None => Err(TryFromProtoError::missing_field(
                 "`ProtoInvalidRangeError::kind`",
             )),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::Range;
-    use crate::adt::range::{Range, RangeLowerBound, RangeUpperBound};
-    use crate::{Datum, RowArena};
-
-    // TODO: Once SQL supports this, the test can be moved into SLT.
-    #[test]
-    fn test_range_contains() {
-        fn test_range_contains_inner<'a>(
-            range: Range,
-            contains: Option<i32>,
-            does_not_contain: Option<i32>,
-        ) {
-            if let Some(el) = contains {
-                assert!(range.contains(&el), "el {:?}, range {}", el, range);
-            }
-
-            if let Some(el) = does_not_contain {
-                assert!(!range.contains(&el), "el {:?}, range {:?}", el, range);
-            }
-        }
-
-        let arena = RowArena::new();
-        for (lower, lower_inclusive, upper, upper_inclusive, contains, does_not_contain) in [
-            (
-                Datum::Null,
-                true,
-                Datum::Int32(1),
-                false,
-                Some(i32::MIN),
-                Some(1),
-            ),
-            (Datum::Null, true, Datum::Int32(1), true, Some(1), Some(2)),
-            (Datum::Null, true, Datum::Null, false, Some(i32::MAX), None),
-            (Datum::Null, true, Datum::Null, true, Some(i32::MAX), None),
-            (
-                Datum::Null,
-                false,
-                Datum::Int32(1),
-                false,
-                Some(i32::MIN),
-                Some(1),
-            ),
-            (Datum::Null, false, Datum::Int32(1), true, Some(1), Some(2)),
-            (Datum::Null, false, Datum::Null, false, Some(i32::MAX), None),
-            (Datum::Null, false, Datum::Null, true, Some(i32::MAX), None),
-            (
-                Datum::Int32(-1),
-                true,
-                Datum::Int32(1),
-                false,
-                Some(-1),
-                Some(1),
-            ),
-            (
-                Datum::Int32(-1),
-                true,
-                Datum::Int32(1),
-                true,
-                Some(1),
-                Some(-2),
-            ),
-            (
-                Datum::Int32(-1),
-                false,
-                Datum::Int32(1),
-                false,
-                Some(0),
-                Some(-1),
-            ),
-            (
-                Datum::Int32(-1),
-                false,
-                Datum::Int32(1),
-                true,
-                Some(1),
-                Some(-1),
-            ),
-            (Datum::Int32(1), true, Datum::Null, false, Some(1), Some(-1)),
-            (
-                Datum::Int32(1),
-                true,
-                Datum::Null,
-                true,
-                Some(i32::MAX),
-                Some(-1),
-            ),
-            (Datum::Int32(1), false, Datum::Null, false, Some(2), Some(1)),
-            (
-                Datum::Int32(1),
-                false,
-                Datum::Null,
-                true,
-                Some(i32::MAX),
-                Some(1),
-            ),
-        ] {
-            let range = arena.make_datum(|packer| {
-                packer
-                    .push_range(Range::new(Some((
-                        RangeLowerBound::new(lower, lower_inclusive),
-                        RangeUpperBound::new(upper, upper_inclusive),
-                    ))))
-                    .unwrap();
-            });
-
-            let range = match range {
-                Datum::Range(inner) => inner,
-                _ => unreachable!(),
-            };
-
-            test_range_contains_inner(range, contains, does_not_contain);
-        }
-
-        let range = arena.make_datum(|packer| {
-            packer.push_range(Range::new(None));
-        });
-
-        let range = match range {
-            Datum::Range(inner) => inner,
-            _ => unreachable!(),
-        };
-
-        for el in i16::MIN..i16::MAX {
-            test_range_contains_inner(range, None, Some(el.into()));
         }
     }
 }

@@ -112,6 +112,7 @@ impl TypeCategory {
     pub fn from_param(param: &ParamType) -> Self {
         match param {
             ParamType::Any
+            | ParamType::AnyElement
             | ParamType::ArrayAny
             | ParamType::ArrayAnyCompatible
             | ParamType::AnyCompatible
@@ -122,6 +123,7 @@ impl TypeCategory {
             | ParamType::MapAny
             | ParamType::MapAnyCompatible
             | ParamType::RecordAny => Self::Pseudo,
+            ParamType::RangeAnyCompatible | ParamType::RangeAny => Self::Range,
             ParamType::Plain(t) => Self::from_type(t),
         }
     }
@@ -676,6 +678,9 @@ pub enum ParamType {
     /// A pseudotype permitting any type, permitting other "Compatibility"-type
     /// parameters to find the best common type.
     AnyCompatible,
+    /// An pseudotype permitting any type, requiring other "Any"-type parameters
+    /// to be of the same type.
+    AnyElement,
     /// An pseudotype permitting any array type, requiring other "Any"-type
     /// parameters to be of the same type.
     ArrayAny,
@@ -709,6 +714,12 @@ pub enum ParamType {
     /// A polymorphic pseudotype permitting a `ScalarType::Record` of any type,
     /// but all records must be structurally equal.
     RecordAny,
+    /// An pseudotype permitting any range type, requiring other "Any"-type
+    /// parameters to be of the same type.
+    RangeAny,
+    /// A pseudotype permitting any range type, permitting other "Compatibility"-type
+    /// parameters to find the best common type.
+    RangeAnyCompatible,
 }
 
 impl ParamType {
@@ -718,10 +729,11 @@ impl ParamType {
         use ScalarType::*;
 
         match self {
-            Any | AnyCompatible | ListElementAnyCompatible => true,
+            Any | AnyElement | AnyCompatible | ListElementAnyCompatible => true,
             ArrayAny | ArrayAnyCompatible => matches!(t, Array(..) | Int2Vector),
             ListAny | ListAnyCompatible => matches!(t, List { .. }),
             MapAny | MapAnyCompatible => matches!(t, Map { .. }),
+            RangeAny | RangeAnyCompatible => matches!(t, Range { .. }),
             NonVecAny => !t.is_vec(),
             Plain(to) => typeconv::can_cast(ecx, CastContext::Implicit, t, to),
             RecordAny => matches!(t, Record { .. }),
@@ -760,7 +772,8 @@ impl ParamType {
     fn is_polymorphic(&self) -> bool {
         use ParamType::*;
         match self {
-            ArrayAny
+            AnyElement
+            | ArrayAny
             | ArrayAnyCompatible
             | AnyCompatible
             | ListAny
@@ -772,8 +785,10 @@ impl ParamType {
             // In PG, RecordAny isn't polymorphic even though it offers
             // polymorphic behavior. For more detail, see
             // `PolymorphicCompatClass::StructuralEq`.
-            | RecordAny => true,
-            Any | Plain(_) => false,
+            | RecordAny
+            | RangeAny
+            | RangeAnyCompatible => true,
+            Any | Plain(_)  => false,
         }
     }
 
@@ -788,6 +803,7 @@ impl ParamType {
             }
             ParamType::Any => "any",
             ParamType::AnyCompatible => "anycompatible",
+            ParamType::AnyElement => "anyelement",
             ParamType::ArrayAny => "anyarray",
             ParamType::ArrayAnyCompatible => "anycompatiblearray",
             ParamType::ListAny => "list",
@@ -798,6 +814,8 @@ impl ParamType {
             ParamType::MapAnyCompatible => "anycompatiblemap",
             ParamType::NonVecAny => "anynonarray",
             ParamType::RecordAny => "record",
+            ParamType::RangeAny => "anyrange",
+            ParamType::RangeAnyCompatible => "anycompatiblerange",
         }
     }
 }
@@ -828,11 +846,8 @@ impl From<ScalarBaseType> for ParamType {
     fn from(s: ScalarBaseType) -> ParamType {
         use ScalarBaseType::*;
         let s = match s {
-            Array | List | Map | Record => {
+            Array | List | Map | Record | Range => {
                 panic!("use polymorphic parameters rather than {:?}", s);
-            }
-            Range => {
-                panic!("use a pseudo polymorphic range type rather than {:?}", s);
             }
             Bool => ScalarType::Bool,
             Int16 => ScalarType::Int16,
@@ -1337,7 +1352,7 @@ enum PolymorphicCompatClass {
     /// Represents the older "Any"-style matching of PG polymorphic types, which
     /// constrains all types to be of the same type, i.e. does not attempt to
     /// promote parameters to a best common type.
-    BaseEq,
+    Any,
     /// Represent's Postgres' "anycompatible"-type polymorphic resolution.
     ///
     /// > Selection of the common type considers the actual types of
@@ -1385,8 +1400,12 @@ impl TryFrom<&ParamType> for PolymorphicCompatClass {
         use ParamType::*;
 
         Ok(match param {
-            ArrayAny | ListAny | MapAny | NonVecAny => PolymorphicCompatClass::BaseEq,
-            ArrayAnyCompatible | AnyCompatible => PolymorphicCompatClass::BestCommonAny,
+            AnyElement | ArrayAny | ListAny | MapAny | NonVecAny | RangeAny => {
+                PolymorphicCompatClass::Any
+            }
+            ArrayAnyCompatible | AnyCompatible | RangeAnyCompatible => {
+                PolymorphicCompatClass::BestCommonAny
+            }
             ListAnyCompatible | ListElementAnyCompatible => PolymorphicCompatClass::BestCommonList,
             MapAnyCompatible => PolymorphicCompatClass::BestCommonMap,
             RecordAny => PolymorphicCompatClass::StructuralEq,
@@ -1400,7 +1419,7 @@ impl PolymorphicCompatClass {
         use PolymorphicCompatClass::*;
         match self {
             StructuralEq => from.structural_eq(to),
-            BaseEq => from.base_eq(to),
+            Any => from.base_eq(to),
             _ => typeconv::can_cast(ecx, CastContext::Implicit, from, to),
         }
     }
@@ -1453,9 +1472,11 @@ impl PolymorphicSolution {
         use ParamType::*;
 
         self.seen.push(match param {
-            AnyCompatible | ArrayAny | ListAny | ListAnyCompatible | MapAny | MapAnyCompatible
-            | NonVecAny | RecordAny => seen,
-            ArrayAnyCompatible => seen.map(|array| array.unwrap_array_element_type().clone()),
+            AnyElement | AnyCompatible | ListAnyCompatible |  MapAnyCompatible | NonVecAny | RecordAny => seen,
+            MapAny => seen.map(|array| array.unwrap_map_value_type().clone()),
+            ListAny => seen.map(|array| array.unwrap_list_element_type().clone()),
+            ArrayAny | ArrayAnyCompatible => seen.map(|array| array.unwrap_array_element_type().clone()),
+            RangeAny | RangeAnyCompatible => seen.map(|range| range.unwrap_range_element_type().clone()),
             ListElementAnyCompatible => seen.map(|el| ScalarType::List {
                 custom_id: None,
                 element_type: Box::new(el),
@@ -1508,16 +1529,33 @@ impl PolymorphicSolution {
                         custom_id: None,
                     }),
                     // Do not infer type.
-                    PolymorphicCompatClass::StructuralEq | PolymorphicCompatClass::BaseEq => None,
+                    PolymorphicCompatClass::StructuralEq | PolymorphicCompatClass::Any => None,
                 },
             }
         } else {
             // If we saw any polymorphic parameters, we must have determined the
             // compatibility type.
             let compat = self.compat.as_ref().unwrap();
-            let r = match typeconv::guess_best_common_type(ecx, &self.seen) {
-                Ok(r) => r,
-                Err(_) => return false,
+
+            let r = match compat {
+                PolymorphicCompatClass::Any => {
+                    let mut s = self
+                        .seen
+                        .iter()
+                        .filter_map(|f| f.clone())
+                        .collect::<Vec<_>>();
+                    let (candiate, remaining) =
+                        s.split_first().expect("have at least one non-None element");
+                    if remaining.iter().all(|r| r.base_eq(candiate)) {
+                        s.remove(0)
+                    } else {
+                        return false;
+                    }
+                }
+                _ => match typeconv::guess_best_common_type(ecx, &self.seen) {
+                    Ok(r) => r,
+                    Err(_) => return false,
+                },
             };
 
             // Ensure the best common type is compatible.
@@ -1554,12 +1592,24 @@ impl PolymorphicSolution {
         );
 
         match param {
-            AnyCompatible | ArrayAny | ListAny | ListAnyCompatible | MapAny | MapAnyCompatible
-            | NonVecAny => self.key.clone(),
-            ArrayAnyCompatible => self
+            AnyElement | AnyCompatible | ListAnyCompatible | MapAnyCompatible | NonVecAny => {
+                self.key.clone()
+            }
+            ArrayAny | ArrayAnyCompatible => self
                 .key
                 .as_ref()
                 .map(|key| ScalarType::Array(Box::new(key.clone()))),
+            ListAny => self.key.as_ref().map(|key| ScalarType::List {
+                element_type: Box::new(key.clone()),
+                custom_id: None,
+            }),
+            MapAny => self.key.as_ref().map(|key| ScalarType::Map {
+                value_type: Box::new(key.clone()),
+                custom_id: None,
+            }),
+            RangeAny | RangeAnyCompatible => self.key.as_ref().map(|key| ScalarType::Range {
+                element_type: Box::new(key.clone()),
+            }),
             ListElementAnyCompatible => self
                 .key
                 .as_ref()
@@ -1596,7 +1646,7 @@ fn coerce_args_to_types(
                 }
                 _ => cexpr.type_as_any(ecx)?,
             },
-            p @ (ArrayAny | ListAny | MapAny) => {
+            p @ (ArrayAny | ListAny | MapAny | RangeAny) => {
                 let target = polymorphic_solution
                     .target_for_param_type(p)
                     .ok_or_else(|| {
@@ -3447,6 +3497,10 @@ static OP_IMPLS: Lazy<HashMap<&'static str, Func>> = Lazy::new(|| {
                       .call_binary(rhs, JsonbContainsJsonb))
             }), oid::OP_CONTAINS_STRING_JSONB_OID;
             params!(MapAnyCompatible, MapAnyCompatible) => MapContainsMap => Bool, oid::OP_CONTAINS_MAP_MAP_OID;
+            params!(RangeAny, AnyElement) => Operation::binary(|ecx, lhs, rhs| {
+                let elem_type = ecx.scalar_type(&lhs).unwrap_range_element_type().clone();
+                Ok(lhs.call_binary(rhs, BinaryFunc::RangeContainsElem { elem_type }))
+            }) => Bool, 3892;
         },
         "<@" => Scalar {
             params!(Jsonb, Jsonb) => Operation::binary(|_ecx, lhs, rhs| {

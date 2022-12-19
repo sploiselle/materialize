@@ -22,6 +22,7 @@ use fallible_iterator::FallibleIterator;
 use hmac::{Hmac, Mac};
 use itertools::Itertools;
 use md5::{Digest, Md5};
+use mz_repr::adt::range::RangeOps;
 use num::traits::CheckedNeg;
 use proptest_derive::Arbitrary;
 use regex::RegexBuilder;
@@ -1252,6 +1253,15 @@ fn get_byte<'a>(a: Datum<'a>, b: Datum<'a>) -> Result<Datum<'a>, EvalError> {
     Ok(Datum::from(i32::from(*i)))
 }
 
+fn contains_range_elem<'a, R: RangeOps<'a>>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a>
+where
+    <R as TryFrom<Datum<'a>>>::Error: std::fmt::Debug,
+{
+    let range = a.unwrap_range();
+    let elem = R::try_from(b).expect("type checking must produce correct R");
+    Datum::from(range.contains(&elem))
+}
+
 fn eq<'a>(a: Datum<'a>, b: Datum<'a>) -> Datum<'a> {
     Datum::from(a == b)
 }
@@ -1895,6 +1905,7 @@ pub enum BinaryFunc {
     Power,
     PowerNumeric,
     GetByte,
+    RangeContainsElem { elem_type: ScalarType },
 }
 
 impl BinaryFunc {
@@ -2192,6 +2203,10 @@ impl BinaryFunc {
             BinaryFunc::PowerNumeric => eager!(power_numeric),
             BinaryFunc::RepeatString => eager!(repeat_string, temp_storage),
             BinaryFunc::GetByte => eager!(get_byte),
+            BinaryFunc::RangeContainsElem { elem_type } => Ok(match elem_type {
+                ScalarType::Int32 => eager!(contains_range_elem::<i32>),
+                _ => unreachable!(),
+            }),
         }
     }
 
@@ -2344,6 +2359,8 @@ impl BinaryFunc {
             }
 
             GetByte => ScalarType::Int32.nullable(in_nullable),
+
+            RangeContainsElem { .. } => ScalarType::Bool.nullable(in_nullable),
         }
     }
 
@@ -2467,6 +2484,7 @@ impl BinaryFunc {
                 | ModFloat32
                 | ModFloat64
                 | ModNumeric
+                | RangeContainsElem { .. }
         )
     }
 
@@ -2595,7 +2613,8 @@ impl BinaryFunc {
             | ArrayArrayConcat
             | ListListConcat
             | ListElementConcat
-            | ElementListConcat => true,
+            | ElementListConcat
+            | RangeContainsElem { .. } => true,
             ToCharTimestamp
             | ToCharTimestampTz
             | DateBinTimestamp
@@ -2851,6 +2870,7 @@ impl fmt::Display for BinaryFunc {
             BinaryFunc::PowerNumeric => f.write_str("power_numeric"),
             BinaryFunc::RepeatString => f.write_str("repeat"),
             BinaryFunc::GetByte => f.write_str("get_byte"),
+            BinaryFunc::RangeContainsElem { .. } => f.write_str("@>"),
         }
     }
 }
@@ -3037,6 +3057,7 @@ impl Arbitrary for BinaryFunc {
             Just(BinaryFunc::LogNumeric),
             Just(BinaryFunc::Power),
             Just(BinaryFunc::PowerNumeric),
+            any::<ScalarType>().prop_map(|elem_type| BinaryFunc::RangeContainsElem { elem_type })
         ]
     }
 }
@@ -3213,6 +3234,9 @@ impl RustType<ProtoBinaryFunc> for BinaryFunc {
             BinaryFunc::Power => Power(()),
             BinaryFunc::PowerNumeric => PowerNumeric(()),
             BinaryFunc::GetByte => GetByte(()),
+            BinaryFunc::RangeContainsElem { elem_type } => {
+                RangeContainsElem(elem_type.into_proto())
+            }
         };
         ProtoBinaryFunc { kind: Some(kind) }
     }
@@ -3395,6 +3419,9 @@ impl RustType<ProtoBinaryFunc> for BinaryFunc {
                 Power(()) => Ok(BinaryFunc::Power),
                 PowerNumeric(()) => Ok(BinaryFunc::PowerNumeric),
                 GetByte(()) => Ok(BinaryFunc::GetByte),
+                RangeContainsElem(elem_type) => Ok(BinaryFunc::RangeContainsElem {
+                    elem_type: elem_type.into_rust()?,
+                }),
             }
         } else {
             Err(TryFromProtoError::missing_field("ProtoBinaryFunc::kind"))
