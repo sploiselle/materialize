@@ -20,6 +20,7 @@ use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
 
 use crate::row::DatumNested;
+use crate::scalar::DatumKind;
 use crate::Datum;
 
 include!(concat!(env!("OUT_DIR"), "/mz_repr.adt.range.rs"));
@@ -83,21 +84,20 @@ impl<'a> Range<'a> {
     // - If type has step:
     //  - Exclusive bounds are rewritten as inclusive ++
     pub fn canonicalize(
-        mut lower: RangeLowerBoundDesc<Datum<'a>>,
-        mut upper: RangeUpperBoundDesc<Datum<'a>>,
-    ) -> Result<
-        Option<(
-            RangeLowerBoundDesc<Datum<'a>>,
-            RangeUpperBoundDesc<Datum<'a>>,
-        )>,
-        InvalidRangeError,
-    > {
-        match (lower.value, upper.value) {
-            (
-                RangeBoundDescValue::Finite { value: l },
-                RangeBoundDescValue::Finite { value: u },
-            ) if l > u => {
-                return Err(InvalidRangeError::MisorderedRangeBounds);
+        mut lower: RangeLowerBound<Datum<'a>>,
+        mut upper: RangeUpperBound<Datum<'a>>,
+    ) -> Result<Option<(RangeLowerBound<Datum<'a>>, RangeUpperBound<Datum<'a>>)>, InvalidRangeError>
+    {
+        match (lower.bound, upper.bound) {
+            (Some(l), Some(u)) => {
+                assert_eq!(
+                    DatumKind::from(l),
+                    DatumKind::from(u),
+                    "finite bounds must be of same type"
+                );
+                if l > u {
+                    return Err(InvalidRangeError::MisorderedRangeBounds);
+                }
             }
             _ => {}
         };
@@ -108,8 +108,8 @@ impl<'a> Range<'a> {
         // If (x,x], range is empty
         Ok(
             if !(lower.inclusive && upper.inclusive)
-                && lower.value >= upper.value
-                && matches!(lower.value, RangeBoundDescValue::Finite { .. })
+                && lower.bound >= upper.bound
+                && lower.bound.is_some()
             {
                 // emtpy range
                 None
@@ -232,53 +232,25 @@ impl<'a, const UPPER: bool> RangeBound<DatumNested<'a>, UPPER> {
     }
 }
 
-/// Describes the value passed in via `RangeBoundDesc`s.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd)]
-pub enum RangeBoundDescValue<D> {
-    Finite { value: D },
-    Infinite,
-}
-
-impl<'a> From<Datum<'a>> for RangeBoundDescValue<Datum<'a>> {
-    /// Treats `Datum::Null` as an infinite bound (appropriate for PG
-    /// semantics), and all other `Datum`s as finite values.
-    fn from(d: Datum<'a>) -> Self {
-        match d {
-            Datum::Null => RangeBoundDescValue::Infinite,
-            value => RangeBoundDescValue::Finite { value },
-        }
-    }
-}
-
-/// Structures arguments for functions that construct ranges.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd)]
-pub struct RangeBoundDesc<D, const UPPER: bool = false> {
-    pub inclusive: bool,
-    pub value: RangeBoundDescValue<D>,
-}
-
-/// A `RangeBound` that sorts correctly for use as a lower bound.
-pub type RangeLowerBoundDesc<D> = RangeBoundDesc<D, false>;
-
-/// A `RangeBound` that sorts correctly for use as an upper bound.
-pub type RangeUpperBoundDesc<D> = RangeBoundDesc<D, true>;
-
-impl<'a, const UPPER: bool> RangeBoundDesc<Datum<'a>, UPPER> {
-    /// Create a new `RangeBoundDesc` whose value is infinite if `d ==
-    /// Datum::Null`, otherwise finite.
-    pub fn new(d: Datum<'a>, inclusive: bool) -> RangeBoundDesc<Datum<'a>, UPPER> {
-        RangeBoundDesc {
+impl<'a, const UPPER: bool> RangeBound<Datum<'a>, UPPER> {
+    /// Create a new `RangeBound` whose value is "infinite" (i.e. None) if `d ==
+    /// Datum::Null`, otherwise finite (i.e. Some).
+    pub fn new(d: Datum<'a>, inclusive: bool) -> RangeBound<Datum<'a>, UPPER> {
+        RangeBound {
             inclusive,
-            value: d.into(),
+            bound: match d {
+                Datum::Null => None,
+                o => Some(o),
+            },
         }
     }
 
     fn canonicalize(&mut self) {
-        match self.value {
-            RangeBoundDescValue::Infinite => {
+        match self.bound {
+            None => {
                 self.inclusive = false;
             }
-            RangeBoundDescValue::Finite { value } => match value {
+            Some(value) => match value {
                 d @ Datum::Int32(_) => self.canonicalize_inner::<i32>(d),
                 _ => todo!(),
             },
@@ -287,12 +259,10 @@ impl<'a, const UPPER: bool> RangeBoundDesc<Datum<'a>, UPPER> {
 
     fn canonicalize_inner<T: RangeOps<'a>>(&mut self, d: Datum<'a>) {
         if let Some(step) = T::step() {
-            if (UPPER && self.inclusive) || (!UPPER && !self.inclusive) {
+            // Upper bounds must be exclusive, lower bounds inclusive
+            if UPPER == self.inclusive {
                 let cur = <T>::unwrap_datum(d);
-                self.value = match cur.checked_add(&step).map(|t| t.into()) {
-                    None => RangeBoundDescValue::Infinite,
-                    Some(value) => RangeBoundDescValue::Finite { value },
-                };
+                self.bound = cur.checked_add(&step).map(|t| t.into());
                 self.inclusive = !UPPER;
             }
         }
@@ -356,7 +326,7 @@ impl RustType<ProtoInvalidRangeError> for InvalidRangeError {
 mod tests {
 
     use super::Range;
-    use crate::adt::range::RangeBoundDesc;
+    use crate::adt::range::{RangeLowerBound, RangeUpperBound};
     use crate::{Datum, RowArena};
 
     // TODO: Once SQL supports this, the test can be moved into SLT.
@@ -454,8 +424,8 @@ mod tests {
             let range = arena.make_datum(|packer| {
                 packer
                     .push_range(
-                        RangeBoundDesc::new(lower, lower_inclusive),
-                        RangeBoundDesc::new(upper, upper_inclusive),
+                        RangeLowerBound::new(lower, lower_inclusive),
+                        RangeUpperBound::new(upper, upper_inclusive),
                     )
                     .unwrap();
             });

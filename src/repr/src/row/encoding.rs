@@ -23,9 +23,7 @@ use mz_proto::{ProtoType, RustType, TryFromProtoError};
 
 use crate::adt::array::ArrayDimension;
 use crate::adt::numeric::Numeric;
-use crate::adt::range::{
-    RangeBoundDesc, RangeBoundDescValue, RangeInner, RangeLowerBoundDesc, RangeUpperBoundDesc,
-};
+use crate::adt::range::{RangeInner, RangeLowerBound, RangeUpperBound};
 use crate::chrono::ProtoNaiveTime;
 use crate::row::proto_datum::DatumType;
 use crate::row::{
@@ -273,23 +271,17 @@ impl RowPacker<'_> {
                         } = &**inner;
 
                         self.push_range_with(
-                            RangeLowerBoundDesc {
+                            RangeLowerBound {
                                 inclusive: *lower_inclusive,
-                                value: match lower {
-                                    None => RangeBoundDescValue::Infinite,
-                                    Some(d) => RangeBoundDescValue::Finite {
-                                        value: |row: &mut RowPacker| row.try_push_proto(&*d),
-                                    },
-                                },
+                                bound: lower
+                                    .as_ref()
+                                    .map(|d| |row: &mut RowPacker| row.try_push_proto(&*d)),
                             },
-                            RangeUpperBoundDesc {
+                            RangeUpperBound {
                                 inclusive: *upper_inclusive,
-                                value: match upper {
-                                    None => RangeBoundDescValue::Infinite,
-                                    Some(d) => RangeBoundDescValue::Finite {
-                                        value: |row: &mut RowPacker| row.try_push_proto(&*d),
-                                    },
-                                },
+                                bound: upper
+                                    .as_ref()
+                                    .map(|d| |row: &mut RowPacker| row.try_push_proto(&*d)),
                             },
                         )
                         .expect("decoding ProtoRow must succeed");

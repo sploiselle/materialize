@@ -38,8 +38,7 @@ use crate::adt::interval::Interval;
 use crate::adt::numeric;
 use crate::adt::numeric::Numeric;
 use crate::adt::range::{
-    self, InvalidRangeError, Range, RangeBound, RangeBoundDesc, RangeBoundDescValue, RangeInner,
-    RangeLowerBoundDesc, RangeUpperBoundDesc,
+    self, InvalidRangeError, Range, RangeBound, RangeInner, RangeLowerBound, RangeUpperBound,
 };
 use crate::adt::timestamp::CheckedTimestamp;
 use crate::scalar::arb_datum;
@@ -1423,39 +1422,33 @@ impl RowPacker<'_> {
     ///   different types.
     /// - If lower or upper express finite values and are equal to
     ///   `Datum::Null`. To handle `Datum::Null` properly, use
-    ///   `RangeBoundDescValue::From<Datum<'a>>`.
+    ///   `RangeBound::new`.
     ///
     /// # Notes
     /// - Prefer this function over `push_range_with`.
-    /// - Prefer creating [`RangeBoundDesc`]s using
-    ///   [`RangeBoundDesc<Datum<'a>>::new`], which handles `Datum::Null` in a
+    /// - Prefer creating [`RangeBound`]s using
+    ///   [`RangeBound::new`], which handles `Datum::Null` in a
     ///   SQL-friendly way.
     /// - To generate an empty range, use `push_empty_range`.
     pub fn push_range<'a>(
         &mut self,
-        lower: RangeLowerBoundDesc<Datum<'a>>,
-        upper: RangeUpperBoundDesc<Datum<'a>>,
+        lower: RangeLowerBound<Datum<'a>>,
+        upper: RangeUpperBound<Datum<'a>>,
     ) -> Result<(), InvalidRangeError> {
         match Range::canonicalize(lower, upper)? {
             None => Ok(self.push_empty_range()),
             Some((lower, upper)) => self.push_range_with(
-                RangeBoundDesc {
+                RangeLowerBound {
                     inclusive: lower.inclusive,
-                    value: match lower.value {
-                        RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
-                            value: move |row: &mut RowPacker| Ok(row.push(value)),
-                        },
-                        RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
-                    },
+                    bound: upper
+                        .bound
+                        .map(|value| move |row: &mut RowPacker| Ok(row.push(value))),
                 },
-                RangeBoundDesc {
+                RangeUpperBound {
                     inclusive: upper.inclusive,
-                    value: match upper.value {
-                        RangeBoundDescValue::Finite { value } => RangeBoundDescValue::Finite {
-                            value: move |row: &mut RowPacker| Ok(row.push(value)),
-                        },
-                        RangeBoundDescValue::Infinite => RangeBoundDescValue::Infinite,
-                    },
+                    bound: upper
+                        .bound
+                        .map(|value| move |row: &mut RowPacker| Ok(row.push(value))),
                 },
             ),
         }
@@ -1485,8 +1478,8 @@ impl RowPacker<'_> {
     ///   each infinite bound will be absent).
     pub fn push_range_with<L, U, E>(
         &mut self,
-        lower: RangeLowerBoundDesc<L>,
-        upper: RangeUpperBoundDesc<U>,
+        lower: RangeLowerBound<L>,
+        upper: RangeUpperBound<U>,
     ) -> Result<(), E>
     where
         L: FnOnce(&mut RowPacker) -> Result<(), E>,
@@ -1498,14 +1491,8 @@ impl RowPacker<'_> {
 
         let mut flags = range::Flags::empty();
 
-        flags.set(
-            range::Flags::LB_INFINITE,
-            matches!(lower.value, RangeBoundDescValue::Infinite),
-        );
-        flags.set(
-            range::Flags::UB_INFINITE,
-            matches!(upper.value, RangeBoundDescValue::Infinite),
-        );
+        flags.set(range::Flags::LB_INFINITE, lower.bound.is_none());
+        flags.set(range::Flags::UB_INFINITE, upper.bound.is_none());
         flags.set(range::Flags::LB_INCLUSIVE, lower.inclusive);
         flags.set(range::Flags::UB_INCLUSIVE, upper.inclusive);
 
@@ -1515,7 +1502,7 @@ impl RowPacker<'_> {
 
         let mut datum_check = self.row.data.len();
 
-        if let RangeBoundDescValue::Finite { value } = lower.value {
+        if let Some(value) = lower.bound {
             let start = self.row.data.len();
             value(self)?;
             assert!(
@@ -1525,7 +1512,7 @@ impl RowPacker<'_> {
             expected_datums += 1;
         }
 
-        if let RangeBoundDescValue::Finite { value } = upper.value {
+        if let Some(value) = upper.bound {
             let start = self.row.data.len();
             value(self)?;
             assert!(
@@ -2232,8 +2219,8 @@ mod tests {
             arena.make_datum(|packer| {
                 packer
                     .push_range(
-                        RangeBoundDesc::new(Datum::Int32(-1), true),
-                        RangeBoundDesc::new(Datum::Int32(1), true),
+                        RangeLowerBound::new(Datum::Int32(-1), true),
+                        RangeUpperBound::new(Datum::Int32(1), true),
                     )
                     .unwrap();
             }),
@@ -2305,30 +2292,26 @@ mod tests {
         ] {
             packer
                 .push_range(
-                    RangeBoundDesc::new(lower, lower_inclusive),
-                    RangeBoundDesc::new(upper, upper_inclusive),
+                    RangeLowerBound::new(lower, lower_inclusive),
+                    RangeUpperBound::new(upper, upper_inclusive),
                 )
                 .unwrap();
 
             let r = arena.make_datum(|packer| {
                 packer
                     .push_range_with::<_, _, InvalidRangeError>(
-                        RangeBoundDesc {
+                        RangeLowerBound {
                             inclusive: lower_inclusive,
-                            value: match lower {
-                                Datum::Null => RangeBoundDescValue::Infinite,
-                                o => RangeBoundDescValue::Finite {
-                                    value: move |row: &mut RowPacker| Ok(row.push(o)),
-                                },
+                            bound: match lower {
+                                Datum::Null => None,
+                                o => Some(move |row: &mut RowPacker| Ok(row.push(o))),
                             },
                         },
-                        RangeBoundDesc {
+                        RangeUpperBound {
                             inclusive: upper_inclusive,
-                            value: match upper {
-                                Datum::Null => RangeBoundDescValue::Infinite,
-                                o => RangeBoundDescValue::Finite {
-                                    value: move |row: &mut RowPacker| Ok(row.push(o)),
-                                },
+                            bound: match upper {
+                                Datum::Null => None,
+                                o => Some(move |row: &mut RowPacker| Ok(row.push(o))),
                             },
                         },
                     )
@@ -2362,27 +2345,23 @@ mod tests {
             let row_len = row.byte_len();
             let mut packer = row.packer();
             let r = packer.push_range_with(
-                RangeBoundDesc {
+                RangeLowerBound {
                     inclusive: true,
-                    value: RangeBoundDescValue::Finite {
-                        value: |row: &mut RowPacker| {
-                            for d in &datums[0] {
-                                row.push(d);
-                            }
-                            Ok(())
-                        },
-                    },
+                    bound: Some(|row: &mut RowPacker| {
+                        for d in &datums[0] {
+                            row.push(d);
+                        }
+                        Ok(())
+                    }),
                 },
-                RangeBoundDesc {
+                RangeUpperBound {
                     inclusive: true,
-                    value: RangeBoundDescValue::Finite {
-                        value: |row: &mut RowPacker| {
-                            for d in &datums[1] {
-                                row.push(d);
-                            }
-                            Ok(())
-                        },
-                    },
+                    bound: Some(|row: &mut RowPacker| {
+                        for d in &datums[1] {
+                            row.push(d);
+                        }
+                        Ok(())
+                    }),
                 },
             );
 

@@ -26,7 +26,7 @@ use mz_repr::adt::date::Date;
 use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::adt::numeric::{self, Numeric, NumericMaxScale};
-use mz_repr::adt::range::{Range, RangeLowerBoundDesc, RangeUpperBoundDesc};
+use mz_repr::adt::range::{Range, RangeLowerBound, RangeUpperBound};
 use mz_repr::adt::regex::Regex;
 use mz_repr::adt::system::{Oid, PgLegacyChar};
 use mz_repr::adt::timestamp::CheckedTimestamp;
@@ -531,7 +531,7 @@ impl LazyUnaryFunc for CastStringToRange {
 
         let range = range
             .map(|inner| {
-                let lower = RangeLowerBoundDesc::new(
+                let lower = RangeLowerBound::new(
                     match inner.lower.bound {
                         Some(elem) => elem,
                         None => Datum::Null,
@@ -539,7 +539,7 @@ impl LazyUnaryFunc for CastStringToRange {
                     inner.lower.inclusive,
                 );
 
-                let upper = RangeUpperBoundDesc::new(
+                let upper = RangeUpperBound::new(
                     match inner.upper.bound {
                         Some(elem) => elem,
                         None => Datum::Null,

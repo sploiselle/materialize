@@ -35,7 +35,7 @@ use crate::adt::date::Date;
 use crate::adt::interval::Interval;
 use crate::adt::jsonb::{Jsonb, JsonbRef};
 use crate::adt::numeric::{Numeric, NumericMaxScale};
-use crate::adt::range::{Range, RangeBoundDesc, RangeBoundDescValue};
+use crate::adt::range::{Range, RangeLowerBound, RangeUpperBound};
 use crate::adt::system::{Oid, PgLegacyChar, RegClass, RegProc, RegType};
 use crate::adt::timestamp::{CheckedTimestamp, TimestampError};
 use crate::adt::varchar::{VarChar, VarCharMaxLength};
@@ -2979,28 +2979,24 @@ fn arb_range() -> BoxedStrategy<PropRange> {
 
                     packer
                         .push_range_with(
-                            RangeBoundDesc {
+                            RangeLowerBound {
                                 inclusive: lower_inc,
-                                value: if lower_inf {
-                                    RangeBoundDescValue::Infinite
+                                bound: if lower_inf {
+                                    None
                                 } else {
-                                    RangeBoundDescValue::Finite {
-                                        value: |row: &mut RowPacker| -> Result<(), String> {
-                                            Ok(row.push(&Datum::from(&lower)))
-                                        },
-                                    }
+                                    Some(|row: &mut RowPacker| -> Result<(), String> {
+                                        Ok(row.push(&Datum::from(&lower)))
+                                    })
                                 },
                             },
-                            RangeBoundDesc {
+                            RangeUpperBound {
                                 inclusive: upper_inc,
-                                value: if upper_inf {
-                                    RangeBoundDescValue::Infinite
+                                bound: if upper_inf {
+                                    None
                                 } else {
-                                    RangeBoundDescValue::Finite {
-                                        value: |row: &mut RowPacker| -> Result<(), String> {
-                                            Ok(row.push(&Datum::from(&upper)))
-                                        },
-                                    }
+                                    Some(|row: &mut RowPacker| -> Result<(), String> {
+                                        Ok(row.push(&Datum::from(&lower)))
+                                    })
                                 },
                             },
                         )

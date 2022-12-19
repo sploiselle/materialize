@@ -14,6 +14,8 @@ use std::str;
 
 use bytes::{Buf, BufMut, BytesMut};
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use mz_repr::adt::range::RangeLowerBound;
+use mz_repr::adt::range::RangeUpperBound;
 use postgres_types::{FromSql, IsNull, ToSql, Type as PgType};
 use uuid::Uuid;
 
@@ -21,9 +23,7 @@ use mz_repr::adt::array::ArrayDimension;
 use mz_repr::adt::char;
 use mz_repr::adt::date::Date;
 use mz_repr::adt::jsonb::JsonbRef;
-use mz_repr::adt::range::{
-    Range, RangeBound, RangeInnerGeneric, RangeLowerBoundDesc, RangeUpperBoundDesc,
-};
+use mz_repr::adt::range::{Range, RangeBound, RangeInnerGeneric};
 use mz_repr::adt::timestamp::CheckedTimestamp;
 use mz_repr::strconv::{self, Nestable};
 use mz_repr::{Datum, RelationType, Row, RowArena, ScalarType};
@@ -297,20 +297,20 @@ impl Value {
 
                     packer
                         .push_range(
-                            RangeLowerBoundDesc::new(
-                                match inner.lower.bound {
-                                    Some(elem) => elem.into_datum(buf, elem_pg_type),
-                                    None => Datum::Null,
-                                },
-                                inner.lower.inclusive,
-                            ),
-                            RangeUpperBoundDesc::new(
-                                match inner.upper.bound {
-                                    Some(elem) => elem.into_datum(buf, elem_pg_type),
-                                    None => Datum::Null,
-                                },
-                                inner.upper.inclusive,
-                            ),
+                            RangeLowerBound {
+                                inclusive: inner.lower.inclusive,
+                                bound: inner
+                                    .lower
+                                    .bound
+                                    .map(|elem| elem.into_datum(buf, elem_pg_type)),
+                            },
+                            RangeUpperBound {
+                                inclusive: inner.upper.inclusive,
+                                bound: inner
+                                    .upper
+                                    .bound
+                                    .map(|elem| elem.into_datum(buf, elem_pg_type)),
+                            },
                         )
                         .unwrap()
                 }
