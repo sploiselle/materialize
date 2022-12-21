@@ -21,7 +21,7 @@ aws-sigv4 = { version = "0.51.0", features = ["aws-smithy-eventstream", "bytes",
 aws-smithy-http = { version = "0.51.0", default-features = false, features = ["aws-smithy-eventstream", "event-stream", "rt-tokio", "tokio", "tokio-util"] }
 aws-types = { version = "0.51.0", default-features = false, features = ["hardcoded-credentials"] }
 axum = { git = "https://github.com/tokio-rs/axum.git", features = ["form", "headers", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tower-log", "ws"] }
-base64 = { version = "0.13.1", features = ["alloc", "std"] }
+base64 = { version = "0.20.0", features = ["alloc", "std"] }
 bstr = { version = "0.2.14", features = ["lazy_static", "regex-automata", "serde", "serde1", "serde1-nostd", "std", "unicode"] }
 byteorder = { version = "1.4.3", features = ["std"] }
 bytes = { version = "1.3.0", features = ["std"] }
@@ -120,7 +120,7 @@ aws-sigv4 = { version = "0.51.0", features = ["aws-smithy-eventstream", "bytes",
 aws-smithy-http = { version = "0.51.0", default-features = false, features = ["aws-smithy-eventstream", "event-stream", "rt-tokio", "tokio", "tokio-util"] }
 aws-types = { version = "0.51.0", default-features = false, features = ["hardcoded-credentials"] }
 axum = { git = "https://github.com/tokio-rs/axum.git", features = ["form", "headers", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tower-log", "ws"] }
-base64 = { version = "0.13.1", features = ["alloc", "std"] }
+base64 = { version = "0.20.0", features = ["alloc", "std"] }
 bstr = { version = "0.2.14", features = ["lazy_static", "regex-automata", "serde", "serde1", "serde1-nostd", "std", "unicode"] }
 byteorder = { version = "1.4.3", features = ["std"] }
 bytes = { version = "1.3.0", features = ["std"] }
