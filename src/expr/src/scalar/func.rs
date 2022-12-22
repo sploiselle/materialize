@@ -44,7 +44,7 @@ use mz_repr::adt::interval::Interval;
 use mz_repr::adt::jsonb::JsonbRef;
 use mz_repr::adt::numeric::{self, DecimalLike, Numeric, NumericMaxScale};
 use mz_repr::adt::regex::any_regex;
-use mz_repr::adt::timestamp::{CheckedTimestamp, TimestampLike};
+use mz_repr::adt::timestamp::{CheckedTimestamp, TimestampError, TimestampLike};
 use mz_repr::chrono::any_naive_datetime;
 use mz_repr::{strconv, ColumnName, ColumnType, Datum, DatumType, Row, RowArena, ScalarType};
 
@@ -309,10 +309,10 @@ where
     T: TimestampLike,
 {
     let dt = a.date_time();
-    let dt = add_timestamp_months(&dt, b.months)?;
+    let dt = dt.add_timestamp_months::<T>(b.months)?;
     let dt = dt
         .checked_add_signed(b.duration_as_chrono())
-        .ok_or(EvalError::TimestampOutOfRange)?;
+        .ok_or(TimestampError::OutOfRange)?;
     T::from_date_time(dt).try_into().err_into()
 }
 
@@ -1923,12 +1923,11 @@ impl BinaryFunc {
             BinaryFunc::AddUInt64 => eager!(add_uint64),
             BinaryFunc::AddFloat32 => eager!(add_float32),
             BinaryFunc::AddFloat64 => eager!(add_float64),
-            BinaryFunc::AddTimestampInterval => {
-                eager!(|a: Datum, b: Datum| add_timestamplike_interval(
-                    a.unwrap_timestamp(),
-                    b.unwrap_interval(),
-                ))
-            }
+            BinaryFunc::AddTimestampInterval => eager!(|a: Datum, b: Datum| Ok(a
+                .unwrap_timestamp()
+                .date_time()
+                .interval_checked_add(&b.unwrap_interval())?
+                .into())),
             BinaryFunc::AddTimestampTzInterval => {
                 eager!(|a: Datum, b: Datum| add_timestamplike_interval(
                     a.unwrap_timestamptz(),
