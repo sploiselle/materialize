@@ -113,6 +113,24 @@ impl<P, T> Partitioned<P, T> {
     }
 }
 
+impl<P, T> Partitioned<P, T>
+where
+    P: Ord + PartialOrd + Clone,
+{
+    pub fn partition_sort(elements: &mut [&Partitioned<P, T>]) {
+        elements.sort_unstable_by(|a, b| match (a.interval(), b.interval()) {
+            (Interval::Range(a_lower, _), Interval::Range(b_lower, _)) => a_lower.cmp(b_lower),
+            (Interval::Point(pid), Interval::Range(lower, _)) => RangeBound::Elem(pid.clone())
+                .cmp(lower)
+                .then(Ordering::Less),
+            (Interval::Range(lower, _), Interval::Point(pid)) => lower
+                .cmp(&RangeBound::Elem(pid.clone()))
+                .then(Ordering::Greater),
+            (Interval::Point(a_pid), Interval::Point(b_pid)) => a_pid.cmp(b_pid),
+        });
+    }
+}
+
 impl<P: Partition, T: Timestamp> Timestamp for Partitioned<P, T> {
     type Summary = PartitionedSummary<P, T>;
     fn minimum() -> Self {

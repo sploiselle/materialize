@@ -234,16 +234,7 @@ impl From<Antichain<Partitioned<PartitionId, MzOffset>>> for OffsetAntichain {
 
         // Extract the timestamps of this antichain and order them by partition
         let mut elements = frontier.iter().collect::<Vec<_>>();
-        elements.sort_unstable_by(|a, b| match (a.interval(), b.interval()) {
-            (Interval::Range(a_lower, _), Interval::Range(b_lower, _)) => a_lower.cmp(b_lower),
-            (Interval::Point(pid), Interval::Range(lower, _)) => RangeBound::Elem(pid.clone())
-                .cmp(lower)
-                .then(Ordering::Less),
-            (Interval::Range(lower, _), Interval::Point(pid)) => lower
-                .cmp(&RangeBound::Elem(pid.clone()))
-                .then(Ordering::Greater),
-            (Interval::Point(a_pid), Interval::Point(b_pid)) => a_pid.cmp(b_pid),
-        });
+        Partitioned::partition_sort(&mut elements);
 
         // We now sweep over the partition space and construct an offset antichain, asserting that
         // there are no gaps in the original Antichain which are unrepresentable in OffsetAntichain
@@ -281,7 +272,7 @@ impl From<OffsetAntichain> for Antichain<Partitioned<PartitionId, MzOffset>> {
         let mut elements = frontier
             .inner
             .into_iter()
-            .filter(|(_pid, offset)| offset.offset != 0)
+            .filter(|(pid, offset)| offset.offset != 0 || pid == &PartitionId::None)
             .collect::<Vec<_>>();
         elements.sort_unstable();
 
