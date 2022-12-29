@@ -4804,6 +4804,7 @@ dependencies = [
  "rdkafka",
  "regex",
  "serde",
+ "thiserror",
  "timely",
  "tokio",
  "tokio-postgres",
