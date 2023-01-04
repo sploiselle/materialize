@@ -316,13 +316,17 @@ impl<'w, A: Allocate> Worker<'w, A> {
                         );
                     }
 
-                    crate::render::build_ingestion_dataflow(
-                        self.timely_worker,
-                        &mut self.storage_state,
-                        ingestion.id,
-                        ingestion.description,
-                        ingestion.resume_upper,
-                    );
+                    // If ingestion's resume upper is closed, do not render
+                    // dataflows.
+                    if !ingestion.resume_upper.elements().is_empty() {
+                        crate::render::build_ingestion_dataflow(
+                            self.timely_worker,
+                            &mut self.storage_state,
+                            ingestion.id,
+                            ingestion.description,
+                            ingestion.resume_upper,
+                        );
+                    }
                 }
             }
             StorageCommand::CreateSinks(exports) => {
