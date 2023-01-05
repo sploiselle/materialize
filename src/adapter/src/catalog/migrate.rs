@@ -69,7 +69,12 @@ pub(crate) async fn migrate(catalog: &mut Catalog) -> Result<(), anyhow::Error> 
         progress_collection_rewrite(&conn_cat, tx, item)?;
         Ok(())
     })?;
-    tx.commit().await.map_err(|e| e.into())
+    tx.commit().await?;
+    info!(
+        "migration from catalog version {:?} complete",
+        catalog_version
+    );
+    Ok(())
 }
 
 // Add new migrations below their appropriate heading, and precede them with a
@@ -144,6 +149,8 @@ fn progress_collection_rewrite(
     tx: &mut Transaction<'_>,
     stmt: &mut mz_sql::ast::Statement<Raw>,
 ) -> Result<(), anyhow::Error> {
+    use mz_sql::ast::CreateSourceConnection;
+
     if let Statement::CreateSource(CreateSourceStatement {
         name,
         connection,
@@ -156,20 +163,24 @@ fn progress_collection_rewrite(
         }
 
         let progress_desc = match connection {
-            mz_sql::ast::CreateSourceConnection::Kafka(_) => {
+            CreateSourceConnection::Kafka(_) => {
                 mz_storage_client::types::sources::KAFKA_PROGRESS_DESC.clone()
             }
-            mz_sql::ast::CreateSourceConnection::Kinesis { .. } => {
+            CreateSourceConnection::Kinesis { .. } => {
                 mz_storage_client::types::sources::KINESIS_PROGRESS_DESC.clone()
             }
-            mz_sql::ast::CreateSourceConnection::S3 { .. } => {
+            CreateSourceConnection::S3 { .. } => {
                 mz_storage_client::types::sources::S3_PROGRESS_DESC.clone()
             }
-            mz_sql::ast::CreateSourceConnection::Postgres { .. } => {
+            CreateSourceConnection::Postgres { .. } => {
                 mz_storage_client::types::sources::PG_PROGRESS_DESC.clone()
             }
-            // This match arm intentionally a wild card; this never needs to be updated.
-            _ => return Ok(()),
+            CreateSourceConnection::LoadGenerator { .. } => {
+                mz_storage_client::types::sources::LOADGEN_PROGRESS_DESC.clone()
+            }
+            CreateSourceConnection::TestScript { .. } => {
+                mz_storage_client::types::sources::TEST_SCRIPT_PROGRESS_DESC.clone()
+            }
         };
 
         // Generate a new GlobalId for the subsource.

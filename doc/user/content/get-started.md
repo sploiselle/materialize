@@ -85,7 +85,7 @@ We'll start with some real-time data produced by Materialize's built-in [load ge
     ```
 
     ```nofmt
-              name          |      type      |  size 
+              name          |      type      |  size
     ------------------------+----------------+--------
      accounts               | subsource      |
      auction_house          | load-generator | 3xsmall

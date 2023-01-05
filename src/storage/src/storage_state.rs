@@ -291,6 +291,8 @@ impl<'w, A: Allocate> Worker<'w, A> {
                         .ingestions
                         .insert(ingestion.id, ingestion.description.clone());
 
+                    let is_closed = ingestion.resume_upper.elements().is_empty();
+
                     // Initialize shared frontier tracking.
                     for (export_id, export) in ingestion.description.source_exports.iter() {
                         self.storage_state.source_statistics.insert(
@@ -306,27 +308,39 @@ impl<'w, A: Allocate> Worker<'w, A> {
 
                         self.storage_state.source_uppers.insert(
                             *export_id,
-                            Rc::new(RefCell::new(Antichain::from_elem(
-                                mz_repr::Timestamp::minimum(),
-                            ))),
+                            Rc::new(RefCell::new(if is_closed {
+                                Antichain::new()
+                            } else {
+                                Antichain::from_elem(mz_repr::Timestamp::minimum())
+                            })),
                         );
                         self.storage_state.reported_frontiers.insert(
                             *export_id,
-                            Antichain::from_elem(mz_repr::Timestamp::minimum()),
+                            if is_closed {
+                                Antichain::new()
+                            } else {
+                                Antichain::from_elem(mz_repr::Timestamp::minimum())
+                            },
                         );
+                    }
+
+                    if is_closed {
+                        tracing::info!(
+                            "{:?}'s resume upper is closed; not building dataflows",
+                            ingestion.id
+                        );
+                        continue;
                     }
 
                     // If ingestion's resume upper is closed, do not render
                     // dataflows.
-                    if !ingestion.resume_upper.elements().is_empty() {
-                        crate::render::build_ingestion_dataflow(
-                            self.timely_worker,
-                            &mut self.storage_state,
-                            ingestion.id,
-                            ingestion.description,
-                            ingestion.resume_upper,
-                        );
-                    }
+                    crate::render::build_ingestion_dataflow(
+                        self.timely_worker,
+                        &mut self.storage_state,
+                        ingestion.id,
+                        ingestion.description,
+                        ingestion.resume_upper,
+                    );
                 }
             }
             StorageCommand::CreateSinks(exports) => {

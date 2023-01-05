@@ -558,6 +558,8 @@ def workflow_test_remote_storage(c: Composition) -> None:
 
         c.kill("materialized")
         c.up("materialized")
+        c.kill("storage")
+        c.up("storage")
         c.run("testdrive", "storage/02-after-environmentd-restart.td")
 
         c.kill("storage")
@@ -688,6 +690,8 @@ def workflow_test_builtin_migration(c: Composition) -> None:
     ):
         c.up("testdrive", persistent=True)
         c.up("materialized")
+        c.kill("storage")
+        c.up("storage")
         c.wait_for_materialized()
 
         c.testdrive(
@@ -724,6 +728,7 @@ def workflow_test_builtin_migration(c: Composition) -> None:
 
         > SELECT * FROM source_types
         load-generator
+        subsource
     """
             )
         )
@@ -736,6 +741,8 @@ def workflow_test_builtin_migration(c: Composition) -> None:
     ):
         c.up("testdrive", persistent=True)
         c.up("materialized")
+        c.kill("storage")
+        c.up("storage")
         c.wait_for_materialized()
 
         c.testdrive(
@@ -774,6 +781,7 @@ def workflow_test_builtin_migration(c: Composition) -> None:
 
         > SELECT * FROM source_types
         load-generator
+        subsource
     """
             )
         )
