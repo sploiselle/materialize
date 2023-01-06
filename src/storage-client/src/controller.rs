@@ -247,7 +247,7 @@ pub trait StorageController: Debug + Send {
     fn cancel_prepare_export(&mut self, token: CreateExportToken);
 
     /// Drops the read capability for the sources and allows their resources to be reclaimed.
-    fn drop_sources(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
+    async fn drop_sources(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
 
     /// Drops the read capability for the sinks and allows their resources to be reclaimed.
     fn drop_sinks(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
@@ -274,7 +274,7 @@ pub trait StorageController: Debug + Send {
     ///     created, but have been forgotten by the controller due to a restart.
     ///     Once command history becomes durable we can remove this method and use the normal
     ///     `drop_sources`.
-    fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>);
+    async fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>);
 
     /// Append `updates` into the local input named `id` and advance its upper to `upper`.
     ///
@@ -1219,13 +1219,32 @@ where
         Ok(())
     }
 
-    fn drop_sources(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError> {
+    async fn drop_sources(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError> {
         self.validate_collection_ids(identifiers.iter().cloned())?;
-        self.drop_sources_unvalidated(identifiers);
+        self.drop_sources_unvalidated(identifiers).await;
         Ok(())
     }
 
-    fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
+    async fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
+        let mut shards_to_truncate = Vec::with_capacity(identifiers.len() * 2);
+        for id in identifiers.iter() {
+            if let Some(DurableCollectionMetadata {
+                remap_shard,
+                data_shard,
+            }) = METADATA_COLLECTION
+                .peek_key_one(&mut self.state.stash, &id)
+                .await
+                .expect("must be able to connect to stash")
+            {
+                shards_to_truncate.extend([remap_shard, data_shard].into_iter());
+            }
+        }
+        self.register_shards_for_truncation(shards_to_truncate)
+            .await;
+
+        // Setting the read policies to the empty antichain will signal to drop
+        // the sources. Once they are dropped, we will close the write handle
+        // elsehwere.
         let policies = identifiers
             .into_iter()
             .map(|id| (id, ReadPolicy::ValidFrom(Antichain::new())))
@@ -1462,7 +1481,29 @@ where
             Some(StorageResponse::FrontierUppers(updates)) => {
                 self.update_write_frontiers(&updates);
             }
-            Some(StorageResponse::DroppedIds(_ids)) => {
+            Some(StorageResponse::DroppedIds(identifiers)) => {
+                let mut shards_to_truncate = Vec::with_capacity(identifiers.len() * 2);
+                for id in identifiers {
+                    if let Some(DurableCollectionMetadata {
+                        remap_shard,
+                        data_shard,
+                    }) = METADATA_COLLECTION
+                        .peek_key_one(&mut self.state.stash, &id)
+                        .await
+                        .expect("must be able to connect to stash")
+                    {
+                        shards_to_truncate.extend(
+                            [
+                                (remap_shard, format!("drop source {id}'s remap shard")),
+                                (data_shard, format!("drop source {id}'s data shard")),
+                            ]
+                            .into_iter(),
+                        );
+                    }
+                }
+
+                self.truncate_shards(&shards_to_truncate).await;
+
                 // TODO(petrosagg): It looks like the storage controller never cleans up GlobalIds
                 // from its state. It should probably be done as a reaction to this response.
             }
@@ -1494,6 +1535,10 @@ where
                         self.state.introspection_ids[&IntrospectionType::SourceStatusHistory];
                     self.state.pending_host_deprovisions.insert((id, status_id));
                 }
+            }
+
+            if frontier.is_empty() {
+                ids_to_drop.insert(id);
             }
         }
 
