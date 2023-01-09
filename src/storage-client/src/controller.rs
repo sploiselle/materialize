@@ -73,7 +73,7 @@ mod metrics_scraper;
 mod persist_handles;
 mod rehydration;
 mod remap_migration;
-mod shard_trunc_wal;
+mod shard_finalization_wal;
 mod statistics;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -87,7 +87,7 @@ pub static METADATA_EXPORT: TypedCollection<GlobalId, DurableExportMetadata<mz_r
 pub static ALL_COLLECTIONS: &[&str] = &[
     METADATA_COLLECTION.name(),
     METADATA_EXPORT.name(),
-    shard_trunc_wal::SHARD_TRUNC_WAL.name(),
+    shard_finalization_wal::SHARD_FINALIZATION_WAL.name(),
 ];
 
 // Do this dance so that we keep the storage controller expressed in terms of a generic timestamp `T`.
@@ -1226,7 +1226,7 @@ where
     }
 
     async fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
-        let mut shards_to_truncate = Vec::with_capacity(identifiers.len() * 2);
+        let mut shards_to_finalize = Vec::with_capacity(identifiers.len() * 2);
         for id in identifiers.iter() {
             if let Some(DurableCollectionMetadata {
                 remap_shard,
@@ -1236,10 +1236,11 @@ where
                 .await
                 .expect("must be able to connect to stash")
             {
-                shards_to_truncate.extend([remap_shard, data_shard].into_iter());
+                shards_to_finalize.extend([remap_shard, data_shard].into_iter());
             }
         }
-        self.register_shards_for_truncation(shards_to_truncate)
+
+        self.register_shards_for_finalization(shards_to_finalize.into_iter())
             .await;
 
         // Setting the read policies to the empty antichain will signal to drop
@@ -1639,7 +1640,7 @@ where
         // We expect this collection to be empty so waiting here for a read from
         // stash is OK. If this becomes onerous, could be moved into a
         // background task.
-        c.reconcile_shard_trunc_register().await;
+        c.reconcile_shard_finalization_register().await;
 
         c
     }
@@ -1894,7 +1895,7 @@ where
             }
         };
 
-        self.register_shards_for_truncation(to_delete_shards.iter().map(|(shard, _)| *shard))
+        self.register_shards_for_finalization(to_delete_shards.iter().map(|(shard, _)| *shard))
             .await;
 
         // Perform the update.
@@ -1903,7 +1904,7 @@ where
             .await
             .expect("connect to stash");
 
-        self.truncate_shards(&to_delete_shards).await;
+        self.finalize_shards(&to_delete_shards).await;
 
         let DurableCollectionMetadata {
             remap_shard,
@@ -1920,17 +1921,21 @@ where
         metadata.collection_metadata.remap_shard = remap_shard;
     }
 
-    async fn truncate_shards(&mut self, shards: &[(ShardId, String)]) {
+    /// Closes the identified shards from further reads or writes.
+    ///
+    /// The string accompanying the `ShardId` is the shard's "purpose",
+    /// necessary to open read and write handles to the shard.
+    async fn finalize_shards(&mut self, shards: &[(ShardId, String)]) {
         soft_assert!(
             {
                 let mut all_registered = true;
                 for (shard, _) in shards {
                     all_registered =
-                        self.shards_registered_for_truncation(shard).await && all_registered
+                        self.shards_registered_for_finalization(shard).await && all_registered
                 }
                 all_registered
             },
-            "truncated shards must be registered for truncation before calling truncate_shards"
+            "finalized shards must be registered before calling finalize_shards"
         );
 
         // Open a persist client to delete unused shards.
@@ -1969,7 +1974,7 @@ where
         }
 
         let truncated_shards = shards.iter().map(|(shard, _)| *shard).collect();
-        self.clear_from_shard_trunc_register(&truncated_shards)
+        self.clear_from_shard_finalization_register(&truncated_shards)
             .await;
     }
 
