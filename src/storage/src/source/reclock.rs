@@ -597,10 +597,6 @@ where
         }
     }
 
-    pub async fn compact(&mut self, new_since: Antichain<IntoTime>) {
-        self.remap_handle.compact(new_since).await;
-    }
-
     /// Closes the collection from further input.
     pub async fn finalize(&mut self) {
         loop {

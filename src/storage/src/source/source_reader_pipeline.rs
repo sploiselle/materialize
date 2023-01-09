@@ -221,8 +221,7 @@ where
         &resume_stream,
     );
 
-    let (remap_stream, remap_token) =
-        remap_operator(scope, config.clone(), batch_upper_summaries, &resume_stream);
+    let (remap_stream, remap_token) = remap_operator(scope, config.clone(), batch_upper_summaries);
 
     let ((reclocked_stream, reclocked_err_stream), _reclock_token) = reclock_operator(
         scope,
@@ -1018,7 +1017,6 @@ fn remap_operator<G, FromTime>(
     scope: &G,
     config: RawSourceCreationConfig,
     batch_upper_summaries: Stream<G, BatchUpperSummary>,
-    resume_stream: &Stream<G, ()>,
 ) -> (Stream<G, (FromTime, Timestamp, Diff)>, Rc<dyn Any>)
 where
     G: Scope<Timestamp = Timestamp>,
@@ -1053,15 +1051,6 @@ where
         // We don't want frontier information to flow from the input to the
         // output. This operator is it's own "root source" of capabilities for
         // current reclocked, wall-clock time.
-        vec![Antichain::new()],
-    );
-
-    let mut resume_input = remap_op.new_input_connection(
-        resume_stream,
-        Pipeline,
-        // We don't need this to participate in progress
-        // tracking, we just need to periodically
-        // introspect its frontier.
         vec![Antichain::new()],
     );
 
@@ -1129,9 +1118,6 @@ where
             cap_set.downgrade(initial_batch.upper);
         }
 
-        // The last frontier we compacted the remap shard to, starting at [0].
-        let mut last_compaction_since = Antichain::from_elem(Timestamp::default());
-
         let mut ticker = tokio::time::interval(timestamp_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1182,30 +1168,6 @@ where
                     if input_frontier.is_empty() {
                         timestamper.finalize().await;
                         return;
-                    }
-                }
-                Some(Event::Progress(resumption_frontier)) = resume_input.next() => {
-                    // Compact the remap shard, but only if it has actually made progress. Note
-                    // that resumption frontier progress does not drive this operator forward, only
-                    // source upper updates from the source_reader_operator does.
-                    //
-                    // Also note this can happen BEFORE we inspect the input. This is somewhat
-                    // of an oddity in the timely world, but this frontier can ONLY advance
-                    // past the input AFTER the output capability of this operator itself has
-                    // been downgraded (which drives the data shard upper), AND the
-                    // remap shard has been advanced below.
-                    if let Some(new_compaction_since) = derive_new_compaction_since(
-                        resumption_frontier,
-                        &last_compaction_since,
-                        // Choose a `since` as aggresively as possible
-                        1,
-                        id,
-                        "remap",
-                        worker_id,
-                        worker_count,
-                    ) {
-                        timestamper.compact(new_compaction_since.clone()).await;
-                        last_compaction_since = new_compaction_since;
                     }
                 }
                 Some(event) = input.next() => match event {
