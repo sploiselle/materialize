@@ -1932,10 +1932,7 @@ where
             .await
             .expect("connect to stash");
 
-        // ???: If we crash after this do we have any means of reaping the
-        // leaked shards?
-
-        self.truncate_shards(&to_delete_shards).await;
+        self.finalize_shards(&to_delete_shards).await;
 
         let DurableCollectionMetadata {
             remap_shard,
@@ -1952,7 +1949,11 @@ where
         metadata.collection_metadata.remap_shard = remap_shard;
     }
 
-    async fn truncate_shards(&mut self, shards: &[(ShardId, String)]) {
+    /// Closes the identified shards from further reads or writes.
+    ///
+    /// The string accompanying the `ShardId` is the shard's "purpose",
+    /// necessary to open read and write handles to the shard.
+    async fn finalize_shards(&mut self, shards: &[(ShardId, String)]) {
         // Open a persist client to delete unused shards.
         let persist_client = self
             .persist
