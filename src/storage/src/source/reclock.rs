@@ -599,10 +599,6 @@ where
         }
     }
 
-    pub async fn compact(&mut self, new_since: Antichain<IntoTime>) {
-        self.remap_handle.compact(new_since).await;
-    }
-
     /// Closes the collection from further input.
     pub async fn finalize(&mut self) {
         loop {
@@ -901,7 +897,6 @@ mod tests {
         );
 
         // Compact but not enough to change the bindings
-        operator.compact(Antichain::from_elem(900.into())).await;
         follower.compact(Antichain::from_elem(900.into()));
         let query = partitioned_frontier([(1, MzOffset::from(9))]);
         assert_eq!(
@@ -910,7 +905,6 @@ mod tests {
         );
 
         // Compact enough to compact bindings
-        operator.compact(Antichain::from_elem(1500.into())).await;
         follower.compact(Antichain::from_elem(1500.into()));
         let query = partitioned_frontier([(1, MzOffset::from(9))]);
         // Now reclocking the same offset maps to the compacted binding, which is the same result
@@ -1078,7 +1072,6 @@ mod tests {
         assert_eq!(reclocked_msgs, &[(3, 2000.into()), (4, 2000.into())]);
 
         // Compact enough so that offsets >= 3 remain uncompacted
-        operator.compact(Antichain::from_elem(1000.into())).await;
         follower.compact(Antichain::from_elem(1000.into()));
 
         // Reclock offsets 3 and 4 again to see we get the uncompacted result
@@ -1153,8 +1146,6 @@ mod tests {
             .collect_vec();
         assert_eq!(reclocked_msgs, &[(1, 1000.into()), (2, 1000.into())]);
 
-        // Also compact operator A. Since operator B has its own read handle it shouldn't affect it
-        op_a.compact(Antichain::from_elem(1000.into())).await;
         follower_a.compact(Antichain::from_elem(1000.into()));
 
         // Advance the time by a lot
