@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 use tracing::info;
 
 use mz_ore::collections::CollectionExt;
-use mz_sql::ast::Raw;
 use mz_sql::ast::{
-    display::AstDisplay, CreateSourceStatement, CreateSourceSubsource, DeferredObjectName,
-    RawObjectName, ReferencedSubsources, Statement, UnresolvedObjectName,
+    display::AstDisplay, CreateSourceStatement, CreateSourceSubsource, CreateSubsourceOption,
+    CreateSubsourceOptionName, DeferredObjectName, Raw, RawObjectName, ReferencedSubsources,
+    Statement, UnresolvedObjectName, Value, WithOptionValue,
 };
 
 use crate::catalog::{Catalog, ConnCatalog, SerializedCatalogItem, SYSTEM_CONN_ID};
@@ -223,6 +223,10 @@ fn progress_collection_rewrite(
             columns,
             constraints: table_constraints,
             if_not_exists: false,
+            with_options: vec![CreateSubsourceOption {
+                name: CreateSubsourceOptionName::Progress,
+                value: Some(WithOptionValue::Value(Value::Boolean(true))),
+            }],
         };
 
         tx.insert_item(

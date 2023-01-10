@@ -75,16 +75,16 @@ use crate::ast::{
     CreateIndexStatement, CreateMaterializedViewStatement, CreateRoleOption, CreateRoleStatement,
     CreateSchemaStatement, CreateSecretStatement, CreateSinkConnection, CreateSinkOption,
     CreateSinkOptionName, CreateSinkStatement, CreateSourceConnection, CreateSourceFormat,
-    CreateSourceOption, CreateSourceOptionName, CreateSourceStatement, CreateSubsourceStatement,
-    CreateTableStatement, CreateTypeAs, CreateTypeStatement, CreateViewStatement, CsrConfigOption,
-    CsrConfigOptionName, CsrConnection, CsrConnectionAvro, CsrConnectionOption,
-    CsrConnectionOptionName, CsrConnectionProtobuf, CsrSeedProtobuf, CsvColumns, DbzMode,
-    DropClusterReplicasStatement, DropClustersStatement, DropDatabaseStatement,
-    DropObjectsStatement, DropRolesStatement, DropSchemaStatement, Envelope, Expr, Format, Ident,
-    IfExistsBehavior, IndexOption, IndexOptionName, KafkaBroker, KafkaBrokerAwsPrivatelinkOption,
-    KafkaBrokerAwsPrivatelinkOptionName, KafkaBrokerTunnel, KafkaConfigOptionName,
-    KafkaConnectionOption, KafkaConnectionOptionName, KeyConstraint, LoadGeneratorOption,
-    LoadGeneratorOptionName, ObjectType, PgConfigOption, PgConfigOptionName,
+    CreateSourceOption, CreateSourceOptionName, CreateSourceStatement, CreateSubsourceOption,
+    CreateSubsourceOptionName, CreateSubsourceStatement, CreateTableStatement, CreateTypeAs,
+    CreateTypeStatement, CreateViewStatement, CsrConfigOption, CsrConfigOptionName, CsrConnection,
+    CsrConnectionAvro, CsrConnectionOption, CsrConnectionOptionName, CsrConnectionProtobuf,
+    CsrSeedProtobuf, CsvColumns, DbzMode, DropClusterReplicasStatement, DropClustersStatement,
+    DropDatabaseStatement, DropObjectsStatement, DropRolesStatement, DropSchemaStatement, Envelope,
+    Expr, Format, Ident, IfExistsBehavior, IndexOption, IndexOptionName, KafkaBroker,
+    KafkaBrokerAwsPrivatelinkOption, KafkaBrokerAwsPrivatelinkOptionName, KafkaBrokerTunnel,
+    KafkaConfigOptionName, KafkaConnectionOption, KafkaConnectionOptionName, KeyConstraint,
+    LoadGeneratorOption, LoadGeneratorOptionName, ObjectType, PgConfigOption, PgConfigOptionName,
     PostgresConnectionOption, PostgresConnectionOptionName, ProtobufSchema, QualifiedReplica,
     ReferencedSubsources, ReplicaDefinition, ReplicaOption, ReplicaOptionName,
     SourceIncludeMetadata, SourceIncludeMetadataType, SshConnectionOptionName, Statement,
@@ -113,7 +113,7 @@ use crate::plan::{
     ComputeReplicaIntrospectionConfig, CreateComputeInstancePlan, CreateComputeReplicaPlan,
     CreateConnectionPlan, CreateDatabasePlan, CreateIndexPlan, CreateMaterializedViewPlan,
     CreateRolePlan, CreateSchemaPlan, CreateSecretPlan, CreateSinkPlan, CreateSourcePlan,
-    CreateTablePlan, CreateTypePlan, CreateViewPlan, DropComputeInstancesPlan,
+    CreateTablePlan, CreateTypePlan, CreateViewPlan, DataSourceDesc, DropComputeInstancesPlan,
     DropComputeReplicasPlan, DropDatabasePlan, DropItemsPlan, DropRolesPlan, DropSchemaPlan,
     FullObjectName, HirScalarExpr, Index, Ingestion, MaterializedView, Params, Plan, QueryContext,
     RotateKeysPlan, Secret, Sink, Source, StorageHostConfig, Table, Type, View,
@@ -1087,7 +1087,7 @@ pub fn plan_create_source(
 
     let source = Source {
         create_sql,
-        ingestion: Some(Ingestion {
+        data_source: DataSourceDesc::Ingestion(Ingestion {
             desc: source_desc,
             // Currently no source reads from another source
             source_imports: HashSet::new(),
@@ -1106,6 +1106,8 @@ pub fn plan_create_source(
     }))
 }
 
+generate_extracted_config!(CreateSubsourceOption, (Progress, bool, Default(false)));
+
 pub fn plan_create_subsource(
     scx: &StatementContext,
     stmt: CreateSubsourceStatement<Aug>,
@@ -1115,7 +1117,10 @@ pub fn plan_create_subsource(
         columns,
         constraints,
         if_not_exists,
+        with_options,
     } = &stmt;
+
+    let CreateSubsourceOptionExtracted { progress, .. } = with_options.clone().try_into()?;
 
     let names: Vec<_> = columns
         .iter()
@@ -1190,6 +1195,11 @@ pub fn plan_create_subsource(
     }
 
     let if_not_exists = *if_not_exists;
+    let data_source = if progress {
+        DataSourceDesc::Progress
+    } else {
+        DataSourceDesc::Source
+    };
     let name = scx.allocate_qualified_name(normalize::unresolved_object_name(name.clone())?)?;
     let create_sql = normalize::create_statement(scx, Statement::CreateSubsource(stmt))?;
 
@@ -1198,7 +1208,7 @@ pub fn plan_create_subsource(
 
     let source = Source {
         create_sql,
-        ingestion: None,
+        data_source,
         desc,
     };
 

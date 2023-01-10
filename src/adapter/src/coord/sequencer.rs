@@ -500,8 +500,8 @@ impl Coordinator {
             let source_oid = self.catalog.allocate_oid()?;
             let source = catalog::Source {
                 create_sql: plan.source.create_sql,
-                data_source: match plan.source.ingestion {
-                    Some(ingestion) => {
+                data_source: match plan.source.data_source {
+                    mz_sql::plan::DataSourceDesc::Ingestion(ingestion) => {
                         let host_config = self
                             .catalog
                             .resolve_storage_host_config(&plan.host_config)?;
@@ -513,7 +513,14 @@ impl Coordinator {
                             remap_collection_id: ingestion.progress_subsource,
                         })
                     }
-                    None => {
+                    mz_sql::plan::DataSourceDesc::Progress => {
+                        assert!(
+                            matches!(plan.host_config, mz_sql::plan::StorageHostConfig::Undefined),
+                            "subsources must not have a host config defined"
+                        );
+                        DataSourceDesc::Progress
+                    }
+                    mz_sql::plan::DataSourceDesc::Source => {
                         assert!(
                             matches!(plan.host_config, mz_sql::plan::StorageHostConfig::Undefined),
                             "subsources must not have a host config defined"

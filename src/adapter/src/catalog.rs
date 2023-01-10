@@ -5549,15 +5549,18 @@ impl Catalog {
                 ..
             }) => CatalogItem::Source(Source {
                 create_sql: source.create_sql,
-                data_source: match source.ingestion {
-                    Some(ingestion) => DataSourceDesc::Ingestion(Ingestion {
-                        desc: ingestion.desc,
-                        source_imports: ingestion.source_imports,
-                        subsource_exports: ingestion.subsource_exports,
-                        host_config: self.resolve_storage_host_config(&host_config)?,
-                        remap_collection_id: ingestion.progress_subsource,
-                    }),
-                    None => DataSourceDesc::Source,
+                data_source: match source.data_source {
+                    mz_sql::plan::DataSourceDesc::Ingestion(ingestion) => {
+                        DataSourceDesc::Ingestion(Ingestion {
+                            desc: ingestion.desc,
+                            source_imports: ingestion.source_imports,
+                            subsource_exports: ingestion.subsource_exports,
+                            host_config: self.resolve_storage_host_config(&host_config)?,
+                            remap_collection_id: ingestion.progress_subsource,
+                        })
+                    }
+                    mz_sql::plan::DataSourceDesc::Progress => DataSourceDesc::Progress,
+                    mz_sql::plan::DataSourceDesc::Source => DataSourceDesc::Source,
                 },
                 desc: source.desc,
                 timeline,

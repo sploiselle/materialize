@@ -33,10 +33,10 @@ use mz_repr::{strconv, GlobalId};
 use mz_secrets::SecretsReader;
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{
-    ColumnDef, CsrConnection, CsrSeedAvro, CsrSeedProtobuf, CsrSeedProtobufSchema, DbzMode,
-    DeferredObjectName, Envelope, Ident, KafkaConfigOption, KafkaConfigOptionName, KafkaConnection,
-    KafkaSourceConnection, PgConfigOption, PgConfigOptionName, ReaderSchemaSelectionStrategy,
-    UnresolvedObjectName,
+    ColumnDef, CreateSubsourceOption, CreateSubsourceOptionName, CsrConnection, CsrSeedAvro,
+    CsrSeedProtobuf, CsrSeedProtobufSchema, DbzMode, DeferredObjectName, Envelope, Ident,
+    KafkaConfigOption, KafkaConfigOptionName, KafkaConnection, KafkaSourceConnection,
+    PgConfigOption, PgConfigOptionName, ReaderSchemaSelectionStrategy, UnresolvedObjectName,
 };
 use mz_storage_client::types::connections::aws::AwsConfig;
 use mz_storage_client::types::connections::{Connection, ConnectionContext};
@@ -480,6 +480,7 @@ pub async fn purify_create_source(
                     // one without and now we're producing garbage data.
                     constraints: vec![],
                     if_not_exists: false,
+                    with_options: vec![],
                 };
                 subsources.push((transient_id, subsource));
             }
@@ -596,6 +597,7 @@ pub async fn purify_create_source(
                     // worried about introducing junk data.
                     constraints: table_constraints,
                     if_not_exists: false,
+                    with_options: vec![],
                 };
                 subsources.push((transient_id, subsource));
             }
@@ -651,6 +653,10 @@ pub async fn purify_create_source(
         columns,
         constraints,
         if_not_exists: false,
+        with_options: vec![CreateSubsourceOption {
+            name: CreateSubsourceOptionName::Progress,
+            value: Some(WithOptionValue::Value(Value::Boolean(true))),
+        }],
     };
     subsources.push((transient_id, subsource));
 
