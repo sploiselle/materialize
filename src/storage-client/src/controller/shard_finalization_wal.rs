@@ -99,6 +99,8 @@ where
             return;
         }
 
+        tracing::info!("reconciling unfinalized_shards {:?}", registered_shards);
+
         // Get all shards we're aware of from stash.
         let all_shard_data: BTreeMap<_, _> = super::METADATA_COLLECTION
             .peek_one(&mut self.state.stash)
@@ -144,6 +146,8 @@ where
             .cloned()
             .map(|shard_id| (shard_id, "truncating replaced shard".to_string()))
             .collect();
+
+        tracing::info!("finalizing shards {:?}", shard_id_desc_to_truncate);
 
         self.finalize_shards(&shard_id_desc_to_truncate).await;
 

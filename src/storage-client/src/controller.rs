@@ -1976,20 +1976,30 @@ where
                 .expect("invalid persist usage");
 
             read.downgrade_since(&Antichain::new()).await;
-            write
-                .append(
-                    Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
-                    write.upper().clone(),
-                    Antichain::new(),
-                )
-                .await
-                .expect("failed to connect")
-                .expect("failed to truncate write handle");
 
             info!(
-                "successfully truncated shard's write handle for {:?}",
+                "successfully finalized read handle for shard {:?}",
                 shard_id
             );
+
+            if write.upper().is_empty() {
+                info!("write handle for shard {:?} already finalized", shard_id);
+            } else {
+                write
+                    .append(
+                        Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
+                        write.upper().clone(),
+                        Antichain::new(),
+                    )
+                    .await
+                    .expect("failed to connect")
+                    .expect("failed to truncate write handle");
+
+                info!(
+                    "successfully finalized write handle for shard {:?}",
+                    shard_id
+                );
+            }
         }
 
         let truncated_shards = shards.iter().map(|(shard, _)| *shard).collect();
