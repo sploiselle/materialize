@@ -1010,12 +1010,17 @@ where
                 None
             };
 
+            // The IDs of collections whose sinces are meant to mirror this
+            // collection's since.
+            let mut since_dependent = None;
+
             let remap_shard = match &description.data_source {
                 // Only ingestions can have remap shards.
                 DataSource::Ingestion(IngestionDescription {
                     remap_collection_id,
                     ..
                 }) => {
+                    since_dependent = Some(*remap_collection_id);
                     // Iff ingestion has a remap collection, its metadata must
                     // exist (and be correct) by this point.
                     Some(durable_metadata[remap_collection_id].data_shard)
@@ -1030,7 +1035,7 @@ where
                 status_shard,
             };
 
-            Ok((id, description, metadata))
+            Ok((id, description, metadata, since_dependent))
         });
 
         // So that we can open `SinceHandle`s for each collections concurrently.
@@ -1047,7 +1052,7 @@ where
         let this = &*self;
         let to_register: Vec<_> = futures::stream::iter(enriched_with_metdata)
             .map(|data: Result<_, anyhow::Error>| async move {
-                let (id, description, metadata) = data?;
+                let (id, description, metadata, since_dependent) = data?;
 
                 // should be replaced with real introspection (https://github.com/MaterializeInc/materialize/issues/14266)
                 // but for now, it's helpful to have this mapping written down somewhere
@@ -1106,6 +1111,7 @@ where
                     since_handle.since().clone(),
                     write.upper().clone(),
                     metadata.clone(),
+                    since_dependent,
                 );
                 Ok::<_, anyhow::Error>((id, description, write, since_handle, cs))
             })
@@ -1635,6 +1641,14 @@ where
             if let Ok(collection) = self.collection_mut(key) {
                 let changes = collection.read_capabilities.update_iter(update.drain());
                 update.extend(changes);
+
+                // Mirror the updates to the `since_dependent`.
+                if let Some(id) = collection.since_dependent {
+                    updates
+                        .entry(id)
+                        .or_insert_with(ChangeBatch::new)
+                        .extend(update.iter().cloned());
+                }
 
                 let (changes, frontier) = storage_net
                     .entry(key)
@@ -2278,6 +2292,11 @@ pub struct CollectionState<T> {
     pub write_frontier: Antichain<T>,
 
     pub collection_metadata: CollectionMetadata,
+
+    /// The GlobalId of a collection whose since values are meant to mirror this
+    /// collection's since. Right now this is either 0 or 1 collection, but
+    /// could grow to include more in the future.
+    pub since_dependent: Option<GlobalId>,
 }
 
 impl<T: Timestamp> CollectionState<T> {
@@ -2287,6 +2306,7 @@ impl<T: Timestamp> CollectionState<T> {
         since: Antichain<T>,
         write_frontier: Antichain<T>,
         metadata: CollectionMetadata,
+        since_dependent: Option<GlobalId>,
     ) -> Self {
         let mut read_capabilities = MutableAntichain::new();
         read_capabilities.update_iter(since.iter().map(|time| (time.clone(), 1)));
@@ -2297,6 +2317,7 @@ impl<T: Timestamp> CollectionState<T> {
             read_policy: ReadPolicy::ValidFrom(since),
             write_frontier,
             collection_metadata: metadata,
+            since_dependent,
         }
     }
 }

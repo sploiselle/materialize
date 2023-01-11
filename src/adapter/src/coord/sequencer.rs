@@ -599,6 +599,10 @@ impl Coordinator {
                         }
                     };
 
+                    // Progress subsources have their read policies handled
+                    // differently than all other sources.
+                    let initialize_read_policy = data_source != DataSource::Progress;
+
                     self.controller
                         .storage
                         .create_collections(vec![(
@@ -615,7 +619,11 @@ impl Coordinator {
 
                     self.initialize_storage_read_policies(
                         vec![source_id],
-                        Some(DEFAULT_LOGICAL_COMPACTION_WINDOW_TS),
+                        if initialize_read_policy {
+                            Some(DEFAULT_LOGICAL_COMPACTION_WINDOW_TS)
+                        } else {
+                            None
+                        },
                     )
                     .await;
                 }
