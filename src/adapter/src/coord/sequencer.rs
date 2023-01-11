@@ -599,6 +599,12 @@ impl Coordinator {
 
                     self.maybe_create_linked_cluster(source_id).await;
 
+                    // Progress subsources have their read policies handled
+                    // differently than all other sources and should not be
+                    // automatically compacted; instead they trail their
+                    // source's compaction commands.
+                    let initialize_compaction_read_policy = data_source != DataSource::Progress;
+
                     self.controller
                         .storage
                         .create_collections(vec![(
@@ -615,7 +621,11 @@ impl Coordinator {
 
                     self.initialize_storage_read_policies(
                         vec![source_id],
-                        Some(DEFAULT_LOGICAL_COMPACTION_WINDOW_TS),
+                        if initialize_compaction_read_policy {
+                            Some(DEFAULT_LOGICAL_COMPACTION_WINDOW_TS)
+                        } else {
+                            None
+                        },
                     )
                     .await;
                 }

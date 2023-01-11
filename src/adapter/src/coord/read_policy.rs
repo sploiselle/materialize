@@ -228,9 +228,9 @@ impl crate::coord::Coordinator {
 
     /// Initialize the storage and compute read policies.
     ///
-    /// This should be called only after a collection is created, and
-    /// ideally very soon afterwards. The collection is otherwise initialized
-    /// with a read policy that allows no compaction.
+    /// This should be called only after a collection is created, and ideally
+    /// very soon afterwards. The collection is otherwise initialized with a
+    /// read policy that does not automatically compact.
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn initialize_read_policies(
         &mut self,

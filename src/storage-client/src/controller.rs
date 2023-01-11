@@ -1069,12 +1069,17 @@ where
                 None
             };
 
+            // The IDs of collections whose sinces are meant to mirror this
+            // collection's since.
+            let mut since_dependent = None;
+
             let remap_shard = match &description.data_source {
                 // Only ingestions can have remap shards.
                 DataSource::Ingestion(IngestionDescription {
                     remap_collection_id,
                     ..
                 }) => {
+                    since_dependent = Some(*remap_collection_id);
                     // Iff ingestion has a remap collection, its metadata must
                     // exist (and be correct) by this point.
                     Some(durable_metadata[remap_collection_id].data_shard)
@@ -1090,7 +1095,7 @@ where
                 relation_desc: description.desc.clone(),
             };
 
-            Ok((id, description, metadata))
+            Ok((id, description, metadata, since_dependent))
         });
 
         // So that we can open `SinceHandle`s for each collections concurrently.
@@ -1105,7 +1110,7 @@ where
         let this = &*self;
         let to_register: Vec<_> = futures::stream::iter(enriched_with_metdata)
             .map(|data: Result<_, anyhow::Error>| async move {
-                let (id, description, metadata) = data?;
+                let (id, description, metadata, since_dependent) = data?;
 
                 // should be replaced with real introspection (https://github.com/MaterializeInc/materialize/issues/14266)
                 // but for now, it's helpful to have this mapping written down somewhere
@@ -1128,6 +1133,7 @@ where
                     since_handle.since().clone(),
                     write.upper().clone(),
                     metadata.clone(),
+                    since_dependent,
                 );
                 Ok::<_, anyhow::Error>((id, description, write, since_handle, cs))
             })
@@ -1600,6 +1606,7 @@ where
     ) {
         // Location to record consequences that we need to act on.
         let mut storage_net = BTreeMap::new();
+        let mut dependent_updates = BTreeMap::new();
         // Repeatedly extract the maximum id, and updates for it.
         while let Some(key) = updates.keys().rev().next().cloned() {
             let mut update = updates.remove(&key).unwrap();
@@ -1610,6 +1617,24 @@ where
                 let (changes, frontier) = storage_net
                     .entry(key)
                     .or_insert_with(|| (ChangeBatch::new(), Antichain::new()));
+
+                // Mirror the updates to the `since_dependent`.
+                if let Some(id) = collection.since_dependent {
+                    // Only mirror changes that do not close the collection;
+                    // dependency represents an upper bound, so outliving the
+                    // dependency is fine.
+                    if !collection.read_capabilities.frontier().is_empty() {
+                        let cur = dependent_updates
+                            .entry(id)
+                            .or_insert_with(|| Antichain::from_elem(T::minimum()));
+
+                        let dependency_frontier =
+                            collection.read_capabilities.frontier().to_owned();
+                        if PartialOrder::less_than(cur, &dependency_frontier) {
+                            *cur = dependency_frontier;
+                        }
+                    }
+                }
 
                 changes.extend(update.drain());
                 *frontier = collection.read_capabilities.frontier().to_owned();
@@ -1637,6 +1662,18 @@ where
             // instead stash these for later and process when we can.
             self.state.pending_compaction_commands.push((id, frontier));
         }
+
+        // Set read policy for dependent collections to be the maximum frontier
+        // of the dependency's read frontier. The invariant we are maintaining
+        // here is that the remap collection's since never meets or exceeds the
+        // data collection's upper, so performing this work after downgrading
+        // the data collection's since will not break that invariant.
+        self.set_read_policy(
+            dependent_updates
+                .into_iter()
+                .map(|(id, max_frontier)| (id, ReadPolicy::ValidFrom(max_frontier)))
+                .collect(),
+        );
     }
 
     async fn ready(&mut self) {
@@ -2319,6 +2356,14 @@ pub struct CollectionState<T> {
     pub write_frontier: Antichain<T>,
 
     pub collection_metadata: CollectionMetadata,
+
+    /// The GlobalId of a collection whose since values are meant to mirror this
+    /// collection's since. Right now this is either 0 or 1 collection, but
+    /// could grow to include more in the future.
+    ///
+    /// What motivates this feature is ensuring that a remap collection's since
+    /// never meets or exceeds the data collection's upper.
+    pub since_dependent: Option<GlobalId>,
 }
 
 impl<T: Timestamp> CollectionState<T> {
@@ -2328,6 +2373,7 @@ impl<T: Timestamp> CollectionState<T> {
         since: Antichain<T>,
         write_frontier: Antichain<T>,
         metadata: CollectionMetadata,
+        since_dependent: Option<GlobalId>,
     ) -> Self {
         let mut read_capabilities = MutableAntichain::new();
         read_capabilities.update_iter(since.iter().map(|time| (time.clone(), 1)));
@@ -2338,6 +2384,7 @@ impl<T: Timestamp> CollectionState<T> {
             read_policy: ReadPolicy::ValidFrom(since),
             write_frontier,
             collection_metadata: metadata,
+            since_dependent,
         }
     }
 
