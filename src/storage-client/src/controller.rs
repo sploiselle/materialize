@@ -762,7 +762,7 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
         init_collections!(
             &METADATA_COLLECTION,
             &METADATA_EXPORT,
-            &shard_trunc_wal::SHARD_TRUNC_WAL
+            &shard_finalization_wal::SHARD_FINALIZATION_WAL
         );
         stash
             .append(&batches)
@@ -1555,10 +1555,6 @@ where
                         self.state.introspection_ids[&IntrospectionType::SourceStatusHistory];
                     self.state.pending_host_deprovisions.insert((id, status_id));
                 }
-            }
-
-            if frontier.is_empty() {
-                ids_to_drop.insert(id);
             }
         }
 
