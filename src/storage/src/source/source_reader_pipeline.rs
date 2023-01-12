@@ -1071,12 +1071,12 @@ where
         }
 
         let mut buffer = Vec::new();
-        let mut cap_set = dbg!(CapabilitySet::from_elem(
+        let mut cap_set = CapabilitySet::from_elem(
             capabilities
                 .into_iter()
                 .exactly_one()
                 .expect("there should be exactly as many capabilities as outputs"),
-        ));
+        );
 
         let upper_ts = resume_upper.as_option().copied().unwrap();
 
@@ -1156,14 +1156,12 @@ where
                     // across an await, and drop it before we downgrade the capability.
                     {
                         let mut remap_output = remap_output.activate();
-                        println!("1159 cap set {:?}", cap_set);
                         let cap = cap_set.delayed(cap_set.first().unwrap());
                         let mut session = remap_output.session(&cap);
                         session.give_vec(&mut remap_trace_batch.updates);
                     }
 
                     cap_set.downgrade(remap_trace_batch.upper);
-
 
                     let mut remap_trace_batch = timestamper.advance().await;
 
@@ -1181,7 +1179,7 @@ where
                     // Make sure we do this after writing any timestamp bindings to
                     // the remap shard that might be needed for the reported source
                     // uppers.
-                    if input_frontier.is_empty() {
+                    if input_frontier.is_empty() || cap_set.is_empty() {
                         timestamper.finalize().await;
                         return;
                     }

@@ -603,7 +603,7 @@ where
 
     /// Closes the collection from further input.
     pub async fn finalize(&mut self) {
-        loop {
+        while !self.upper.is_empty() {
             match self
                 .remap_handle
                 .compare_and_append(vec![], self.upper.clone(), Antichain::new())
@@ -613,10 +613,9 @@ where
                 // we wrote to update our local state
                 Ok(()) => {
                     self.upper = Antichain::new();
-                    return;
                 }
                 Err(actual_upper) => {
-                    self.upper = actual_upper.0;
+                    self.upper = actual_upper.current;
                 }
             }
         }
