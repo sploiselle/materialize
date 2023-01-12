@@ -1071,12 +1071,12 @@ where
         }
 
         let mut buffer = Vec::new();
-        let mut cap_set = CapabilitySet::from_elem(
+        let mut cap_set = dbg!(CapabilitySet::from_elem(
             capabilities
                 .into_iter()
                 .exactly_one()
                 .expect("there should be exactly as many capabilities as outputs"),
-        );
+        ));
 
         let upper_ts = resume_upper.as_option().copied().unwrap();
 
@@ -1156,6 +1156,7 @@ where
                     // across an await, and drop it before we downgrade the capability.
                     {
                         let mut remap_output = remap_output.activate();
+                        println!("1159 cap set {:?}", cap_set);
                         let cap = cap_set.delayed(cap_set.first().unwrap());
                         let mut session = remap_output.session(&cap);
                         session.give_vec(&mut remap_trace_batch.updates);
