@@ -1033,6 +1033,27 @@ impl<S: Append + 'static> Coordinator<S> {
         self.catalog_transact(Some(&Session::dummy()), linked_cluster_ops)
             .await?;
 
+        // Get sources and sinks that should have been dropped in last epoch,
+        // but crashed. All items returned are known to exist because they were
+        // created in this epoch.
+        let initial_drop_to_reconcile = self.controller.storage.get_state_to_reconcile().await;
+        let mut drop_to_reconcile = Vec::with_capacity(initial_drop_to_reconcile.len());
+        let mut reconciliation_queue: VecDeque<GlobalId> =
+            initial_drop_to_reconcile.into_iter().collect();
+
+        // Perform a cascading drop, which must have been completed if the
+        // storage controller received a drop command for a source.
+        while let Some(id) = reconciliation_queue.pop_front() {
+            let entry = self.catalog.get_entry(&id);
+            reconciliation_queue.extend(entry.used_by());
+            drop_to_reconcile.push(catalog::Op::DropItem(id));
+        }
+
+        self.catalog_transact(Some(&Session::dummy()), drop_to_reconcile)
+            .await?;
+
+        self.controller.storage.mark_state_reconciled().await;
+
         info!("coordinator init: bootstrap complete");
         Ok(())
     }

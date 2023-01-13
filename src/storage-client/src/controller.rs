@@ -68,12 +68,12 @@ use crate::types::sinks::{
 use crate::types::sources::{IngestionDescription, MzOffset, SourceData, SourceExport};
 
 mod collection_mgmt;
+mod command_wals;
 mod hosts;
 mod metrics_scraper;
 mod persist_handles;
 mod rehydration;
 mod remap_migration;
-mod shard_finalization_wal;
 mod statistics;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -87,7 +87,7 @@ pub static METADATA_EXPORT: TypedCollection<GlobalId, DurableExportMetadata<mz_r
 pub static ALL_COLLECTIONS: &[&str] = &[
     METADATA_COLLECTION.name(),
     METADATA_EXPORT.name(),
-    shard_finalization_wal::SHARD_FINALIZATION_WAL.name(),
+    command_wals::SHARD_FINALIZATION.name(),
 ];
 
 // Do this dance so that we keep the storage controller expressed in terms of a generic timestamp `T`.
@@ -357,6 +357,13 @@ pub trait StorageController: Debug + Send {
 
     /// Considers all nodes not currently used as orphans and removes those from the orchestrator.
     async fn remove_orphans(&mut self, next_id: GlobalId) -> Result<(), anyhow::Error>;
+
+    /// Get the ID sources and sinks that the client must drop to reconcile its
+    /// state with the storage controller.
+    async fn get_state_to_reconcile(&mut self) -> Vec<GlobalId>;
+
+    /// Mark that the user has reconciled its state with the storage controller.
+    async fn mark_state_reconciled(&mut self);
 }
 
 /// Compaction policies for collections maintained by `Controller`.
@@ -662,12 +669,24 @@ pub enum StorageError {
     IOError(StashError),
     /// Dataflow was not able to process a request
     DataflowError(DataflowError),
+    /// The source was previously registered to be dropped. Note that this
+    /// differs from `SourceIdReused`, which indicates catalog corruption. This
+    /// error provides the user the ability to reconcile its state with the
+    /// controller.
+    SourceIdDropped(GlobalId),
+    /// The sink was previously registered to be dropped. Note that this
+    /// differs from `SourceIdReused`, which indicates catalog corruption. This
+    /// error provides the user the ability to reconcile its state with the
+    /// controller.
+    SinkIdDropped(GlobalId),
 }
 
 impl Error for StorageError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SourceIdReused(_) => None,
+            Self::SourceIdDropped(_) => None,
+            Self::SinkIdDropped(_) => None,
             Self::IdentifierMissing(_) => None,
             Self::UpdateBeyondUpper(_) => None,
             Self::ReadBeforeSince(_) => None,
@@ -686,6 +705,14 @@ impl fmt::Display for StorageError {
             Self::SourceIdReused(id) => write!(
                 f,
                 "source identifier was re-created after having been dropped: {id}"
+            ),
+            Self::SourceIdDropped(id) => write!(
+                f,
+                "source identifier was re-created after being registered as dropped: {id}"
+            ),
+            Self::SinkIdDropped(id) => write!(
+                f,
+                "source identifier was re-created after being registered as dropped: {id}"
             ),
             Self::IdentifierMissing(id) => write!(f, "collection identifier is not present: {id}"),
             Self::UpdateBeyondUpper(id) => {
@@ -762,7 +789,9 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
         init_collections!(
             &METADATA_COLLECTION,
             &METADATA_EXPORT,
-            &shard_finalization_wal::SHARD_FINALIZATION_WAL
+            &command_wals::SHARD_FINALIZATION,
+            &command_wals::DROPPED_SOURCES,
+            &command_wals::DROPPED_SINKS
         );
         stash
             .append(&batches)
@@ -1014,6 +1043,7 @@ where
 
                     // Provision a storage host for the ingestion.
                     let client = self.hosts.provision(id, desc.host_config.clone()).await?;
+
                     let augmented_ingestion = CreateSourceCommand {
                         id,
                         description: desc,
@@ -1189,6 +1219,11 @@ where
                 .exports
                 .insert(id, ExportState::new(description.clone()));
 
+            if self.sink_id_dropped(id).await {
+                self.drop_sinks_unvalidated(vec![id]);
+                return Err(StorageError::SinkIdDropped(id));
+            }
+
             let from_collection = self.collection(from_id)?;
             let from_storage_metadata = from_collection.collection_metadata.clone();
             // We've added the dependency above in `exported_collections` so this guaranteed not to change at least
@@ -1234,6 +1269,14 @@ where
             let client = self.hosts.provision(id, description.host_config).await?;
 
             client.send(StorageCommand::CreateSinks(vec![cmd]));
+
+            // Wait to reconcile state until sources have been created
+            // to ensure system is in state when it would have received
+            // drop command.
+            if self.source_id_dropped(id).await {
+                self.drop_sources_unvalidated(vec![id]).await;
+                return Err(StorageError::SourceIdDropped(id));
+            }
         }
         Ok(())
     }
@@ -1245,21 +1288,7 @@ where
     }
 
     async fn drop_sources_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
-        let mut shards_to_finalize = Vec::with_capacity(identifiers.len() * 2);
-        for id in identifiers.iter() {
-            if let Some(DurableCollectionMetadata {
-                remap_shard,
-                data_shard,
-            }) = METADATA_COLLECTION
-                .peek_key_one(&mut self.state.stash, &id)
-                .await
-                .expect("must be able to connect to stash")
-            {
-                shards_to_finalize.extend([remap_shard, data_shard].into_iter());
-            }
-        }
-
-        self.register_shards_for_finalization(shards_to_finalize.into_iter())
+        self.register_dropped_source_ids(identifiers.clone().into_iter())
             .await;
 
         // Setting the read policies to the empty antichain will signal to drop
@@ -1280,6 +1309,9 @@ where
     }
 
     fn drop_sinks_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
+        // self.register_dropped_sink_ids(identifiers.clone().into_iter())
+        //     .await;
+
         for id in identifiers {
             let export = match self.export(id) {
                 Ok(export) => export,
@@ -1503,12 +1535,12 @@ where
             }
             Some(StorageResponse::DroppedIds(identifiers)) => {
                 let mut shards_to_truncate = Vec::with_capacity(identifiers.len() * 2);
-                for id in identifiers {
+                for id in identifiers.iter() {
                     if let Some(DurableCollectionMetadata {
                         remap_shard,
                         data_shard,
                     }) = METADATA_COLLECTION
-                        .peek_key_one(&mut self.state.stash, &id)
+                        .peek_key_one(&mut self.state.stash, id)
                         .await
                         .expect("must be able to connect to stash")
                     {
@@ -1522,7 +1554,10 @@ where
                     }
                 }
 
-                self.truncate_shards(&shards_to_truncate).await;
+                self.finalize_shards(&shards_to_truncate).await;
+
+                self.clear_from_dropped_source_register(&identifiers.into_iter().collect())
+                    .await;
 
                 // TODO(petrosagg): It looks like the storage controller never cleans up GlobalIds
                 // from its state. It should probably be done as a reaction to this response.
@@ -1574,6 +1609,14 @@ where
     async fn remove_orphans(&mut self, next_id: GlobalId) -> Result<(), anyhow::Error> {
         self.hosts.remove_orphans(next_id).await
     }
+
+    async fn get_state_to_reconcile(&mut self) -> Vec<GlobalId> {
+        self.reconcile_command_wals().await
+    }
+
+    async fn mark_state_reconciled(&mut self) {
+        self.truncate_command_wals().await
+    }
 }
 
 /// A wrapper struct that presents the adapter token to a format that is understandable by persist
@@ -1619,6 +1662,9 @@ where
     Self: StorageController<Timestamp = T>,
 {
     /// Create a new storage controller from a client it should wrap.
+    ///
+    /// Note that when creating a new storage controller, you must also
+    /// reconcile it with the previous state.
     pub async fn new(
         build_info: &'static BuildInfo,
         postgres_url: String,
@@ -1643,21 +1689,14 @@ where
             Arc::clone(&persist_clients),
         );
 
-        let mut c = Self {
+        Self {
             state: StorageControllerState::new(postgres_url, tx, now, postgres_factory, envd_epoch)
                 .await,
             hosts,
             internal_response_queue: rx,
             persist_location,
             persist: persist_clients,
-        };
-
-        // We expect this collection to be empty so waiting here for a read from
-        // stash is OK. If this becomes onerous, could be moved into a
-        // background task.
-        c.reconcile_shard_finalization_register().await;
-
-        c
+        }
     }
 
     /// Validate that a collection exists for all identifiers, and error if any do not.
@@ -1946,7 +1985,7 @@ where
                 let mut all_registered = true;
                 for (shard, _) in shards {
                     all_registered =
-                        self.shards_registered_for_finalization(shard).await && all_registered
+                        self.shards_registered_for_finalization(*shard).await && all_registered
                 }
                 all_registered
             },
