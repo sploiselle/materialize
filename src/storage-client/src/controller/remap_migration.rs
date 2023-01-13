@@ -171,7 +171,7 @@ where
 
         // Determine whether or not shard is empty and ensure all of its data is
         // properly formatted as `MzOffset` data.
-        while !self.upper.less_equal(progress.as_option().unwrap()) {
+        while PartialOrder::less_than(&progress, &self.upper) {
             for event in self.subscription.fetch_next().await {
                 match event {
                     ListenEvent::Updates(bound_updates) => {
@@ -183,10 +183,6 @@ where
                         }
                     }
                     ListenEvent::Progress(new_progress) => {
-                        // Progress is closing shard.
-                        if new_progress.elements().is_empty() {
-                            break;
-                        }
                         progress = new_progress;
                     }
                 }
@@ -297,7 +293,7 @@ where
 
         let since = current_shard_read_handle.since().clone();
 
-        tracing::info!(
+        info!(
             ?since,
             ?upper,
             ?read_metadata.remap_shard,
