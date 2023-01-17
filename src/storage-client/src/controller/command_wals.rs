@@ -112,9 +112,9 @@ where
         delete_where!(self, SHARD_FINALIZATION, shards)
     }
 
-    pub(super) async fn source_id_dropped(&mut self, id: GlobalId) -> bool {
-        check!(self, DROPPED_SOURCES, id)
-    }
+    // pub(super) async fn source_id_dropped(&mut self, id: GlobalId) -> bool {
+    //     check!(self, DROPPED_SOURCES, id)
+    // }
 
     pub(super) async fn register_dropped_source_ids<I>(&mut self, entries: I)
     where
@@ -131,9 +131,9 @@ where
         truncate!(self, DROPPED_SOURCES)
     }
 
-    pub(super) async fn sink_id_dropped(&mut self, id: GlobalId) -> bool {
-        check!(self, DROPPED_SINKS, id)
-    }
+    // pub(super) async fn sink_id_dropped(&mut self, id: GlobalId) -> bool {
+    //     check!(self, DROPPED_SINKS, id)
+    // }
 
     pub(super) async fn register_dropped_sink_ids<I>(&mut self, entries: I)
     where
@@ -181,12 +181,12 @@ where
                 .into_iter()
                 .partition(|id| self.state.collections.get(id).is_some());
 
-        // Put dropping the sources back into the sytem.
-        self.drop_sources_unvalidated(live_sources.clone().into_iter().collect())
-            .await;
-
         // Remove sources already dropped.
         self.clear_from_dropped_source_register(&dropped_sources)
+            .await;
+
+        // Put dropping the sources back into the sytem.
+        self.drop_sources_unvalidated(live_sources.clone().into_iter().collect())
             .await;
 
         live_sources
@@ -205,11 +205,12 @@ where
             .into_iter()
             .partition(|id| self.state.collections.get(id).is_some());
 
-        // Put dropping the sinks back into the sytem.
-        self.drop_sinks_unvalidated(live_sinks.clone().into_iter().collect());
-
         // Remove sinks already dropped.
         self.clear_from_dropped_sink_register(&dropped_sinks).await;
+
+        // Put dropping the sinks back into the sytem.
+        self.drop_sinks_unvalidated(live_sinks.clone().into_iter().collect())
+            .await;
 
         live_sinks
     }

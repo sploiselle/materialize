@@ -250,7 +250,7 @@ pub trait StorageController: Debug + Send {
     async fn drop_sources(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
 
     /// Drops the read capability for the sinks and allows their resources to be reclaimed.
-    fn drop_sinks(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
+    async fn drop_sinks(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError>;
 
     /// Drops the read capability for the sinks and allows their resources to be reclaimed.
     ///
@@ -262,7 +262,7 @@ pub trait StorageController: Debug + Send {
     ///     created, but have been forgotten by the controller due to a restart.
     ///     Once command history becomes durable we can remove this method and use the normal
     ///     `drop_sinks`.
-    fn drop_sinks_unvalidated(&mut self, identifiers: Vec<GlobalId>);
+    async fn drop_sinks_unvalidated(&mut self, identifiers: Vec<GlobalId>);
 
     /// Drops the read capability for the sources and allows their resources to be reclaimed.
     ///
@@ -1219,11 +1219,6 @@ where
                 .exports
                 .insert(id, ExportState::new(description.clone()));
 
-            if self.sink_id_dropped(id).await {
-                self.drop_sinks_unvalidated(vec![id]);
-                return Err(StorageError::SinkIdDropped(id));
-            }
-
             let from_collection = self.collection(from_id)?;
             let from_storage_metadata = from_collection.collection_metadata.clone();
             // We've added the dependency above in `exported_collections` so this guaranteed not to change at least
@@ -1269,14 +1264,6 @@ where
             let client = self.hosts.provision(id, description.host_config).await?;
 
             client.send(StorageCommand::CreateSinks(vec![cmd]));
-
-            // Wait to reconcile state until sources have been created
-            // to ensure system is in state when it would have received
-            // drop command.
-            if self.source_id_dropped(id).await {
-                self.drop_sources_unvalidated(vec![id]).await;
-                return Err(StorageError::SourceIdDropped(id));
-            }
         }
         Ok(())
     }
@@ -1302,15 +1289,15 @@ where
     }
 
     /// Drops the read capability for the sinks and allows their resources to be reclaimed.
-    fn drop_sinks(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError> {
+    async fn drop_sinks(&mut self, identifiers: Vec<GlobalId>) -> Result<(), StorageError> {
         self.validate_export_ids(identifiers.iter().cloned())?;
-        self.drop_sinks_unvalidated(identifiers);
+        self.drop_sinks_unvalidated(identifiers).await;
         Ok(())
     }
 
-    fn drop_sinks_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
-        // self.register_dropped_sink_ids(identifiers.clone().into_iter())
-        //     .await;
+    async fn drop_sinks_unvalidated(&mut self, identifiers: Vec<GlobalId>) {
+        self.register_dropped_sink_ids(identifiers.clone().into_iter())
+            .await;
 
         for id in identifiers {
             let export = match self.export(id) {

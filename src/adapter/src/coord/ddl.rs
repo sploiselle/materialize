@@ -259,7 +259,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 self.drop_sources(tables_to_drop).await;
             }
             if !storage_sinks_to_drop.is_empty() {
-                self.drop_storage_sinks(storage_sinks_to_drop);
+                self.drop_storage_sinks(storage_sinks_to_drop).await;
             }
             if !indexes_to_drop.is_empty() {
                 self.drop_indexes(indexes_to_drop);
@@ -353,11 +353,11 @@ impl<S: Append + 'static> Coordinator<S> {
         }
     }
 
-    pub(crate) fn drop_storage_sinks(&mut self, sinks: Vec<GlobalId>) {
+    pub(crate) async fn drop_storage_sinks(&mut self, sinks: Vec<GlobalId>) {
         for id in &sinks {
             self.drop_storage_read_policy(id);
         }
-        self.controller.storage.drop_sinks(sinks).unwrap();
+        self.controller.storage.drop_sinks(sinks).await.unwrap();
     }
 
     pub(crate) fn drop_indexes(&mut self, indexes: Vec<(ComputeInstanceId, GlobalId)>) {
@@ -553,7 +553,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 match self.catalog_transact(session, ops).await {
                     Ok(()) => (),
                     catalog_err @ Err(_) => {
-                        let () = self.drop_storage_sinks(vec![id]);
+                        let () = self.drop_storage_sinks(vec![id]).await;
                         catalog_err?
                     }
                 }
