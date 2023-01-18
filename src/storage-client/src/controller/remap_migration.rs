@@ -165,13 +165,12 @@ where
         Vec<(Self::FromTime, Self::IntoTime, Diff)>,
         Antichain<Self::IntoTime>,
     )> {
-        let mut progress = Antichain::from_elem(IntoTime::minimum());
-
         let mut populated = false;
 
         // Determine whether or not shard is empty and ensure all of its data is
         // properly formatted as `MzOffset` data.
-        while !self.upper.less_equal(progress.as_option().unwrap()) {
+        let mut progress = Antichain::from_elem(IntoTime::minimum());
+        while PartialOrder::less_than(&progress, &self.upper) {
             for event in self.subscription.fetch_next().await {
                 match event {
                     ListenEvent::Updates(bound_updates) => {
