@@ -1665,9 +1665,40 @@ where
             Some(StorageResponse::FrontierUppers(updates)) => {
                 self.update_write_frontiers(&updates);
             }
-            Some(StorageResponse::DroppedIds(_ids)) => {
-                // TODO(petrosagg): It looks like the storage controller never cleans up GlobalIds
-                // from its state. It should probably be done as a reaction to this response.
+            Some(StorageResponse::DroppedIds(ids)) => {
+                // TODO(petrosagg): It looks like the storage controller never
+                // cleans up GlobalIds from its state. It should probably be
+                // done as a reaction to this response. Note that this should
+                // not be done until we know for certain that the shards
+                // associated with this ID are finalized.
+
+                let mut shards_to_finalize = vec![];
+                for id in ids {
+                    if let Ok(CollectionState {
+                        collection_metadata:
+                            CollectionMetadata {
+                                data_shard,
+                                remap_shard,
+                                status_shard,
+                                ..
+                            },
+                        ..
+                    }) = self.collection(id)
+                    {
+                        for (shard, desc) in [
+                            (Some(*data_shard), "data"),
+                            (Some(*remap_shard), "remap"),
+                            (status_shard.clone(), "status"),
+                        ] {
+                            if let Some(shard) = shard {
+                                shards_to_finalize
+                                    .push((shard, format!("retired {} shard for {:?}", desc, id)));
+                            }
+                        }
+                    }
+                }
+
+                self.finalize_shards(&shards_to_finalize).await;
             }
             Some(StorageResponse::StatisticsUpdates(source_stats, sink_stats)) => {
                 // Note we only hold the locks while moving some plain-old-data around here.
@@ -2168,7 +2199,7 @@ where
                     )
                     .await
                     .expect("failed to connect")
-                    .expect("failed to truncate write handle");
+                    .expect("failed to finalize write handle");
 
                 info!(
                     "successfully finalized write handle for shard {:?}",
@@ -2177,8 +2208,8 @@ where
             }
         }
 
-        let truncated_shards = shards.iter().map(|(shard, _)| *shard).collect();
-        self.clear_from_shard_finalization_register(truncated_shards)
+        let finalized_shards = shards.iter().map(|(shard, _)| *shard).collect();
+        self.clear_from_shard_finalization_register(finalized_shards)
             .await;
     }
 }
