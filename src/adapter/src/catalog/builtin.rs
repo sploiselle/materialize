@@ -1762,6 +1762,23 @@ pub static MZ_STORAGE_SHARDS: Lazy<BuiltinSource> = Lazy::new(|| BuiltinSource {
     is_retained_metrics_relation: false,
 });
 
+pub static MZ_STORAGE_SHARDS_SINCE_INTERNAL: Lazy<BuiltinSource> = Lazy::new(|| BuiltinSource {
+    name: "mz_storage_shards_since_internal",
+    schema: MZ_INTERNAL_SCHEMA,
+    data_source: Some(IntrospectionType::ShardSince),
+    desc: RelationDesc::empty()
+        .with_column("shard_id", ScalarType::String.nullable(false))
+        .with_column(
+            "since",
+            ScalarType::List {
+                element_type: Box::new(ScalarType::MzTimestamp),
+                custom_id: None,
+            }
+            .nullable(false),
+        ),
+    is_retained_metrics_relation: false,
+});
+
 pub static MZ_STORAGE_USAGE: Lazy<BuiltinView> = Lazy::new(|| BuiltinView {
     name: "mz_storage_usage",
     schema: MZ_CATALOG_SCHEMA,
@@ -3054,6 +3071,7 @@ pub static BUILTINS_STATIC: Lazy<Vec<Builtin<NameReference>>> = Lazy::new(|| {
         Builtin::Source(&MZ_SOURCE_STATUS_HISTORY),
         Builtin::View(&MZ_SOURCE_STATUSES),
         Builtin::Source(&MZ_STORAGE_SHARDS),
+        Builtin::Source(&MZ_STORAGE_SHARDS_SINCE_INTERNAL),
         Builtin::Source(&MZ_SOURCE_STATISTICS),
         Builtin::Source(&MZ_SINK_STATISTICS),
         Builtin::View(&MZ_STORAGE_USAGE),

@@ -107,6 +107,7 @@ pub enum IntrospectionType {
     SinkStatusHistory,
     SourceStatusHistory,
     ShardMapping,
+    ShardSince,
 
     // Note that this single-shard introspection source will be changed to per-replica,
     // once we allow multiplexing multiple sources/sinks on a single cluster.
@@ -643,6 +644,8 @@ pub struct StorageControllerState<T: Timestamp + Lattice + Codec64 + TimestampMa
     /// Compaction commands to send during the next call to
     /// `StorageController::process`.
     pending_compaction_commands: Vec<(GlobalId, Antichain<T>)>,
+    /// Changes to read handle's `since`s.
+    pending_since_updates: Vec<(GlobalId, Antichain<T>, i64)>,
 
     /// Interface for managed collections
     pub(super) collection_manager: collection_mgmt::CollectionManager,
@@ -810,6 +813,7 @@ impl<T: Timestamp + Lattice + Codec64 + From<EpochMillis> + TimestampManipulatio
             pending_source_drops: vec![],
             pending_sink_drops: vec![],
             pending_compaction_commands: vec![],
+            pending_since_updates: vec![],
             collection_manager,
             introspection_ids: HashMap::new(),
             introspection_tokens: HashMap::new(),
@@ -832,6 +836,7 @@ where
     StorageResponse<T>: RustType<ProtoStorageResponse>,
     MetadataExportFetcher: MetadataExport<T>,
     DurableExportMetadata<T>: mz_stash::Data,
+    for<'a> Datum<'a>: From<T>,
 {
     type Timestamp = T;
 
@@ -1090,6 +1095,8 @@ where
 
         this.register_shard_mappings(to_create.iter().map(|(id, _)| *id))
             .await;
+        this.initialize_shard_sinces(to_create.iter().map(|(id, _)| *id))
+            .await;
 
         // TODO(guswynn): perform the io in this final section concurrently.
         for (id, description) in to_create {
@@ -1166,6 +1173,9 @@ where
                     match i {
                         IntrospectionType::ShardMapping => {
                             self.initialize_shard_mapping().await;
+                        }
+                        IntrospectionType::ShardSince => {
+                            self.initialize_all_shard_sinces().await;
                         }
                         IntrospectionType::StorageSourceStatistics => {
                             // Set the collection to empty.
@@ -1532,6 +1542,7 @@ where
         while let Some(key) = updates.keys().rev().next().cloned() {
             let mut update = updates.remove(&key).unwrap();
             if let Ok(collection) = self.collection_mut(key) {
+                let init_frontier = collection.read_capabilities.frontier().to_owned();
                 let changes = collection.read_capabilities.update_iter(update.drain());
                 update.extend(changes);
 
@@ -1540,7 +1551,16 @@ where
                     .or_insert_with(|| (ChangeBatch::new(), Antichain::new()));
 
                 changes.extend(update.drain());
-                *frontier = collection.read_capabilities.frontier().to_owned();
+
+                let new_frontier = collection.read_capabilities.frontier().to_owned();
+
+                if PartialOrder::less_than(&init_frontier, &new_frontier) {
+                    self.state
+                        .pending_since_updates
+                        .extend([(key, init_frontier, -1), (key, new_frontier.clone(), 1)])
+                }
+
+                *frontier = new_frontier;
             } else {
                 // This is confusing and we should probably error.
                 panic!("Unknown collection identifier {}", key);
@@ -1644,6 +1664,25 @@ where
         }
 
         // Record the drop status for all pending source and sink drops.
+        let shard_since_id = self.state.introspection_ids[&IntrospectionType::ShardSince];
+        let mut updates = Vec::with_capacity(self.state.pending_since_updates.len());
+        let mut row_buf = Row::default();
+        for (id, frontier, diff) in self.state.pending_since_updates.drain(..) {
+            if let Some(CollectionState {
+                collection_metadata: CollectionMetadata { data_shard, .. },
+                ..
+            }) = self.state.collections.get(&id)
+            {
+                let mut packer = row_buf.packer();
+                packer.push(Datum::String(data_shard.to_string().as_str()));
+                packer.push_list(frontier.iter().map(|t| Datum::from(t.clone())));
+                updates.push((row_buf.clone(), diff));
+            }
+        }
+        self.append_to_managed_collection(shard_since_id, dbg!(updates))
+            .await;
+
+        // Record the drop status for all pending source and sink drops.
         let source_status_history_id =
             self.state.introspection_ids[&IntrospectionType::SourceStatusHistory];
         let mut updates = vec![];
@@ -1708,6 +1747,7 @@ where
     T: Timestamp + Lattice + TotalOrder + Codec64 + From<EpochMillis> + TimestampManipulation,
     StorageCommand<T>: RustType<ProtoStorageCommand>,
     StorageResponse<T>: RustType<ProtoStorageResponse>,
+    for<'a> Datum<'a>: From<T>,
 
     Self: StorageController<Timestamp = T>,
 {
@@ -1890,8 +1930,8 @@ where
         ) in self.state.collections.iter()
         {
             let mut packer = row_buf.packer();
-            packer.push(Datum::from(global_id.to_string().as_str()));
-            packer.push(Datum::from(data_shard.to_string().as_str()));
+            packer.push(Datum::String(global_id.to_string().as_str()));
+            packer.push(Datum::String(data_shard.to_string().as_str()));
             updates.push((row_buf.clone(), 1));
         }
 
@@ -1932,12 +1972,80 @@ where
                 .data_shard;
 
             let mut packer = row_buf.packer();
-            packer.push(Datum::from(global_id.to_string().as_str()));
-            packer.push(Datum::from(shard_id.to_string().as_str()));
+            packer.push(Datum::String(global_id.to_string().as_str()));
+            packer.push(Datum::String(shard_id.to_string().as_str()));
             updates.push((row_buf.clone(), 1));
         }
 
         self.append_to_managed_collection(id, updates).await;
+    }
+
+    async fn initialize_all_shard_sinces(&mut self) {
+        let id = self.state.introspection_ids[&IntrospectionType::ShardSince];
+
+        let mut row_buf = Row::default();
+        let mut updates = Vec::with_capacity(self.state.collections.len());
+        for (
+            _global_id,
+            CollectionState {
+                collection_metadata: CollectionMetadata { data_shard, .. },
+                read_capabilities,
+                ..
+            },
+        ) in self.state.collections.iter()
+        {
+            let mut packer = row_buf.packer();
+            packer.push(Datum::String(data_shard.to_string().as_str()));
+            packer.push_list(
+                read_capabilities
+                    .frontier()
+                    .to_owned()
+                    .into_iter()
+                    .map(Datum::from),
+            );
+            updates.push((row_buf.clone(), 1));
+        }
+
+        self.reconcile_managed_collection(id, dbg!(updates)).await;
+    }
+
+    async fn initialize_shard_sinces<I>(&self, global_ids: I)
+    where
+        I: Iterator<Item = GlobalId>,
+    {
+        let id = match self
+            .state
+            .introspection_ids
+            .get(&IntrospectionType::ShardMapping)
+        {
+            Some(id) => *id,
+            _ => return,
+        };
+
+        let mut updates = vec![];
+        // Pack updates into rows
+        let mut row_buf = Row::default();
+
+        for global_id in global_ids {
+            let CollectionState {
+                collection_metadata: CollectionMetadata { data_shard, .. },
+                read_capabilities,
+                ..
+            } = &self.state.collections[&global_id];
+
+            let mut packer = row_buf.packer();
+            packer.push(Datum::String(data_shard.to_string().as_str()));
+            packer.push_list(
+                read_capabilities
+                    .frontier()
+                    .to_owned()
+                    .into_iter()
+                    .map(Datum::from),
+            );
+            updates.push((row_buf.clone(), 1));
+        }
+
+        self.append_to_managed_collection(id, dbg!(updates)).await;
     }
 
     /// Updates the `DurableCollectionMetadata` associated with `id` to

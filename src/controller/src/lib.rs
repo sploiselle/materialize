@@ -332,6 +332,7 @@ where
     StorageCommand<T>: RustType<ProtoStorageCommand>,
     StorageResponse<T>: RustType<ProtoStorageResponse>,
     mz_storage_client::controller::Controller<T>: StorageController<Timestamp = T>,
+    for<'a> mz_repr::Datum<'a>: From<T>,
 {
     /// Creates a new controller.
     pub async fn new(config: ControllerConfig, envd_epoch: NonZeroI64) -> Self {
