@@ -19,7 +19,7 @@
 //! empty frontier.
 
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{self, Debug};
 use std::num::NonZeroI64;
@@ -2153,62 +2153,76 @@ where
             .await
             .unwrap();
 
-        for (shard_id, shard_purpose) in shards {
-            let mut critical_since_handle: SinceHandle<
-                crate::types::sources::SourceData,
-                (),
-                T,
-                Diff,
-                PersistEpoch,
-            > = persist_client
-                .open_critical_since(
-                    *shard_id,
-                    PersistClient::CONTROLLER_CRITICAL_SINCE,
-                    shard_purpose.as_str(),
-                )
-                .await
-                .expect("invalid persist usage");
+        let persist_client = &persist_client;
+        // Reborrow the `&mut self` as immutable, as all the concurrent work to be processed in
+        // this stream cannot all have exclusive access.
+        let this = &*self;
 
-            let our_epoch = PersistEpoch::from(self.state.envd_epoch);
-            match critical_since_handle
-                .compare_and_downgrade_since(&our_epoch, (&our_epoch, &Antichain::new()))
-                .await
-            {
-                Ok(_) => info!("successfully finalized read handle for shard {shard_id:?}"),
-                Err(e) => mz_ore::halt!("fenced by envd @ {e:?}. ours = {our_epoch:?}"),
-            }
-
-            let mut write = persist_client
-                .open_writer(
-                    *shard_id,
-                    shard_purpose.as_str(),
-                    Arc::new(RelationDesc::empty()),
-                    Arc::new(UnitSchema),
-                )
-                .await
-                .expect("invalid persist usage");
-
-            if write.upper().is_empty() {
-                info!("write handle for shard {:?} already finalized", shard_id);
-            } else {
-                write
-                    .append(
-                        Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
-                        write.upper().clone(),
-                        Antichain::new(),
+        use futures::stream::StreamExt;
+        let finalized_shards: BTreeSet<_> = futures::stream::iter(shards)
+            .map(|(shard_id, purpose)| async move {
+                let mut critical_since_handle: SinceHandle<
+                    crate::types::sources::SourceData,
+                    (),
+                    T,
+                    Diff,
+                    PersistEpoch,
+                > = persist_client
+                    .open_critical_since(
+                        *shard_id,
+                        PersistClient::CONTROLLER_CRITICAL_SINCE,
+                        purpose.as_str(),
                     )
                     .await
-                    .expect("failed to connect")
-                    .expect("failed to finalize write handle");
+                    .expect("invalid persist usage");
 
-                info!(
-                    "successfully finalized write handle for shard {:?}",
-                    shard_id
-                );
-            }
-        }
+                let our_epoch = PersistEpoch::from(this.state.envd_epoch);
+                match critical_since_handle
+                    .compare_and_downgrade_since(&our_epoch, (&our_epoch, &Antichain::new()))
+                    .await
+                {
+                    Ok(_) => info!("successfully finalized read handle for shard {shard_id:?}"),
+                    Err(e) => mz_ore::halt!("fenced by envd @ {e:?}. ours = {our_epoch:?}"),
+                }
 
-        let finalized_shards = shards.iter().map(|(shard, _)| *shard).collect();
+                let mut write = persist_client
+                    .open_writer(
+                        *shard_id,
+                        purpose.as_str(),
+                        Arc::new(RelationDesc::empty()),
+                        Arc::new(UnitSchema),
+                    )
+                    .await
+                    .expect("failed to connect");
+
+                if write.upper().is_empty() {
+                    info!("write handle for shard {:?} already finalized", shard_id);
+                } else {
+                    write
+                        .append(
+                            Vec::<((crate::types::sources::SourceData, ()), T, Diff)>::new(),
+                            write.upper().clone(),
+                            Antichain::new(),
+                        )
+                        .await
+                        .expect("failed to connect")
+                        .expect("failed to truncate write handle");
+
+                    info!(
+                        "successfully finalized write handle for shard {:?}",
+                        shard_id
+                    );
+                }
+
+                *shard_id
+            })
+            // Poll each future for each collection concurrently, maximum of 10 at a time.
+            .buffer_unordered(10)
+            // HERE BE DRAGONS: see warning on other uses of buffer_unordered
+            // before any changes to `collect`
+            .collect()
+            .await;
+
         self.clear_from_shard_finalization_register(finalized_shards)
             .await;
     }
