@@ -1592,8 +1592,9 @@ pub struct Ingestion {
     /// This map does *not* include the export of the source associated with the ingestion itself
     pub subsource_exports: BTreeMap<GlobalId, usize>,
     pub cluster_id: ClusterId,
-    /// The ID of this collection's remap/progress collection. An option only to
-    /// support migrating into this structure.
+    /// The ID of this collection's remap/progress collection.
+    // This is an option only to support opening the initial catalog before
+    // applying the migration that adds progress subsources to existing sources.
     pub remap_collection_id: Option<GlobalId>,
 }
 
@@ -5605,9 +5606,7 @@ impl Catalog {
                             remap_collection_id: ingestion.progress_subsource,
                         })
                     }
-                    mz_sql::plan::DataSourceDesc::Progress => {
-                        unreachable!("progress subsources error in purification")
-                    }
+                    mz_sql::plan::DataSourceDesc::Progress => DataSourceDesc::Progress,
                     mz_sql::plan::DataSourceDesc::Source => DataSourceDesc::Source,
                 },
                 desc: source.desc,
@@ -6535,9 +6534,16 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
     fn subsources(&self) -> Vec<GlobalId> {
         match &self.item {
             CatalogItem::Source(source) => match &source.data_source {
-                DataSourceDesc::Ingestion(ingestion) => {
-                    ingestion.subsource_exports.keys().copied().collect()
-                }
+                DataSourceDesc::Ingestion(ingestion) => ingestion
+                    .subsource_exports
+                    .keys()
+                    .copied()
+                    .chain(std::iter::once(
+                        ingestion
+                            .remap_collection_id
+                            .expect("remap collection must named by this point"),
+                    ))
+                    .collect(),
                 DataSourceDesc::Introspection(_)
                 | DataSourceDesc::Progress
                 | DataSourceDesc::Source => vec![],

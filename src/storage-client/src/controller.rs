@@ -1071,10 +1071,13 @@ where
 
             let remap_shard = match &description.data_source {
                 // Only ingestions can have remap shards.
-                DataSource::Ingestion(ingestion) => {
+                DataSource::Ingestion(IngestionDescription {
+                    remap_collection_id,
+                    ..
+                }) => {
                     // Iff ingestion has a remap collection, its metadata must
                     // exist (and be correct) by this point.
-                    Some(durable_metadata[&ingestion.remap_collection_id].data_shard)
+                    Some(durable_metadata[remap_collection_id].data_shard)
                 }
                 _ => None,
             };

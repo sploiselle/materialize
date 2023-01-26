@@ -351,11 +351,6 @@ pub fn plan_create_source(
         progress_subsource,
     } = &stmt;
 
-    // TODO: enable progress subsources.
-    if progress_subsource.is_some() {
-        sql_bail!("[internal error] should have errored in purification");
-    }
-
     let envelope = envelope.clone().unwrap_or(Envelope::None);
 
     const SAFE_WITH_OPTIONS: &[CreateSourceOptionName] = &[CreateSourceOptionName::Size];
@@ -1031,6 +1026,9 @@ pub fn plan_create_source(
         timestamp_interval,
     };
 
+    // TODO: this can be converted to an unwrap once the upgrade harness
+    // iterates over versions rather than checking the entire matrix of
+    // cross-compatibility.
     let progress_subsource = progress_subsource
         .as_ref()
         .map(|name| match name {
