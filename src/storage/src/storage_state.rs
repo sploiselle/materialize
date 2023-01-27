@@ -68,7 +68,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
@@ -700,16 +700,34 @@ impl<'w, A: Allocate> Worker<'w, A> {
                 );
             }
             InternalStorageCommand::DropDataflow(id) => {
-                // Clean up per-source / per-sink state.
-                self.storage_state.source_uppers.remove(&id);
-                self.storage_state.source_tokens.remove(&id);
-                self.storage_state.source_statistics.remove(&id);
+                let ids: BTreeSet<GlobalId> = match self.storage_state.ingestions.get(&id) {
+                    // Without the source dataflow running, all source exports
+                    // should also be considered dropped. n.b. `source_exports`
+                    // includes `id`
+                    Some(IngestionDescription { source_exports, .. }) => {
+                        source_exports.keys().cloned().collect()
+                    }
+                    None => {
+                        let mut ids = BTreeSet::new();
+                        ids.insert(id);
+                        ids
+                    }
+                };
 
-                self.storage_state.sink_tokens.remove(&id);
+                mz_ore::soft_assert!(ids.contains(&id));
+
+                for id in &ids {
+                    // Clean up per-source / per-sink state.
+                    self.storage_state.source_uppers.remove(id);
+                    self.storage_state.source_tokens.remove(id);
+                    self.storage_state.source_statistics.remove(id);
+
+                    self.storage_state.sink_tokens.remove(id);
+                }
 
                 // Report the dataflow as dropped once we went through the whole
                 // control flow from external command to this internal command.
-                self.storage_state.dropped_ids.push(id);
+                self.storage_state.dropped_ids.extend(ids);
             }
         }
     }
