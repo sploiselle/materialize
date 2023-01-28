@@ -21,13 +21,13 @@ use mz_ore::now::EpochMillis;
 use mz_persist_client::ShardId;
 use mz_persist_types::Codec64;
 use mz_proto::RustType;
-use mz_repr::TimestampManipulation;
+use mz_repr::{Diff, GlobalId, TimestampManipulation};
 use mz_stash::{self, TypedCollection};
 
 use crate::client::{StorageCommand, StorageResponse};
-use crate::controller::{ProtoStorageCommand, ProtoStorageResponse};
+use crate::controller::{DurableCollectionMetadata, ProtoStorageCommand, ProtoStorageResponse};
 
-use super::Controller;
+use super::{Controller, StorageController};
 
 pub(super) static SHARD_FINALIZATION: TypedCollection<ShardId, ()> =
     TypedCollection::new("storage-shards-to-finalize");
@@ -84,72 +84,111 @@ where
             .expect("must be able to write to stash")
     }
 
-    /// Reconcile the state of `SHARD_FINALIZATION_WAL` with
-    /// `super::METADATA_COLLECTION` on boot.
-    pub(super) async fn reconcile_shards(&mut self) {
-        // Get all shards in the WAL.
-        let registered_shards: BTreeSet<_> = SHARD_FINALIZATION
-            .peek_one(&mut self.state.stash)
-            .await
-            .expect("must be able to read from stash")
-            .into_iter()
-            .map(|(shard_id, _)| shard_id)
-            .collect();
+    pub(super) async fn reconcile_state_inner(&mut self) {
+        // Convenience method for reading from a collection in parallel.
+        async fn tx_peek<'tx, K, V>(
+            tx: &'tx mz_stash::Transaction<'tx>,
+            typed: &TypedCollection<K, V>,
+        ) -> Vec<(K, V, Diff)>
+        where
+            K: mz_stash::Data,
+            V: mz_stash::Data,
+        {
+            let collection = tx
+                .collection::<K, V>(typed.name())
+                .await
+                .expect("named collection must exist");
+            tx.peek(collection).await.expect("peek succeeds")
+        }
 
-        if registered_shards.is_empty() {
+        let (metadata, mut shard_finalization) = self
+            .state
+            .stash
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    // Query all collections in parallel.
+                    Ok(futures::join!(
+                        tx_peek(&tx, &super::METADATA_COLLECTION),
+                        tx_peek(&tx, &SHARD_FINALIZATION),
+                    ))
+                })
+            })
+            .await
+            .expect("stash operation succeeds");
+
+        if metadata.len() == self.state.collections.len() && shard_finalization.is_empty() {
+            // This is the expected case--we hopefully have not leaked any
+            // state.
             return;
         }
 
-        // Get all shards we're aware of from stash.
-        let all_shard_data: BTreeMap<_, _> = super::METADATA_COLLECTION
-            .peek_one(&mut self.state.stash)
-            .await
-            .expect("must be able to read from stash")
+        // Transform the shard finalization collection now so we can extend it
+        // with any shards we discover we need to finalize as part of
+        // reconciling collection metadata.
+        let mut shard_finalization: Vec<_> = shard_finalization
             .into_iter()
-            .map(
-                |(
-                    id,
-                    // TODO(guswynn): produce the schema for each shard.
-                    super::DurableCollectionMetadata {
-                        remap_shard,
-                        data_shard,
-                    },
-                )| { [(id, [remap_shard, data_shard])] },
-            )
-            .flatten()
-            .collect();
-
-        // Consider shards in use if they are still attached to a collection.
-        let in_use_shards: BTreeSet<_> = all_shard_data
-            .into_iter()
-            .filter_map(|(id, shards)| {
-                self.state
-                    .collections
-                    .get(&id)
-                    .map(|_| Some(shards.to_vec()))
+            .map(|(shard, _, diff)| {
+                assert!(diff == 1);
+                // We expect peeks to be consolidated
+                (shard, "retired shard".to_string())
             })
-            .flatten()
-            .flatten()
             .collect();
 
-        // Determine all shards that were marked to drop but are still in use by
-        // some present collection.
-        let shard_ids_to_keep = registered_shards
-            .intersection(&in_use_shards)
-            .cloned()
-            .collect();
+        // The coordinator forgot about collections we know about.
+        if metadata.len() != self.state.collections.len() {
+            let addl_shards = self.reconcile_metadata_collection(metadata).await;
+            // Add these shards to avoid another read from stash.
+            shard_finalization.extend(
+                addl_shards
+                    .into_iter()
+                    .map(|id| (id, "retired_shard".to_string())),
+            );
+        }
 
-        // Remove any shards that are currently in use from shard finalization register.
-        self.clear_from_shard_finalization_register(shard_ids_to_keep)
+        // Finalize any shards; this process is idempotent so no fear in any
+        // side effects.
+        if !shard_finalization.is_empty() {
+            self.finalize_shards(&shard_finalization).await;
+        }
+    }
+
+    /// Reconciles `super::METADATA_COLLECTION` with the catalog as expressed by
+    /// the coordinator during bootstrapping.
+    ///
+    /// Returns the ID of shard that should be finalized. This same data is also
+    /// added to stash, but keeping a copy in memory lets us avoid an additional
+    /// duplicative stash read.
+    async fn reconcile_metadata_collection(
+        &mut self,
+        mut metadata: Vec<(GlobalId, DurableCollectionMetadata, i64)>,
+    ) -> Vec<ShardId> {
+        metadata.retain(|(id, _, _)| self.collection(*id).is_err());
+
+        let mut shard_to_finalize = vec![];
+        let mut ids_to_drop = BTreeSet::new();
+
+        for (
+            id,
+            DurableCollectionMetadata {
+                data_shard,
+                remap_shard,
+            },
+            _,
+        ) in metadata
+        {
+            ids_to_drop.insert(id);
+            shard_to_finalize.push(data_shard);
+            shard_to_finalize.push(remap_shard);
+        }
+
+        self.register_shards_for_finalization(shard_to_finalize.iter().cloned())
             .await;
 
-        // Determine all shards that are registered that are not in use.
-        let shard_id_desc_to_truncate: Vec<_> = registered_shards
-            .difference(&in_use_shards)
-            .cloned()
-            .map(|shard_id| (shard_id, "finalizing unused shard".to_string()))
-            .collect();
+        super::METADATA_COLLECTION
+            .delete(&mut self.state.stash, move |k, _v| ids_to_drop.contains(k))
+            .await
+            .expect("stash operation must succeed");
 
-        self.finalize_shards(&shard_id_desc_to_truncate).await;
+        shard_to_finalize
     }
 }
