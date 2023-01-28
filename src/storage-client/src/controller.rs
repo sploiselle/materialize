@@ -1158,7 +1158,7 @@ where
         // Reborrow `&mut self` immutably, same reasoning as above.
         let this = &*self;
 
-        this.register_shard_mappings(to_create.iter().map(|(id, _)| *id))
+        this.register_shard_mappings(to_create.iter().map(|(id, _)| *id), 1)
             .await;
 
         // TODO(guswynn): perform the io in this final section concurrently.
@@ -1666,15 +1666,9 @@ where
                 self.update_write_frontiers(&updates);
             }
             Some(StorageResponse::DroppedIds(ids)) => {
-                // TODO(petrosagg): It looks like the storage controller never
-                // cleans up GlobalIds from its state. It should probably be
-                // done as a reaction to this response. Note that this should
-                // not be done until we know for certain that the shards
-                // associated with this ID are finalized.
-
                 let mut shards_to_finalize = vec![];
-                for id in ids {
-                    if let Ok(CollectionState {
+                for id in &ids {
+                    if let Some(CollectionState {
                         collection_metadata:
                             CollectionMetadata {
                                 data_shard,
@@ -1683,7 +1677,7 @@ where
                                 ..
                             },
                         ..
-                    }) = self.collection(id)
+                    }) = self.state.collections.get(id)
                     {
                         for (shard, desc) in [
                             (Some(*data_shard), "data"),
@@ -1696,9 +1690,24 @@ where
                             }
                         }
                     }
+
+                    self.state.persist_write_handles.drop_handle(*id);
+                    self.state.persist_read_handles.drop_handle(*id);
                 }
 
                 self.finalize_shards(&shards_to_finalize).await;
+
+                self.register_shard_mappings(ids.iter().cloned(), -1).await;
+
+                for id in &ids {
+                    self.state.collections.remove(id);
+                }
+
+                let ids: BTreeSet<GlobalId> = ids.into_iter().collect();
+                METADATA_COLLECTION
+                    .delete(&mut self.state.stash, move |k, _v| ids.contains(k))
+                    .await
+                    .expect("stash operation must succeed");
             }
             Some(StorageResponse::StatisticsUpdates(source_stats, sink_stats)) => {
                 // Note we only hold the locks while moving some plain-old-data around here.
@@ -2019,7 +2028,7 @@ where
     /// - If `self.state.collections` does not have an entry for `global_id`.
     /// - If `IntrospectionType::ShardMapping`'s `GlobalId` is not registered as
     ///   a managed collection.
-    async fn register_shard_mappings<I>(&self, global_ids: I)
+    async fn register_shard_mappings<I>(&self, global_ids: I, diff: i64)
     where
         I: Iterator<Item = GlobalId>,
     {
@@ -2044,7 +2053,7 @@ where
             let mut packer = row_buf.packer();
             packer.push(Datum::from(global_id.to_string().as_str()));
             packer.push(Datum::from(shard_id.to_string().as_str()));
-            updates.push((row_buf.clone(), 1));
+            updates.push((row_buf.clone(), diff));
         }
 
         self.append_to_managed_collection(id, updates).await;

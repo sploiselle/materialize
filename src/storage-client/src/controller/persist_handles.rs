@@ -49,6 +49,7 @@ pub struct PersistReadWorker<T: Timestamp + Lattice + Codec64> {
 #[derive(Debug)]
 enum PersistReadWorkerCmd<T: Timestamp + Lattice + Codec64> {
     Register(GlobalId, SinceHandle<SourceData, (), T, Diff, PersistEpoch>),
+    DropHandle(GlobalId),
     Downgrade(BTreeMap<GlobalId, Antichain<T>>),
 }
 
@@ -76,6 +77,9 @@ impl<T: Timestamp + Lattice + Codec64> PersistReadWorker<T> {
                             if previous.is_some() {
                                 panic!("already registered a SinceHandle for collection {id}");
                             }
+                        }
+                        PersistReadWorkerCmd::DropHandle(id) => {
+                            since_handles.remove(&id);
                         }
                         PersistReadWorkerCmd::Downgrade(since_frontiers) => {
                             for (id, frontier) in since_frontiers {
@@ -133,6 +137,10 @@ impl<T: Timestamp + Lattice + Codec64> PersistReadWorker<T> {
         self.send(PersistReadWorkerCmd::Downgrade(frontiers))
     }
 
+    pub(crate) fn drop_handle(&self, id: GlobalId) {
+        self.send(PersistReadWorkerCmd::DropHandle(id))
+    }
+
     fn send(&self, cmd: PersistReadWorkerCmd<T>) {
         self.tx
             .send((tracing::Span::current(), cmd))
@@ -159,6 +167,7 @@ where
 #[derive(Debug)]
 enum PersistWriteWorkerCmd<T: Timestamp + Lattice + Codec64> {
     Register(GlobalId, WriteHandle<SourceData, (), T, Diff>),
+    DropHandle(GlobalId),
     Append(
         Vec<(GlobalId, Vec<Update<T>>, T)>,
         tokio::sync::oneshot::Sender<Result<(), StorageError>>,
@@ -220,6 +229,9 @@ impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> PersistWriteWorke
                                                 id
                                             );
                                         }
+                                    }
+                                    PersistWriteWorkerCmd::DropHandle(id) => {
+                                        write_handles.remove(&id);
                                     }
                                     PersistWriteWorkerCmd::Append(updates, response) => {
                                         let mut ids = HashSet::new();
@@ -447,6 +459,10 @@ impl<T: Timestamp + Lattice + Codec64 + TimestampManipulation> PersistWriteWorke
             self.send(PersistWriteWorkerCmd::MonotonicAppend(updates, tx));
             rx
         }
+    }
+
+    pub(crate) fn drop_handle(&self, id: GlobalId) {
+        self.send(PersistWriteWorkerCmd::DropHandle(id))
     }
 
     fn send(&self, cmd: PersistWriteWorkerCmd<T>) {
