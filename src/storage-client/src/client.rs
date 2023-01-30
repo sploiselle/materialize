@@ -497,7 +497,7 @@ where
         match command {
             StorageCommand::CreateSources(ingestions) => {
                 for ingestion in ingestions {
-                    for &export_id in ingestion.description.source_exports.keys() {
+                    for export_id in ingestion.description.subsource_ids() {
                         let mut frontier = MutableAntichain::new();
                         frontier.update_iter(iter::once((T::minimum(), i64::from(self.parts))));
                         let part_frontiers = vec![
