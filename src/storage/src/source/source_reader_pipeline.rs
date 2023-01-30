@@ -116,6 +116,8 @@ pub struct RawSourceCreationConfig {
     pub persist_clients: Arc<PersistClientCache>,
     /// Place to share statistics updates with storage state.
     pub source_statistics: StorageStatistics<SourceStatisticsUpdate, SourceStatisticsMetrics>,
+    /// Enables reporting the remap operator's write frontier.
+    pub remap_stashed_upper: Rc<RefCell<Antichain<mz_repr::Timestamp>>>,
 }
 
 /// Creates a source dataflow operator graph from a connection that has a
@@ -290,6 +292,7 @@ where
         now: _,
         persist_clients: _,
         source_statistics,
+        remap_stashed_upper: _,
     } = config;
 
     let mut builder = AsyncOperatorBuilder::new(name.clone(), scope.clone());
@@ -701,6 +704,7 @@ where
         now,
         persist_clients,
         source_statistics: _,
+        remap_stashed_upper,
     } = config;
 
     let chosen_worker = usize::cast_from(id.hashed() % u64::cast_from(worker_count));
@@ -725,6 +729,7 @@ where
             Arc::clone(&persist_clients),
             storage_metadata.clone(),
             as_of.clone(),
+            remap_stashed_upper,
             id,
             "remap",
             worker_id,
@@ -867,6 +872,7 @@ where
         now: _,
         persist_clients: _,
         source_statistics: _,
+        remap_stashed_upper: _,
     } = config;
 
     let bytes_read_counter = base_metrics.bytes_read.clone();

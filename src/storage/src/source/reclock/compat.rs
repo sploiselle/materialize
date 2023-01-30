@@ -10,6 +10,8 @@
 //! Reclocking compatibility code until the whole ingestion pipeline is transformed to native
 //! timestamps
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
@@ -49,6 +51,8 @@ pub struct PersistHandle<FromTime: SourceTimestamp, IntoTime: Timestamp + Lattic
     >,
     write_handle: WriteHandle<SourceData, (), IntoTime, Diff>,
     pending_batch: Vec<(FromTime, IntoTime, Diff)>,
+    // Reports `self`'s write frontier.
+    stashed_upper: Rc<RefCell<Antichain<IntoTime>>>,
 }
 
 impl<FromTime: Timestamp, IntoTime: Timestamp> PersistHandle<FromTime, IntoTime>
@@ -60,6 +64,7 @@ where
         persist_clients: Arc<PersistClientCache>,
         metadata: CollectionMetadata,
         as_of: Antichain<IntoTime>,
+        stashed_upper: Rc<RefCell<Antichain<IntoTime>>>,
         // additional information to improve logging
         id: GlobalId,
         operator: &str,
@@ -154,6 +159,7 @@ where
             events,
             write_handle,
             pending_batch: vec![],
+            stashed_upper,
         })
     }
 }
@@ -181,6 +187,7 @@ where
                         .pending_batch
                         .drain_filter_swapping(|(_, ts, _)| !new_upper.less_equal(ts))
                         .collect();
+                    *self.stashed_upper.borrow_mut() = new_upper.clone();
                     return Some((batch, new_upper));
                 }
                 ListenEvent::Updates(msgs) => {
@@ -218,7 +225,9 @@ where
             .compare_and_append(row_updates, upper, new_upper)
             .await
         {
-            Ok(result) => return result,
+            Ok(result) => {
+                return result;
+            }
             Err(invalid_use) => panic!("compare_and_append failed: {invalid_use}"),
         }
     }

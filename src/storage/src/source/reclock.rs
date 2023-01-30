@@ -685,10 +685,13 @@ mod tests {
             (ts, upper)
         }));
 
+        let write_frontier = Rc::new(RefCell::new(Antichain::from_elem(Timestamp::minimum())));
+
         let remap_handle = crate::source::reclock::compat::PersistHandle::new(
             Arc::clone(&*PERSIST_CACHE),
             metadata,
             as_of.clone(),
+            write_frontier,
             GlobalId::Explain,
             "unittest",
             0,

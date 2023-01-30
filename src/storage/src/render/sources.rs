@@ -106,6 +106,9 @@ where
             .get(&id)
             .expect("statistics initialized")
             .clone(),
+        remap_stashed_upper: Rc::clone(
+            &storage_state.source_uppers[&description.remap_collection_id],
+        ),
     };
 
     // TODO(petrosagg): put the description as-is in the RawSourceCreationConfig instead of cloning

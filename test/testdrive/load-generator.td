@@ -29,3 +29,13 @@ users         subsource      <null>
 # Show that AST of subsource contains REFERENCES option
 > SHOW CREATE SOURCE accounts
 materialize.public.accounts "CREATE SUBSOURCE \"materialize\".\"public\".\"accounts\" (\"id\" \"pg_catalog\".\"int8\" NOT NULL, \"org_id\" \"pg_catalog\".\"int8\" NOT NULL, \"balance\" \"pg_catalog\".\"int8\" NOT NULL, UNIQUE (\"id\")) WITH (REFERENCES = true)"
+
+# Query automatically generated progress topic
+$ set-regex match=\d+ replacement=<NUMBER>
+> SELECT count FROM auction_house_progress
+<NUMBER>
+
+# Ensure we report the write frontier of the progress subsource
+$ set-regex match=(\d{13,20}|u\d{1,5}|\(\d+-\d\d-\d\d\s\d\d:\d\d:\d\d.\d\d\d\)|true|false) replacement=<>
+> EXPLAIN TIMESTAMP FOR SELECT * FROM auction_house_progress
+"                query timestamp: <> <>\n          oracle read timestamp: <> <>\nlargest not in advance of upper:             0 <>\n                          upper:[            0 <>]\n                          since:[<> <>]\n        can respond immediately: <>\n                       timeline: Some(EpochMilliseconds)\n\nsource materialize.public.auction_house_progress (<>, storage):\n                  read frontier:[<> <>]\n                 write frontier:[            0 <>]\n"
