@@ -536,6 +536,8 @@ def workflow_test_remote_storage(c: Composition) -> None:
 
         c.kill("materialized")
         c.up("materialized")
+        c.kill("clusterd1")
+        c.up("clusterd1")
         c.run("testdrive", "storage/02-after-environmentd-restart.td")
 
         c.kill("clusterd1")

@@ -175,7 +175,6 @@ id value
 $ set-regex match=\d+ replacement=<NUMBER>
 
 > SELECT * FROM s3_csv_headers_progress
-<NUMBER>
 
 # Ensure we report the write frontier of the progress subsource
 $ set-regex match=(\d{13,20}|u\d{1,5}|\(\d+-\d\d-\d\d\s\d\d:\d\d:\d\d.\d\d\d\)|true|false) replacement=<>
