@@ -78,6 +78,8 @@ pub struct IngestionDescription<S = ()> {
     pub source_exports: BTreeMap<GlobalId, SourceExport<S>>,
     /// The ID of the instance in which to install the source.
     pub instance_id: StorageInstanceId,
+    /// The ID of this ingestion's remap/progress collection.
+    pub remap_collection_id: GlobalId,
 }
 
 impl<S> IngestionDescription<S> {
@@ -91,9 +93,13 @@ impl<S> IngestionDescription<S> {
             ingestion_metadata: _,
             source_exports,
             instance_id: _,
+            remap_collection_id,
         } = &self;
 
-        source_exports.keys().copied()
+        source_exports
+            .keys()
+            .copied()
+            .chain(std::iter::once(*remap_collection_id))
     }
 }
 
@@ -149,28 +155,30 @@ impl<T: Timestamp + Lattice + Codec64> ResumptionFrontierCalculator<T>
             GenericSourceConnection::TestScript(_) => TESTSCRIPT_PROGRESS_DESC.clone(),
         };
 
-        let CollectionMetadata {
+        if let CollectionMetadata {
             persist_location,
-            remap_shard,
+            remap_shard: Some(remap_shard),
             data_shard: _,
             // The status shard only contains non-definite status updates
             status_shard: _,
             relation_desc: _,
-        } = &self.ingestion_metadata;
-        let remap_handle = client_cache
-            .open(persist_location.clone())
-            .await
-            .expect("error creating persist client")
-            // TODO: Any way to plumb the GlobalId to this?
-            .open_writer::<SourceData, (), T, Diff>(
-                *remap_shard,
-                "resumption remap",
-                Arc::new(remap_relation_desc),
-                Arc::new(UnitSchema),
-            )
-            .await
-            .unwrap();
-        handles.push(remap_handle);
+        } = &self.ingestion_metadata
+        {
+            let remap_handle = client_cache
+                .open(persist_location.clone())
+                .await
+                .expect("error creating persist client")
+                // TODO: Any way to plumb the GlobalId to this?
+                .open_writer::<SourceData, (), T, Diff>(
+                    *remap_shard,
+                    "resumption remap",
+                    Arc::new(remap_relation_desc),
+                    Arc::new(UnitSchema),
+                )
+                .await
+                .unwrap();
+            handles.push(remap_handle);
+        }
 
         handles
     }
@@ -220,14 +228,23 @@ where
                 .boxed(),
             any::<S>().boxed(),
             any::<StorageInstanceId>().boxed(),
+            any::<GlobalId>(),
         )
             .prop_map(
-                |(desc, source_imports, source_exports, ingestion_metadata, instance_id)| Self {
+                |(
                     desc,
                     source_imports,
                     source_exports,
                     ingestion_metadata,
                     instance_id,
+                    remap_collection_id,
+                )| Self {
+                    desc,
+                    source_imports,
+                    source_exports,
+                    ingestion_metadata,
+                    instance_id,
+                    remap_collection_id,
                 },
             )
             .boxed()
@@ -242,6 +259,7 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             ingestion_metadata: Some(self.ingestion_metadata.into_proto()),
             desc: Some(self.desc.into_proto()),
             instance_id: Some(self.instance_id.into_proto()),
+            remap_collection_id: Some(self.remap_collection_id.into_proto()),
         }
     }
 
@@ -258,6 +276,9 @@ impl RustType<ProtoIngestionDescription> for IngestionDescription<CollectionMeta
             instance_id: proto
                 .instance_id
                 .into_rust_if_some("ProtoIngestionDescription::instance_id")?,
+            remap_collection_id: proto
+                .remap_collection_id
+                .into_rust_if_some("ProtoIngestionDescription::remap_collection_id")?,
         })
     }
 }
@@ -1406,7 +1427,7 @@ pub static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
         .with_column(
             "partition",
             ScalarType::Range {
-                element_type: Box::new(ScalarType::Int32),
+                element_type: Box::new(ScalarType::Numeric { max_scale: None }),
             }
             .nullable(false),
         )
@@ -1885,7 +1906,7 @@ pub static KINESIS_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
         .with_column("shard_id", ScalarType::Int32.nullable(false))
         .with_column("sequence_number", ScalarType::UInt64.nullable(true))
     */
-    RelationDesc::empty().with_column("offset", ScalarType::UInt64.nullable(true))
+    RelationDesc::empty().with_column("sequence_number", ScalarType::UInt64.nullable(true))
 });
 
 impl RustType<ProtoKinesisSourceConnection> for KinesisSourceConnection {
@@ -2059,14 +2080,14 @@ pub struct LoadGeneratorSourceConnection {
     pub tick_micros: Option<u64>,
 }
 
+pub static LOADGEN_PROGRESS_DESC: Lazy<RelationDesc> =
+    Lazy::new(|| RelationDesc::empty().with_column("count", ScalarType::UInt64.nullable(true)));
+
 impl SourceConnection for LoadGeneratorSourceConnection {
     fn name(&self) -> &'static str {
         "load-generator"
     }
 }
-
-pub static LOADGEN_PROGRESS_DESC: Lazy<RelationDesc> =
-    Lazy::new(|| RelationDesc::empty().with_column("offset", ScalarType::UInt64.nullable(true)));
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LoadGenerator {
@@ -2354,6 +2375,9 @@ impl RustType<ProtoLoadGeneratorSourceConnection> for LoadGeneratorSourceConnect
 pub struct TestScriptSourceConnection {
     pub desc_json: String,
 }
+
+pub static TEST_SCRIPT_PROGRESS_DESC: Lazy<RelationDesc> =
+    Lazy::new(|| RelationDesc::empty().with_column("count", ScalarType::UInt64.nullable(true)));
 
 impl SourceConnection for TestScriptSourceConnection {
     fn name(&self) -> &'static str {
