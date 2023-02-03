@@ -75,6 +75,7 @@ mod collection_mgmt;
 mod command_wals;
 mod persist_handles;
 mod rehydration;
+mod remap_migration;
 mod statistics;
 
 include!(concat!(env!("OUT_DIR"), "/mz_storage_client.controller.rs"));
@@ -1046,6 +1047,11 @@ where
             .await?;
 
         let mut durable_metadata = METADATA_COLLECTION.peek_one(&mut self.state.stash).await?;
+
+        let delta = self.remap_shard_migration(&durable_metadata, &collections)?;
+
+        self.rewrite_collection_metadata(&mut durable_metadata, delta)
+            .await;
 
         // We first enrich each collection description with some additional metadata...
         use futures::stream::{StreamExt, TryStreamExt};
@@ -2094,7 +2100,7 @@ where
     /// # Panics
     /// - If the keys in `metadata_to_update` are not a strict subset of the
     ///   keys in `current_metadata`.
-    async fn _rewrite_collection_metadata(
+    async fn rewrite_collection_metadata(
         &mut self,
         current_metadata: &mut BTreeMap<GlobalId, DurableCollectionMetadata>,
         metadata_to_update: BTreeMap<GlobalId, DurableCollectionMetadata>,
