@@ -496,8 +496,15 @@ pub async fn purify_create_source(
 
             *referenced_subsources = Some(ReferencedSubsources::Subset(targeted_subsources));
 
-            // Remove any old detail references
-            options.retain(|PgConfigOption { name, .. }| name != &PgConfigOptionName::Details);
+            if options
+                .iter()
+                .any(|PgConfigOption { name, .. }| name == &PgConfigOptionName::Details)
+            {
+                return Err(PlanError::InternalOptionAlreadySet {
+                    option_name: PgConfigOptionName::Details.to_ast_string(),
+                });
+            }
+
             let details = PostgresSourcePublicationDetails {
                 tables: publication_tables,
                 slot: format!(

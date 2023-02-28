@@ -112,6 +112,9 @@ pub enum PlanError {
     InvalidProtobufSchema {
         cause: protobuf_native::OperationFailedError,
     },
+    InternalOptionAlreadySet {
+        option_name: String,
+    },
     InvalidOptionValue {
         // Expected to be generated from the `to_ast_string` value on the option
         // name.
@@ -354,6 +357,7 @@ impl fmt::Display for PlanError {
                 write!(f, "invalid protobuf schema")
             }
             Self::DropSubsource{subsource, source: _} => write!(f, "SOURCE {subsource} is a subsource and cannot be dropped independently of its primary source"),
+            Self::InternalOptionAlreadySet { option_name } => write!(f, "internal error: {option_name} unexpectedly already set"),
             Self::InvalidOptionValue { option_name, err } => write!(f, "invalid {} option value: {}", option_name, err),
             Self::UnexpectedDuplicateReference { name } => write!(f, "unexpected multiple references to {}", name.to_ast_string()),
             Self::RecursiveTypeMismatch(name, declared, inferred) => {
