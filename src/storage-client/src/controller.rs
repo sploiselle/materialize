@@ -70,7 +70,9 @@ use crate::types::parameters::StorageParameters;
 use crate::types::sinks::{
     MetadataUnfilled, ProtoDurableExportMetadata, SinkAsOf, StorageSinkDesc,
 };
-use crate::types::sources::{IngestionDescription, SourceData, SourceEnvelope, SourceExport};
+use crate::types::sources::{
+    GenericSourceConnection, IngestionDescription, SourceData, SourceEnvelope, SourceExport,
+};
 
 mod collection_mgmt;
 mod command_wals;
@@ -1302,6 +1304,25 @@ where
         for (_id, description) in to_create.iter() {
             match &description.data_source {
                 DataSource::Ingestion(ingestion) => {
+                    if matches!(
+                        ingestion.desc.connection,
+                        GenericSourceConnection::Postgres(_)
+                    ) {
+                        let relation_type = description.desc.typ();
+                        assert!(
+                            relation_type.keys.is_empty()
+                                && relation_type
+                                    .column_types
+                                    .iter()
+                                    .all(|column_type| column_type.nullable),
+                            // If we ever support keys or constraints, we will
+                            // need to determine how best to handle schema
+                            // evolutions of those features in the PG
+                            // replication stream.
+                            "PG sources do not currently support either keys or constraints"
+                        );
+                    }
+
                     let storage_dependencies = description.get_storage_dependencies();
                     let dependency_since =
                         self.determine_collection_since_joins(&storage_dependencies)?;
