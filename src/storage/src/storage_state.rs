@@ -899,6 +899,11 @@ impl<'w, A: Allocate> Worker<'w, A> {
             .keys()
             .collect::<BTreeSet<_>>();
         let mut stale_exports = self.storage_state.exports.keys().collect::<BTreeSet<_>>();
+
+        // If an item is created and dropped within the same reconciliation, we
+        // can avoid creating it.
+        let mut dropped = BTreeSet::new();
+
         for command in &mut commands {
             match command {
                 StorageCommand::CreateTimely { .. } => {
@@ -950,9 +955,15 @@ impl<'w, A: Allocate> Worker<'w, A> {
                         }
                     })
                 }
-                StorageCommand::InitializationComplete
-                | StorageCommand::UpdateConfiguration(_)
-                | StorageCommand::AllowCompaction(_) => (),
+                StorageCommand::AllowCompaction(frontiers) => {
+                    for (id, frontier) in frontiers {
+                        if frontier.is_empty() {
+                            dropped.insert(*id);
+                        }
+                    }
+                }
+                StorageCommand::InitializationComplete | StorageCommand::UpdateConfiguration(_) => {
+                }
             }
         }
 
@@ -977,7 +988,16 @@ impl<'w, A: Allocate> Worker<'w, A> {
         }
 
         // Execute the modified commands.
-        for command in commands {
+        for mut command in commands {
+            match command {
+                StorageCommand::CreateSinks(ref mut exports) => {
+                    exports.retain(|exports| !dropped.contains(&exports.id))
+                }
+                StorageCommand::CreateSources(ref mut ingestions) => {
+                    ingestions.retain(|ingestion| !dropped.contains(&ingestion.id))
+                }
+                _ => {}
+            }
             self.storage_state.handle_storage_command(
                 self.timely_worker.index(),
                 internal_cmd_tx,
