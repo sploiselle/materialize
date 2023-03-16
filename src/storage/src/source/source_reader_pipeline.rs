@@ -301,13 +301,15 @@ where
 
     let health_streams: Vec<_> = health
         .concat(&derived_health)
-        .partition(partition_count, |update: HealthStatusUpdate| (0, update));
+        .partition(partition_count, |update: HealthStatusUpdate| {
+            (u64::cast_from(update.output_index), update)
+        });
 
     builder.build(move |mut caps| async move {
         let health_cap = caps.pop().unwrap();
         drop(caps);
 
-        let mut statuses = vec![];
+        let mut statuses_by_idx = BTreeMap::new();
 
         while let Some(event) = data_input.next_mut().await {
             let AsyncEvent::Data(cap, data) = event else {
@@ -315,12 +317,17 @@ where
             };
             for (message, _, _) in data.iter() {
                 let status = match message {
-                    Ok(_) => HealthStatusUpdate::from(HealthStatus::Running),
-                    Err(ref error) => HealthStatusUpdate::from(HealthStatus::StalledWithError {
-                        error: error.inner.to_string(),
-                        hint: None,
-                    }),
+                    Ok(_) => HealthStatusUpdate::status(0, HealthStatus::Running),
+                    Err(ref error) => HealthStatusUpdate::status(
+                        0,
+                        HealthStatus::StalledWithError {
+                            error: error.inner.to_string(),
+                            hint: None,
+                        },
+                    ),
                 };
+
+                let statuses: &mut Vec<_> = statuses_by_idx.entry(status.output_index).or_default();
                 if statuses.last() != Some(&status) {
                     statuses.push(status);
                 }
@@ -336,9 +343,9 @@ where
                 }
             }
             data_output.give_container(&cap, data).await;
-            health_output
-                .give_container(&health_cap, &mut statuses)
-                .await;
+            for (_, statuses) in statuses_by_idx.iter_mut() {
+                health_output.give_container(&health_cap, statuses).await;
+            }
         }
     });
 
@@ -476,6 +483,7 @@ fn health_operator<G: Scope>(
                     let HealthStatusUpdate {
                         update,
                         should_halt,
+                        output_index: _,
                     } = health_event;
                     if should_halt {
                         halt_with = Some(update.clone());

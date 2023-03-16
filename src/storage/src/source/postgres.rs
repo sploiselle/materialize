@@ -464,6 +464,7 @@ async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
                 let _ = task_info
                     .sender
                     .send(InternalMessage::Status(HealthStatusUpdate {
+                        output_index: 0,
                         update: HealthStatus::StalledWithError {
                             error: e.to_string_alt(),
                             hint: None,
@@ -483,6 +484,7 @@ async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
                 let _ = task_info
                     .sender
                     .send(InternalMessage::Status(HealthStatusUpdate {
+                        output_index: 0,
                         update: HealthStatus::StalledWithError {
                             error: e.to_string_alt(),
                             hint: None,
