@@ -67,7 +67,9 @@ use mz_storage_client::healthcheck::MZ_SOURCE_STATUS_HISTORY_DESC;
 use mz_storage_client::types::connections::ConnectionContext;
 use mz_storage_client::types::errors::SourceError;
 use mz_storage_client::types::sources::encoding::SourceDataEncoding;
-use mz_storage_client::types::sources::{MzOffset, SourceConnection, SourceTimestamp, SourceToken};
+use mz_storage_client::types::sources::{
+    MzOffset, SourceConnection, SourceExport, SourceTimestamp, SourceToken,
+};
 use mz_timely_util::antichain::AntichainExt;
 use mz_timely_util::builder_async::{
     AsyncOutputHandle, Event as AsyncEvent, OperatorBuilder as AsyncOperatorBuilder,
@@ -96,8 +98,8 @@ pub struct RawSourceCreationConfig {
     pub name: String,
     /// The ID of this instantiation of this source.
     pub id: GlobalId,
-    /// The number of expected outputs from this ingestion
-    pub num_outputs: usize,
+    /// The details of the outputs from this ingestion.
+    pub source_exports: BTreeMap<GlobalId, SourceExport<CollectionMetadata>>,
     /// The ID of the worker on which this operator is executing
     pub worker_id: usize,
     /// The total count of workers
@@ -289,7 +291,7 @@ where
     let RawSourceCreationConfig {
         name,
         id,
-        num_outputs: _,
+        source_exports: _,
         worker_id,
         worker_count,
         timestamp_interval,
@@ -680,7 +682,7 @@ where
     let RawSourceCreationConfig {
         name,
         id,
-        num_outputs: _,
+        source_exports: _,
         worker_id,
         worker_count,
         timestamp_interval,
@@ -834,7 +836,7 @@ where
     let RawSourceCreationConfig {
         name,
         id,
-        num_outputs,
+        source_exports,
         worker_id,
         worker_count: _,
         timestamp_interval: _,
@@ -1055,7 +1057,7 @@ where
 
     let ok_streams = ok_muxed_stream
         .partition(
-            u64::cast_from(num_outputs),
+            u64::cast_from(source_exports.len()),
             |((output, data), time, diff)| (u64::cast_from(output), (data, time, diff)),
         )
         .into_iter()

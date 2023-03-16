@@ -78,6 +78,11 @@ where
     // Tokens that we should return from the method.
     let mut needed_tokens: Vec<Rc<dyn Any>> = Vec::new();
 
+    mz_ore::soft_assert!(
+        description.desc.connection.num_outputs() == description.source_exports.len(),
+        "all outputs must be accounted for as a source export"
+    );
+
     // Note that this `render_source` attaches a single _instance_ of a source
     // to the passed `Scope`, and this instance may be disabled if the
     // source type does not support multiple instances. `render_source`
@@ -89,7 +94,7 @@ where
     let base_source_config = RawSourceCreationConfig {
         name: source_name,
         id,
-        num_outputs: description.desc.connection.num_outputs(),
+        source_exports: description.source_exports.clone(),
         timestamp_interval: description.desc.timestamp_interval,
         worker_id: scope.index(),
         worker_count: scope.peers(),
