@@ -36,6 +36,7 @@ use timely::scheduling::ActivateOnDrop;
 use uuid::Uuid;
 
 use mz_expr::{MirScalarExpr, PartitionId};
+use mz_ore::cast::CastFrom;
 use mz_ore::now::NowFn;
 use mz_persist_client::cache::PersistClientCache;
 use mz_persist_client::write::WriteHandle;
@@ -2015,6 +2016,7 @@ impl RustType<ProtoPostgresSourcePublicationDetails> for PostgresSourcePublicati
 pub struct LoadGeneratorSourceConnection {
     pub load_generator: LoadGenerator,
     pub tick_micros: Option<u64>,
+    pub subsources: BTreeSet<usize>,
 }
 
 pub static LOAD_GEN_PROGRESS_DESC: Lazy<RelationDesc> =
@@ -2321,6 +2323,12 @@ impl RustType<ProtoLoadGeneratorSourceConnection> for LoadGeneratorSourceConnect
                 LoadGenerator::Datums => ProtoGenerator::Datums(()),
             }),
             tick_micros: self.tick_micros,
+            subsources: self
+                .subsources
+                .iter()
+                .cloned()
+                .map(u64::cast_from)
+                .collect(),
         }
     }
 
@@ -2350,6 +2358,7 @@ impl RustType<ProtoLoadGeneratorSourceConnection> for LoadGeneratorSourceConnect
                 ProtoGenerator::Datums(()) => LoadGenerator::Datums,
             },
             tick_micros: proto.tick_micros,
+            subsources: proto.subsources.into_iter().map(usize::cast_from).collect(),
         })
     }
 }
