@@ -418,7 +418,70 @@ pub fn plan_create_source(
         bail_unsupported!("INCLUDE metadata with non-Kafka sources");
     }
 
-    let (mut external_connection, encoding, available_subsources) = match connection {
+    // We extract this here because load generator sources need to understand which subsources they
+    // use as part of generating their connection.
+    let extract_subsources = |available_subsources| {
+        let (available_subsources, requested_subsources) = match (
+            available_subsources,
+            referenced_subsources,
+        ) {
+            (Some(available_subsources), Some(ReferencedSubsources::Subset(subsources))) => {
+                let mut requested_subsources = vec![];
+                for subsource in subsources {
+                    let name = subsource.reference.clone();
+
+                    let target = match &subsource.subsource {
+                        Some(DeferredItemName::Named(target)) => target.clone(),
+                        _ => {
+                            sql_bail!(
+                                "[internal error] subsources must be named during purification"
+                            )
+                        }
+                    };
+
+                    requested_subsources.push((name, target));
+                }
+                (available_subsources, requested_subsources)
+            }
+            (Some(_), None) => {
+                // Multi-output sources must have a table selection clause
+                sql_bail!("This is a multi-output source. Use `FOR TABLE (..)` or `FOR ALL TABLES` to select which ones to ingest");
+            }
+            (None, Some(_)) | (Some(_), Some(ReferencedSubsources::All)) => {
+                sql_bail!("[internal error] subsources should be resolved during purification")
+            }
+            (None, None) => (BTreeMap::new(), vec![]),
+        };
+
+        let mut subsource_exports = BTreeMap::new();
+        for (name, target) in requested_subsources {
+            let name = normalize::full_name(name)?;
+            let idx = match available_subsources.get(&name) {
+                Some(idx) => idx,
+                None => sql_bail!("Requested non-existent subtable: {name}"),
+            };
+
+            let target_id = match target {
+                ResolvedItemName::Item { id, .. } => id,
+                ResolvedItemName::Cte { .. } | ResolvedItemName::Error => {
+                    sql_bail!("[internal error] invalid target id")
+                }
+            };
+
+            // TODO(petrosagg): This is the point where we would normally look into the catalog for the
+            // item with ID `target` and verify that its RelationDesc is identical to the type of the
+            // dataflow output. We can't do that here however because the subsources are created in the
+            // same transaction as this source and they are not yet in the catalog. In the future, when
+            // provisional catalogs are made available to the planner we could do the check. For now
+            // we don't allow users to manually target subsources and rely on purification generating
+            // correct definitions.
+            subsource_exports.insert(target_id, *idx);
+        }
+
+        Ok(subsource_exports)
+    };
+
+    let (external_connection, encoding, subsource_exports) = match connection {
         CreateSourceConnection::Kafka(mz_sql_parser::ast::KafkaSourceConnection {
             connection:
                 mz_sql_parser::ast::KafkaConnection {
@@ -544,7 +607,7 @@ pub fn plan_create_source(
 
             let connection = GenericSourceConnection::from(connection);
 
-            (connection, encoding, None)
+            (connection, encoding, BTreeMap::new())
         }
         CreateSourceConnection::Postgres {
             connection,
@@ -756,6 +819,15 @@ pub fn plan_create_source(
                 available_subsources.insert(name, i + 1);
             }
 
+            let subsource_exports = extract_subsources(Some(available_subsources))?;
+
+            // Now that we know which subsources sources we want, we can remove all
+            // unused table casts from this connection; this represents the
+            // authoritative statement about which publication tables should be
+            // used within storage.
+            let used_pos: BTreeSet<_> = subsource_exports.values().collect();
+            table_casts.retain(|pos, _| used_pos.contains(pos));
+
             let publication_details = PostgresSourcePublicationDetails::from_proto(details)
                 .map_err(|e| sql_err!("{}", e))?;
 
@@ -771,7 +843,8 @@ pub fn plan_create_source(
             let encoding = SourceDataEncoding::Single(DataEncoding::new(
                 DataEncodingInner::RowCodec(RelationDesc::empty()),
             ));
-            (connection, encoding, Some(available_subsources))
+
+            (connection, encoding, subsource_exports)
         }
         CreateSourceConnection::LoadGenerator { generator, options } => {
             let (load_generator, available_subsources) =
@@ -790,12 +863,20 @@ pub fn plan_create_source(
 
             let encoding = load_generator.data_encoding();
 
+            let subsource_exports = extract_subsources(available_subsources)?;
+
+            let mut subsources: BTreeSet<usize> = subsource_exports.values().cloned().collect();
+            if subsources.is_empty() {
+                subsources.insert(0);
+            }
+
             let connection = GenericSourceConnection::from(LoadGeneratorSourceConnection {
                 load_generator,
                 tick_micros,
+                subsources,
             });
 
-            (connection, encoding, available_subsources)
+            (connection, encoding, subsource_exports)
         }
         CreateSourceConnection::TestScript { desc_json } => {
             scx.require_unsafe_mode("CREATE SOURCE ... FROM TEST SCRIPT")?;
@@ -804,73 +885,9 @@ pub fn plan_create_source(
             });
             // we just use the encoding from the format and envelope
             let encoding = get_encoding(scx, format, &envelope, None)?;
-            (connection, encoding, None)
+            (connection, encoding, BTreeMap::new())
         }
     };
-
-    let (available_subsources, requested_subsources) = match (
-        available_subsources,
-        referenced_subsources,
-    ) {
-        (Some(available_subsources), Some(ReferencedSubsources::Subset(subsources))) => {
-            let mut requested_subsources = vec![];
-            for subsource in subsources {
-                let name = subsource.reference.clone();
-
-                let target = match &subsource.subsource {
-                    Some(DeferredItemName::Named(target)) => target.clone(),
-                    _ => {
-                        sql_bail!("[internal error] subsources must be named during purification")
-                    }
-                };
-
-                requested_subsources.push((name, target));
-            }
-            (available_subsources, requested_subsources)
-        }
-        (Some(_), None) => {
-            // Multi-output sources must have a table selection clause
-            sql_bail!("This is a multi-output source. Use `FOR TABLE (..)` or `FOR ALL TABLES` to select which ones to ingest");
-        }
-        (None, Some(_)) | (Some(_), Some(ReferencedSubsources::All)) => {
-            sql_bail!("[internal error] subsources should be resolved during purification")
-        }
-        (None, None) => (BTreeMap::new(), vec![]),
-    };
-
-    let mut subsource_exports = BTreeMap::new();
-    for (name, target) in requested_subsources {
-        let name = normalize::full_name(name)?;
-        let idx = match available_subsources.get(&name) {
-            Some(idx) => idx,
-            None => sql_bail!("Requested non-existent subtable: {name}"),
-        };
-
-        let target_id = match target {
-            ResolvedItemName::Item { id, .. } => id,
-            ResolvedItemName::Cte { .. } | ResolvedItemName::Error => {
-                sql_bail!("[internal error] invalid target id")
-            }
-        };
-
-        // TODO(petrosagg): This is the point where we would normally look into the catalog for the
-        // item with ID `target` and verify that its RelationDesc is identical to the type of the
-        // dataflow output. We can't do that here however because the subsources are created in the
-        // same transaction as this source and they are not yet in the catalog. In the future, when
-        // provisional catalogs are made available to the planner we could do the check. For now
-        // we don't allow users to manually target subsources and rely on purification generating
-        // correct definitions.
-        subsource_exports.insert(target_id, *idx);
-    }
-
-    if let GenericSourceConnection::Postgres(conn) = &mut external_connection {
-        // Now that we know which subsources sources we want, we can remove all
-        // unused table casts from this connection; this represents the
-        // authoritative statement about which publication tables should be
-        // used within storage.
-        let used_pos: BTreeSet<_> = subsource_exports.values().collect();
-        conn.table_casts.retain(|pos, _| used_pos.contains(pos));
-    }
 
     let (key_desc, value_desc) = encoding.desc()?;
 

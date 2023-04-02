@@ -213,6 +213,7 @@ message ProtoLoadGeneratorSourceConnection {
         google.protobuf.Empty datums = 5;
     }
     optional uint64 tick_micros = 2;
+    repeated uint64 subsources = 7;
 }
 
 message ProtoTestScriptSourceConnection {
