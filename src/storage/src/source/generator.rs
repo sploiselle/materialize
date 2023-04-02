@@ -123,6 +123,10 @@ impl SourceRender for LoadGeneratorSourceConnection {
             let tick = Duration::from_micros(self.tick_micros.unwrap_or(1_000_000));
 
             while let Some((output, typ, value, diff)) = rows.next() {
+                if !self.subsources.contains(&output) {
+                    continue;
+                }
+
                 let message = Ok(SourceMessage {
                     output,
                     upstream_time_millis: None,
