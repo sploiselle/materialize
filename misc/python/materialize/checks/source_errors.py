@@ -93,6 +93,8 @@ class SourceErrors(Check):
                   WHERE name LIKE 'source_errors_source%'
                 stalled true
                 stalled true
+                created <null>
+                created <null>
                 """
             )
         )
