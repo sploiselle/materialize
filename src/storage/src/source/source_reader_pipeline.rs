@@ -317,9 +317,11 @@ where
             };
             for (message, _, _) in data.iter() {
                 let status = match message {
-                    Ok(_) => HealthStatusUpdate::status(0, HealthStatus::Running),
+                    Ok(source_message) => {
+                        HealthStatusUpdate::status(source_message.output, HealthStatus::Running)
+                    }
                     Err(ref error) => HealthStatusUpdate::status(
-                        0,
+                        error.output,
                         HealthStatus::StalledWithError {
                             error: error.inner.to_string(),
                             hint: None,
@@ -351,10 +353,7 @@ where
 
     let health = health_streams
         .into_iter()
-        .map(|h| {
-            h.concat(&derived_health)
-                .map(move |status| (worker_id, status))
-        })
+        .map(|h| h.map(move |status| (worker_id, status)))
         .collect();
 
     (
