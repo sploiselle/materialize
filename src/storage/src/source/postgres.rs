@@ -1107,6 +1107,30 @@ fn cast_row(table_cast: &[MirScalarExpr], datums: &[Datum<'_>]) -> Result<Row, a
     Ok(row)
 }
 
+/// A reduced discriminant of [`postgres_protocol::message::backend::LogicalReplicationMessage`]
+/// which we use to detect cases where we receive "empty" transactions, i.e. a `BEGIN` followed by a
+/// `COMMIT`.
+///
+/// This enum simplifies a little finite state machine that alerts us we should check the upstream
+/// PG catalog for changes: receiving `BEGIN; COMMIT` is a known pattern that occurs when a table is
+/// dropped and which we don't receive any other signal for.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+enum ReplicationMessageType {
+    Begin,
+    Commit,
+    Other,
+}
+
+impl From<&LogicalReplicationMessage> for ReplicationMessageType {
+    fn from(value: &LogicalReplicationMessage) -> Self {
+        match value {
+            LogicalReplicationMessage::Begin(_) => ReplicationMessageType::Begin,
+            LogicalReplicationMessage::Commit(_) => ReplicationMessageType::Commit,
+            _ => ReplicationMessageType::Other,
+        }
+    }
+}
+
 // TODO(guswynn|petrosagg): fix the underlying bug that prevents client re-use
 // when exiting the CopyBoth mode, so we don't need to re-create clients in every loop
 // in this function.
@@ -1164,6 +1188,8 @@ async fn produce_replication<'a>(
             let mut stream = Box::pin(LogicalReplicationStream::new(copy_stream));
 
             let mut last_data_message = Instant::now();
+            let mut last_message_type = ReplicationMessageType::Other;
+            let mut this_message_type = ReplicationMessageType::Other;
 
             // The inner loop
             loop {
@@ -1197,181 +1223,225 @@ async fn produce_replication<'a>(
                 metrics.total.inc();
                 use LogicalReplicationMessage::*;
                 match stream.as_mut().next().await {
-                    Some(Ok(XLogData(xlog_data))) => match xlog_data.data() {
-                        Begin(_) => {
-                            last_data_message = Instant::now();
-                            if !inserts.is_empty() || !deletes.is_empty() {
-                                return Err(Definite(anyhow!(
-                                    "got BEGIN statement after uncommitted data"
-                                )))?;
-                            }
-                        }
-                        Insert(insert) if source_tables.contains_key(&insert.rel_id()) => {
-                            let rel_id = insert.rel_id();
-                            let info = source_tables.get(&rel_id).unwrap();
-                            last_data_message = Instant::now();
-                            metrics.inserts.inc();
-                            let new_tuple = insert.tuple().tuple_data();
-                            let mut datums = datum_vec.borrow();
+                    Some(Ok(XLogData(xlog_data))) => {
+                        let replication_message = xlog_data.data();
+                        last_message_type = this_message_type;
+                        this_message_type = ReplicationMessageType::from(replication_message);
 
-                            let mut gen_row = || -> Result<Row, anyhow::Error> {
-                                datums_from_tuple(
-                                    rel_id,
-                                    info.desc.columns.len(),
-                                    new_tuple,
-                                    &mut *datums,
-                                )?;
-                                cast_row(&info.casts, &datums)
-                            };
-
-                            match gen_row() {
-                                Ok(row) => inserts.push((info.output_index, row)),
-                                Err(err) => handle_subsource_err!(
-                                    errors,
-                                    source_tables,
-                                    info.output_index,
-                                    err,
-                                    rel_id
-                                ),
-                            }
-                        }
-                        Update(update) if source_tables.contains_key(&update.rel_id()) => {
-                            last_data_message = Instant::now();
-                            metrics.updates.inc();
-                            let rel_id = update.rel_id();
-                            let info = source_tables.get(&rel_id).unwrap();
-
-                            let mut gen_row = || -> Result<(Row, Row), anyhow::Error> {
-                                let err = || {
-                                    anyhow!(
-                                            "Old row missing from replication stream for table with OID = {}.
-                                             Did you forget to set REPLICA IDENTITY to FULL for your table?",
-                                            rel_id
-                                        )
-                                };
-                                let old_tuple = update.old_tuple().ok_or_else(err)?.tuple_data();
-
-                                let mut old_datums = datum_vec.borrow();
-                                datums_from_tuple(
-                                    rel_id,
-                                    info.desc.columns.len(),
-                                    old_tuple,
-                                    &mut *old_datums,
-                                )?;
-                                let old_row = cast_row(&info.casts, &old_datums)?;
-
-                                drop(old_datums);
-
-                                // If the new tuple contains unchanged toast values, reuse the ones
-                                // from the old tuple
-                                let new_tuple = update
-                                    .new_tuple()
-                                    .tuple_data()
-                                    .iter()
-                                    .zip(old_tuple.iter())
-                                    .map(|(new, old)| match new {
-                                        TupleData::UnchangedToast => old,
-                                        _ => new,
-                                    });
-                                let mut new_datums = datum_vec.borrow();
-                                datums_from_tuple(
-                                    rel_id,
-                                    info.desc.columns.len(),
-                                    new_tuple,
-                                    &mut *new_datums,
-                                )?;
-                                Ok((old_row, cast_row(&info.casts, &new_datums)?))
-                            };
-
-                            match gen_row() {
-                                Ok((old_row, new_row)) => {
-                                    deletes.push((info.output_index, old_row));
-                                    inserts.push((info.output_index, new_row));
+                        match replication_message {
+                            Begin(_) => {
+                                last_data_message = Instant::now();
+                                if !inserts.is_empty() || !deletes.is_empty() {
+                                    return Err(Definite(anyhow!(
+                                        "got BEGIN statement after uncommitted data"
+                                    )))?;
                                 }
-                                Err(err) => handle_subsource_err!(
-                                    errors,
-                                    source_tables,
-                                    info.output_index,
-                                    err,
-                                    rel_id
-                                ),
                             }
-                        }
-                        Delete(delete) if source_tables.contains_key(&delete.rel_id()) => {
-                            last_data_message = Instant::now();
-                            metrics.deletes.inc();
-                            let rel_id = delete.rel_id();
-                            let info = source_tables.get(&rel_id).unwrap();
-                            let mut gen_row = || -> Result<Row, anyhow::Error> {
-                                let err = || {
-                                    anyhow!(
-                                            "Old row missing from replication stream for table with OID = {}.
-                                             Did you forget to set REPLICA IDENTITY to FULL for your table?",
-                                            rel_id
-                                        )
-                                };
-                                let old_tuple = delete.old_tuple().ok_or_else(err)?.tuple_data();
+                            Insert(insert) if source_tables.contains_key(&insert.rel_id()) => {
+                                let rel_id = insert.rel_id();
+                                let info = source_tables.get(&rel_id).unwrap();
+                                last_data_message = Instant::now();
+                                metrics.inserts.inc();
+                                let new_tuple = insert.tuple().tuple_data();
                                 let mut datums = datum_vec.borrow();
-                                datums_from_tuple(
-                                    rel_id,
-                                    info.desc.columns.len(),
-                                    old_tuple,
-                                    &mut *datums,
-                                )?;
-                                cast_row(&info.casts, &datums)
-                            };
 
-                            match gen_row() {
-                                Ok(row) => deletes.push((info.output_index, row)),
-                                Err(err) => handle_subsource_err!(
-                                    errors,
-                                    source_tables,
-                                    info.output_index,
-                                    err,
-                                    rel_id
-                                ),
-                            };
-                        }
-                        Commit(commit) => {
-                            last_data_message = Instant::now();
-                            metrics.transactions.inc();
-                            last_commit_lsn = PgLsn::from(commit.end_lsn());
+                                let mut gen_row = || -> Result<Row, anyhow::Error> {
+                                    datums_from_tuple(
+                                        rel_id,
+                                        info.desc.columns.len(),
+                                        new_tuple,
+                                        &mut *datums,
+                                    )?;
+                                    cast_row(&info.casts, &datums)
+                                };
 
-                            for (output, row) in deletes.drain(..) {
-                                yield Event::Message(last_commit_lsn, (output, Ok((row, -1))));
+                                match gen_row() {
+                                    Ok(row) => inserts.push((info.output_index, row)),
+                                    Err(err) => handle_subsource_err!(
+                                        errors,
+                                        source_tables,
+                                        info.output_index,
+                                        err,
+                                        rel_id
+                                    ),
+                                }
                             }
-                            for (output, row) in inserts.drain(..) {
-                                yield Event::Message(last_commit_lsn, (output, Ok((row, 1))));
-                            }
-                            for (output, err) in errors.drain(..) {
-                                yield Event::Message(last_commit_lsn, (output, Err(err)));
-                            }
-                            yield Event::Progress([PgLsn::from(u64::from(last_commit_lsn) + 1)]);
-                            metrics.lsn.set(last_commit_lsn.into());
-                        }
-                        Relation(relation) => {
-                            last_data_message = Instant::now();
-                            let rel_id = relation.rel_id();
-                            if let Some(info) = source_tables.get(&rel_id) {
-                                // Because the replication stream doesn't include columns'
-                                // attnums, we need to check the current local schema against
-                                // the current remote schema to ensure e.g. we haven't received
-                                // a schema update with the same terminal column name which is
-                                // actually a different column.
-                                let current_publication_info = mz_postgres_util::publication_info(
-                                    &client_config,
-                                    publication,
-                                    Some(rel_id),
-                                )
-                                .await
-                                .err_indefinite()?;
+                            Update(update) if source_tables.contains_key(&update.rel_id()) => {
+                                last_data_message = Instant::now();
+                                metrics.updates.inc();
+                                let rel_id = update.rel_id();
+                                let info = source_tables.get(&rel_id).unwrap();
 
-                                // Validate publication tables against the state snapshot
-                                let incompatible_tables = determine_table_compatibility(
-                                    std::iter::once((&rel_id, info)),
-                                    current_publication_info,
-                                );
-                                for (rel_id, output_index, err) in incompatible_tables {
+                                let mut gen_row = || -> Result<(Row, Row), anyhow::Error> {
+                                    let err = || {
+                                        anyhow!(
+                                                "Old row missing from replication stream for table with OID = {}.
+                                                 Did you forget to set REPLICA IDENTITY to FULL for your table?",
+                                                rel_id
+                                            )
+                                    };
+                                    let old_tuple =
+                                        update.old_tuple().ok_or_else(err)?.tuple_data();
+
+                                    let mut old_datums = datum_vec.borrow();
+                                    datums_from_tuple(
+                                        rel_id,
+                                        info.desc.columns.len(),
+                                        old_tuple,
+                                        &mut *old_datums,
+                                    )?;
+                                    let old_row = cast_row(&info.casts, &old_datums)?;
+
+                                    drop(old_datums);
+
+                                    // If the new tuple contains unchanged toast values, reuse the ones
+                                    // from the old tuple
+                                    let new_tuple = update
+                                        .new_tuple()
+                                        .tuple_data()
+                                        .iter()
+                                        .zip(old_tuple.iter())
+                                        .map(|(new, old)| match new {
+                                            TupleData::UnchangedToast => old,
+                                            _ => new,
+                                        });
+                                    let mut new_datums = datum_vec.borrow();
+                                    datums_from_tuple(
+                                        rel_id,
+                                        info.desc.columns.len(),
+                                        new_tuple,
+                                        &mut *new_datums,
+                                    )?;
+                                    Ok((old_row, cast_row(&info.casts, &new_datums)?))
+                                };
+
+                                match gen_row() {
+                                    Ok((old_row, new_row)) => {
+                                        deletes.push((info.output_index, old_row));
+                                        inserts.push((info.output_index, new_row));
+                                    }
+                                    Err(err) => handle_subsource_err!(
+                                        errors,
+                                        source_tables,
+                                        info.output_index,
+                                        err,
+                                        rel_id
+                                    ),
+                                }
+                            }
+                            Delete(delete) if source_tables.contains_key(&delete.rel_id()) => {
+                                last_data_message = Instant::now();
+                                metrics.deletes.inc();
+                                let rel_id = delete.rel_id();
+                                let info = source_tables.get(&rel_id).unwrap();
+                                let mut gen_row = || -> Result<Row, anyhow::Error> {
+                                    let err = || {
+                                        anyhow!(
+                                                "Old row missing from replication stream for table with OID = {}.
+                                                 Did you forget to set REPLICA IDENTITY to FULL for your table?",
+                                                rel_id
+                                            )
+                                    };
+                                    let old_tuple =
+                                        delete.old_tuple().ok_or_else(err)?.tuple_data();
+                                    let mut datums = datum_vec.borrow();
+                                    datums_from_tuple(
+                                        rel_id,
+                                        info.desc.columns.len(),
+                                        old_tuple,
+                                        &mut *datums,
+                                    )?;
+                                    cast_row(&info.casts, &datums)
+                                };
+
+                                match gen_row() {
+                                    Ok(row) => deletes.push((info.output_index, row)),
+                                    Err(err) => handle_subsource_err!(
+                                        errors,
+                                        source_tables,
+                                        info.output_index,
+                                        err,
+                                        rel_id
+                                    ),
+                                };
+                            }
+                            Commit(commit) => {
+                                last_data_message = Instant::now();
+                                metrics.transactions.inc();
+                                last_commit_lsn = PgLsn::from(commit.end_lsn());
+
+                                for (output, row) in deletes.drain(..) {
+                                    yield Event::Message(last_commit_lsn, (output, Ok((row, -1))));
+                                }
+                                for (output, row) in inserts.drain(..) {
+                                    yield Event::Message(last_commit_lsn, (output, Ok((row, 1))));
+                                }
+                                for (output, err) in errors.drain(..) {
+                                    yield Event::Message(last_commit_lsn, (output, Err(err)));
+                                }
+                                yield Event::Progress([PgLsn::from(
+                                    u64::from(last_commit_lsn) + 1,
+                                )]);
+                                metrics.lsn.set(last_commit_lsn.into());
+                            }
+                            Relation(relation) => {
+                                last_data_message = Instant::now();
+                                let rel_id = relation.rel_id();
+                                if let Some(info) = source_tables.get(&rel_id) {
+                                    // Because the replication stream doesn't include columns'
+                                    // attnums, we need to check the current local schema against
+                                    // the current remote schema to ensure e.g. we haven't received
+                                    // a schema update with the same terminal column name which is
+                                    // actually a different column.
+                                    let current_publication_info =
+                                        mz_postgres_util::publication_info(
+                                            &client_config,
+                                            publication,
+                                            Some(rel_id),
+                                        )
+                                        .await
+                                        .err_indefinite()?;
+
+                                    // Validate publication tables against the state snapshot
+                                    let incompatible_tables = determine_table_compatibility(
+                                        std::iter::once((&rel_id, info)),
+                                        current_publication_info,
+                                    );
+                                    for (rel_id, output_index, err) in incompatible_tables {
+                                        handle_subsource_err!(
+                                            errors,
+                                            source_tables,
+                                            output_index,
+                                            err,
+                                            rel_id
+                                        );
+                                    }
+                                }
+                            }
+                            Insert(_) | Update(_) | Delete(_) | Origin(_) | Type(_) => {
+                                last_data_message = Instant::now();
+                                metrics.ignored.inc();
+                            }
+                            Truncate(truncate) => {
+                                let truncated_tables = truncate
+                                    .rel_ids()
+                                    .iter()
+                                    // Filter here makes option handling in map "safe"
+                                    .filter_map(|id| source_tables.get(id).map(|info| (id, info)))
+                                    .map(|(id, info)| {
+                                        (
+                                            id,
+                                            info.output_index,
+                                            anyhow!(
+                                                "source table truncated: name: {} id: {}",
+                                                info.desc.name,
+                                                info.desc.oid
+                                            ),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                for (rel_id, output_index, err) in truncated_tables {
                                     handle_subsource_err!(
                                         errors,
                                         source_tables,
@@ -1381,31 +1451,35 @@ async fn produce_replication<'a>(
                                     );
                                 }
                             }
+                            // The enum is marked as non_exhaustive. Better to be conservative here in
+                            // case a new message is relevant to the semantics of our source
+                            _ => {
+                                return Err(Definite(anyhow!(
+                                    "unexpected logical replication message"
+                                )))?;
+                            }
                         }
-                        Insert(_) | Update(_) | Delete(_) | Origin(_) | Type(_) => {
-                            last_data_message = Instant::now();
-                            metrics.ignored.inc();
-                        }
-                        Truncate(truncate) => {
-                            let truncated_tables = truncate
-                                .rel_ids()
-                                .iter()
-                                // Filter here makes option handling in map "safe"
-                                .filter_map(|id| source_tables.get(id).map(|info| (id, info)))
-                                .map(|(id, info)| {
-                                    (
-                                        id,
-                                        info.output_index,
-                                        anyhow!(
-                                            "source table truncated: name: {} id: {}",
-                                            info.desc.name,
-                                            info.desc.oid
-                                        ),
-                                    )
-                                })
-                                .collect::<Vec<_>>();
 
-                            for (rel_id, output_index, err) in truncated_tables {
+                        // Receiving a BEGIN immediately followed by a commit is suspicious; we know
+                        // that elided drop statements look like this, so determine if there was
+                        // some DDL operation we missed.
+                        if ReplicationMessageType::Begin == last_message_type
+                            && this_message_type == ReplicationMessageType::Commit
+                        {
+                            let current_publication_info = mz_postgres_util::publication_info(
+                                &client_config,
+                                publication,
+                                None,
+                            )
+                            .await
+                            .err_indefinite()?;
+
+                            // Validate publication tables against the state snapshot
+                            let incompatible_tables = determine_table_compatibility(
+                                source_tables.iter(),
+                                current_publication_info,
+                            );
+                            for (rel_id, output_index, err) in incompatible_tables {
                                 handle_subsource_err!(
                                     errors,
                                     source_tables,
@@ -1415,14 +1489,7 @@ async fn produce_replication<'a>(
                                 );
                             }
                         }
-                        // The enum is marked as non_exhaustive. Better to be conservative here in
-                        // case a new message is relevant to the semantics of our source
-                        _ => {
-                            return Err(Definite(anyhow!(
-                                "unexpected logical replication message"
-                            )))?;
-                        }
-                    },
+                    }
                     Some(Ok(PrimaryKeepAlive(keepalive))) => {
                         needs_status_update = needs_status_update || keepalive.reply() == 1;
                         observed_wal_end = PgLsn::from(keepalive.wal_end());

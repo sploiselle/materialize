@@ -439,8 +439,9 @@ TRUNCATE truncate_table;
 
 $ postgres-execute connection=postgres://postgres:postgres@postgres
 DROP TABLE drop_table;
+CREATE TABLE drop_table (f1 int, f2 int);
+ALTER TABLE drop_table REPLICA IDENTITY FULL;
+INSERT INTO drop_table (f1, f2) VALUES (1, 1);
 
-# This should error but we don't have a mechanism that does that yet.
-# #18519
-> SELECT * FROM drop_table;
-1 1
+!SELECT * FROM drop_table;
+contains:dropped
