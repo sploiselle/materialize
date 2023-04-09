@@ -1036,6 +1036,7 @@ async fn produce_replication<'a>(
             let mut stream = Box::pin(LogicalReplicationStream::new(copy_stream));
 
             let mut last_data_message = Instant::now();
+            let mut err_counter = 0;
 
             // The inner loop
             loop {
@@ -1050,6 +1051,10 @@ async fn produce_replication<'a>(
                     stream.as_mut().try_next(),
                 )
                 .await;
+
+                if res.is_ok() {
+                    err_counter = 0;
+                }
 
                 // The upstream will periodically request status updates by setting the keepalive's
                 // reply field to 1. However, we cannot rely on these messages arriving on time. For
@@ -1281,6 +1286,15 @@ async fn produce_replication<'a>(
                             "if our request timed out, it must have been at least long enough to require \
                              a status update"
                         );
+
+                        // If we've timed out multiple times, try reconnecting. This should have
+                        // given us plenty of time to receive a KeepAlive message from the server if
+                        // we're going to.
+                        if err_counter > 1 {
+                            break;
+                        }
+
+                        err_counter += 1;
                     }
                 }
                 if needs_status_update {
