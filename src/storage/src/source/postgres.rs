@@ -630,6 +630,15 @@ async fn postgres_replication_loop_inner(
         }
         client.simple_query("COMMIT;").await?;
 
+        let lsns_to_rewind = peek_wal_lsns(
+            &client,
+            &task_info.slot,
+            &task_info.publication,
+            Some(snapshot_lsn),
+        )
+        .await?
+        .count();
+
         // Drop the stream and the client, to ensure that the future `produce_replication` don't
         // conflict with the above processing.
         //
@@ -643,17 +652,7 @@ async fn postgres_replication_loop_inner(
         // We only need to rewind values from the WAL if there are any values between the `slot_lsn`
         // and `snapshot_lsn`. If there is nothing in the WAL for us to see between those times, we
         // would just sit there dumbly waiting for a timeout.
-        if slot_lsn < snapshot_lsn
-            && peek_wal_lsns(
-                task_info.connection_config.clone(),
-                &task_info.slot,
-                &task_info.publication,
-                Some(snapshot_lsn),
-            )
-            .await?
-            .count()
-                > 0
-        {
+        if slot_lsn < snapshot_lsn && lsns_to_rewind > 0 {
             tracing::info!("postgres snapshot was at {snapshot_lsn:?} but we need it at {slot_lsn:?}. Rewinding");
             // Our snapshot was too far ahead so we must rewind it by reading the replication
             // stream until the snapshot lsn and emitting any rows that we find with negated diffs
@@ -1288,13 +1287,10 @@ async fn produce_replication<'a>(
                     Ok(None) => break,
                     Err(TimeoutError::Inner(err)) => return Err(ReplicationError::from(err))?,
                     Err(TimeoutError::DeadlineElapsed) => {
-                        // if we did timeout, skip message handling to let us continue polling, but do
-                        // ensure we perform a status update to heartbeat the upstream PG source.
-                        mz_ore::soft_assert!(
-                            needs_status_update,
-                            "if our request timed out, it must have been at least long enough to require \
-                             a status update"
-                        );
+                        // If we time out, test the connection; there is something we might be able
+                        // to do with the WAL LSN count if we receive it, but this is more a TCP
+                        // check than anything else.
+                        let _ = peek_wal_lsns(&client, slot, publication, None).await?;
                     }
                 }
                 if needs_status_update {
@@ -1329,9 +1325,16 @@ async fn produce_replication<'a>(
             // relevant data from the current LSN to the observed WAL end. If there are no
             // messages then it is safe to fast forward last_commit_lsn to the WAL end LSN and restart
             // the replication stream from there.
+
+            let client = client_config
+                .clone()
+                .connect_replication()
+                .await
+                .err_indefinite()?;
+
             let peek_binary_start_time = Instant::now();
 
-            let changes = peek_wal_lsns(client_config.clone(), slot, publication, None)
+            let changes = peek_wal_lsns(&client, slot, publication, None)
                 .await?
                 .filter(|change_lsn| change_lsn > &last_commit_lsn)
                 .count();
@@ -1362,12 +1365,11 @@ async fn produce_replication<'a>(
 ///
 /// For more details, see <https://pgpedia.info/p/pg_logical_slot_peek_binary_changes.html>.
 async fn peek_wal_lsns(
-    config: mz_postgres_util::Config,
+    client: &Client,
     slot: &str,
     publication: &str,
     up_to: Option<PgLsn>,
 ) -> Result<impl Iterator<Item = PgLsn>, ReplicationError> {
-    let client = config.connect_replication().await.err_indefinite()?;
     let query = format!(
         "SELECT lsn FROM pg_logical_slot_peek_binary_changes(
             '{}', {}, NULL,
