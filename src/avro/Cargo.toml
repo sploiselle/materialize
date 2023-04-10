@@ -18,7 +18,7 @@ chrono = { version = "0.4.23", default-features = false, features = ["std"] }
 crc32fast = { version = "1.3.2", optional = true }
 digest = "0.10.6"
 enum-kinds = "0.5.1"
-flate2 = "1.0.24"
+flate2 = "1.0.25"
 itertools = "0.10.5"
 once_cell = "1.16.0"
 rand = "0.8.5"
