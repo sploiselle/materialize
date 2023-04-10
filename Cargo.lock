@@ -727,6 +727,12 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ea22880d78093b0cbe17c89f64a7d457941e65759157ec6cb31a31d652b05e5"
+
+[[package]]
+name = "base64"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4a4ddaa51a5bc52a6948f74c06d20aaaddb71924eab79b8c97a8c556e942d6a"
@@ -2775,14 +2781,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-openapi"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d1985030683a2bac402cbda61222195de80d3f66b4c87ab56e5fea379bd98c3"
+dependencies = [
+ "base64 0.20.0",
+ "bytes",
+ "chrono",
+ "serde",
+ "serde-value",
+ "serde_json",
+]
+
+[[package]]
 name = "kube"
 version = "0.77.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ba77b857a9581e3d1cb1165f9cb1d1732d65ce52642498addae8fa2c6d5e037"
 dependencies = [
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
  "kube-client",
- "kube-core",
+ "kube-core 0.77.0",
  "kube-derive",
  "kube-runtime",
 ]
@@ -2805,8 +2825,8 @@ dependencies = [
  "hyper-openssl",
  "hyper-timeout",
  "jsonpath_lib",
- "k8s-openapi",
- "kube-core",
+ "k8s-openapi 0.16.0",
+ "kube-core 0.77.0",
  "openssl",
  "pem",
  "pin-project",
@@ -2834,7 +2854,25 @@ dependencies = [
  "form_urlencoded",
  "http",
  "json-patch",
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
+ "once_cell",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "kube-core"
+version = "0.80.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98331c6f1354893f7c50da069e43a3fd1c84e55bbedc7765d9db22ec3291d07d"
+dependencies = [
+ "chrono",
+ "form_urlencoded",
+ "http",
+ "json-patch",
+ "k8s-openapi 0.17.0",
  "once_cell",
  "schemars",
  "serde",
@@ -2866,7 +2904,7 @@ dependencies = [
  "derivative",
  "futures",
  "json-patch",
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
  "kube-client",
  "parking_lot",
  "pin-project",
@@ -3545,7 +3583,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
  "kube",
  "mz-repr",
  "schemars",
@@ -4127,7 +4165,7 @@ dependencies = [
  "clap",
  "fail",
  "futures",
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
  "kube",
  "maplit",
  "mz-cloud-resources",
@@ -8363,10 +8401,10 @@ dependencies = [
  "hashbrown",
  "hyper",
  "indexmap",
- "k8s-openapi",
+ "k8s-openapi 0.16.0",
  "kube",
  "kube-client",
- "kube-core",
+ "kube-core 0.80.0",
  "libc",
  "log",
  "lru",
