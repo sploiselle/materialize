@@ -454,6 +454,11 @@ impl PgOffsetCommitter {
 /// Defers to `postgres_replication_loop_inner` and sends errors through the channel if they occur
 #[allow(clippy::or_fun_call)]
 async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
+    info!(
+        "\n\n\n{:?}: starting replication at replication_lsn {:?}",
+        task_info.source_id, task_info.replication_lsn
+    );
+
     loop {
         match postgres_replication_loop_inner(&mut task_info).await {
             Ok(()) => {}
@@ -529,6 +534,11 @@ async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
 async fn postgres_replication_loop_inner(
     task_info: &mut PostgresTaskInfo,
 ) -> Result<(), ReplicationError> {
+    info!(
+        "\n\n\n{:?}: replication inner at replication_lsn {:?}",
+        task_info.source_id, task_info.replication_lsn
+    );
+
     if task_info.replication_lsn == PgLsn::from(0) {
         // Get all the relevant tables for this publication
         let publication_tables = mz_postgres_util::publication_info(
@@ -596,10 +606,16 @@ async fn postgres_replication_loop_inner(
             }
         };
 
+        info!(
+            "{:?}: slot_lsn {:?} snapshot_lsn {:?}",
+            task_info.source_id, slot_lsn, snapshot_lsn,
+        );
+
         let mut stream = Box::pin(
             produce_snapshot(&client, &task_info.metrics, &task_info.source_tables).enumerate(),
         );
 
+        let mut row_count = 0;
         while let Some((i, event)) = stream.as_mut().next().await {
             if i > 0 {
                 // Failure scenario after we have produced at least one row, but before a
@@ -617,11 +633,17 @@ async fn postgres_replication_loop_inner(
                     return Err(ReplicationError::Irrecoverable(err))
                 }
             };
+            row_count += 1;
             task_info
                 .row_sender
                 .send_row(output, row, slot_lsn, 1)
                 .await;
         }
+
+        info!(
+            "{:?}: snapshot produced {row_count:?} messages",
+            task_info.source_id
+        );
 
         if let Some(temp_slot) = temp_slot {
             let _ = client
@@ -658,6 +680,7 @@ async fn postgres_replication_loop_inner(
             // Our snapshot was too far ahead so we must rewind it by reading the replication
             // stream until the snapshot lsn and emitting any rows that we find with negated diffs
             let replication_stream = produce_replication(
+                task_info.source_id,
                 task_info.connection_config.clone(),
                 &task_info.slot,
                 &task_info.publication,
@@ -669,12 +692,15 @@ async fn postgres_replication_loop_inner(
             .await;
             tokio::pin!(replication_stream);
 
+            let mut message_count = 0;
+
             while let Some(event) = replication_stream.next().await {
                 match event {
                     Ok(Event::Message(lsn, (output, row, diff))) => {
                         // Here we ignore the lsn that this row actually happened at and we
                         // forcefully emit it at the slot_lsn with a negated diff.
                         if lsn <= snapshot_lsn {
+                            message_count += 1;
                             task_info
                                 .row_sender
                                 .send_row(output, row, slot_lsn, -diff)
@@ -682,9 +708,12 @@ async fn postgres_replication_loop_inner(
                         }
                     }
                     Ok(Event::Progress([lsn])) => {
+                        info!(
+                            "{:?}: rewinding at {:?}, produced {message_count:?} messages",
+                            task_info.source_id, lsn
+                        );
+
                         if lsn > snapshot_lsn {
-                            // We successfully rewinded the snapshot from snapshot_lsn to slot_lsn
-                            task_info.row_sender.close_lsn(slot_lsn).await;
                             break;
                         }
                     }
@@ -706,6 +735,7 @@ async fn postgres_replication_loop_inner(
     }
 
     let replication_stream = produce_replication(
+        task_info.source_id,
         task_info.connection_config.clone(),
         &task_info.slot,
         &task_info.publication,
@@ -720,12 +750,20 @@ async fn postgres_replication_loop_inner(
     // TODO(petrosagg): The API does not guarantee that we won't see an error after we have already
     // partially emitted a transaction, but we know it is the case due to the implementation. Find
     // a way to encode this in the type signature
+    let mut message_count = 0;
     while let Some(event) = replication_stream.next().await.transpose()? {
         match event {
             Event::Message(lsn, (output, row, diff)) => {
+                message_count += 1;
                 task_info.row_sender.send_row(output, row, lsn, diff).await;
             }
             Event::Progress([lsn]) => {
+                info!(
+                    "{:?}: progressed to {:?} with {message_count} messages",
+                    task_info.source_id, lsn
+                );
+                message_count = 0;
+
                 // The lsn passed to `START_REPLICATION_SLOT` produces all transactions that
                 // committed at LSNs *strictly after*, but upper frontiers have "greater than
                 // or equal" semantics, so we must subtract one from the upper to make it
@@ -1000,6 +1038,7 @@ fn cast_row(table_cast: &[MirScalarExpr], datums: &[Datum<'_>]) -> Result<Row, a
 // when exiting the CopyBoth mode, so we don't need to re-create clients in every loop
 // in this function.
 async fn produce_replication<'a>(
+    source_id: GlobalId,
     client_config: mz_postgres_util::Config,
     slot: &'a str,
     publication: &'a str,
@@ -1047,6 +1086,12 @@ async fn produce_replication<'a>(
                 .await
                 .err_indefinite()?;
             tracing::trace!("starting replication slot");
+
+            info!(
+                "{:?}: starting replication slot at {:?}",
+                source_id, last_commit_lsn
+            );
+
             let query = format!(
                 r#"START_REPLICATION SLOT "{name}" LOGICAL {lsn}
                   ("proto_version" '1', "publication_names" '{publication}')"#,
