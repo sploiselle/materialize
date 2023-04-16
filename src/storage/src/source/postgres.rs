@@ -674,32 +674,6 @@ async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
 async fn postgres_replication_loop_inner_snapshot(
     task_info: &mut PostgresTaskInfo,
 ) -> Result<(), ReplicationError> {
-    if task_info.replication_lsn == PgLsn::from(0) {
-        // Verify relevant tables for this publication; we do this on every loop to cleanup source
-        // tables and very lazily detect dropped tables.
-        let publication_tables = mz_postgres_util::publication_info(
-            &task_info.connection_config,
-            &task_info.publication,
-            None,
-        )
-        .await
-        .err_indefinite()?;
-
-        // Validate publication tables against the state snapshot
-        let incompatible_tables =
-            determine_table_compatibility(task_info.source_tables.iter(), publication_tables);
-        for (id, output, err) in incompatible_tables {
-            task_info.source_tables.remove(&id);
-
-            // The LSN these rows are sent at will get closed during snapshotting. TODO: allow
-            // buffering errors, which are not necessarily related to an LSN>
-            task_info
-                .row_sender
-                .send_row(task_info.replication_lsn, output, Err(err))
-                .await;
-        }
-    }
-
     let mut snapshot_tables: BTreeSet<_> = BTreeSet::new();
 
     // TODO: support snapshotting a subset of tables for adding new tables from previously ingested
@@ -732,7 +706,7 @@ async fn postgres_replication_loop_inner_snapshot(
         .clone()
         .connect_replication()
         .await
-        .err_indefinite()?;
+        .err_irrecoverable()?;
 
     // Technically there is TOCTOU problem here but it makes the code easier and if we end
     // up attempting to create a slot and it already exists we will simply retry
@@ -924,6 +898,23 @@ async fn postgres_replication_loop_inner_snapshot(
 async fn postgres_replication_loop_inner(
     task_info: &mut PostgresTaskInfo,
 ) -> Result<(), ReplicationError> {
+    let publication_tables = mz_postgres_util::publication_info(
+        &task_info.connection_config,
+        &task_info.publication,
+        None,
+    )
+    .await
+    .err_indefinite()?;
+
+    // Verify relevant tables for this publication; we do this on every loop to cleanup source
+    // tables and very lazily detect dropped tables.
+    let incompatible_tables =
+        determine_table_compatibility(task_info.source_tables.iter(), publication_tables);
+    for (id, output, err) in incompatible_tables {
+        task_info.source_tables.remove(&id);
+        task_info.row_sender.buffer_error(output, err);
+    }
+
     match postgres_replication_loop_inner_snapshot(task_info).await {
         // Snapshotting cannot, under any circmstance, return indefinite errors; everything must
         // be restarted.
