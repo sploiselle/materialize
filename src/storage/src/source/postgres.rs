@@ -8,7 +8,7 @@
 // by the Apache License, Version 2.0.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::error::Error;
 use std::future;
@@ -220,6 +220,7 @@ pub struct PgOffsetCommitter {
 }
 
 /// Information about an ingested upstream table
+#[derive(Clone)]
 struct SourceTable {
     /// The source output index of this table
     output_index: usize,
@@ -238,6 +239,10 @@ struct PostgresTaskInfo {
     slot: String,
     /// Our cursor into the WAL
     replication_lsn: PgLsn,
+    // The position in the WAL where each subsource is consistent; eventually this will let us track
+    // a cursor into the WAL per subsource and let us bring all subsources up to the
+    // `replication_lsn`.
+    initial_lsns: BTreeMap<u32, PgLsn>,
     metrics: PgSourceMetrics,
     /// A map of the table oid to its information.
     ///
@@ -305,20 +310,6 @@ impl SourceRender for PostgresSourceConnection {
                 return;
             }
 
-            // TODO: figure out the best default here; currently this is optimized
-            // for the speed to pass pg-cdc-resumption tests on a local machine.
-            let (dataflow_tx, dataflow_rx) = tokio::sync::mpsc::channel(50_000);
-
-            let resume_upper =
-                Antichain::from_iter(config.source_resume_upper[&config.id].iter().map(MzOffset::decode_row));
-            let Some(start_offset) = resume_upper.into_option() else {
-                return;
-            };
-            data_capability.downgrade(&start_offset);
-            upper_capability.downgrade(&start_offset);
-
-            let resume_lsn = Arc::new(AtomicU64::new(start_offset.offset));
-
             let connection_config = match self
                 .connection
                 .config(&*connection_context.secrets_reader)
@@ -349,8 +340,29 @@ impl SourceRender for PostgresSourceConnection {
             let connection_config =
                 connection_config.replication_timeouts(config.params.pg_replication_timeouts);
 
+            // Decode the resumption frontiers.
+            let resumption_frontier_per_export: BTreeMap<_,_> = config.source_resume_upper.into_iter().filter_map(|(id, upper)| {
+                let upper = Antichain::from_iter(upper.iter().map(MzOffset::decode_row));
+                    upper.into_option().map(|upper| {
+                        (id, upper)
+                    })
+            }).collect();
+
+            // The resume upper is guaranteed to be the resumption frontier at the primary source's
+            // ID.
+            let start_offset = resumption_frontier_per_export[&config.id].clone();
+
+            data_capability.downgrade(&start_offset);
+            upper_capability.downgrade(&start_offset);
+
+            let resume_lsn = Arc::new(AtomicU64::new(start_offset.offset));
+
             let mut source_tables = BTreeMap::new();
             let tables_iter = self.publication_details.tables.iter();
+
+            // Translation table from output_index to oid, which we need to determine each table's
+            // LSN from its GlobalId.
+            let mut output_index_to_oid = BTreeMap::new();
 
             for (i, desc) in tables_iter.enumerate() {
                 let output_index = i + 1;
@@ -367,10 +379,24 @@ impl SourceRender for PostgresSourceConnection {
                             casts: casts.to_vec(),
                         };
                         source_tables.insert(desc.oid, source_table);
+                        output_index_to_oid.insert(output_index, desc.oid);
                     }
                     None => continue,
                 }
             }
+
+            // Determine initial LSNs for publication tables.
+            let initial_lsns = resumption_frontier_per_export.into_iter().filter_map(|(id, offset)| {
+                // All subsources are in source_exports...
+                config.source_exports.get(&id).map(|export|{
+                    // ... but only those derived from tables will be in output_index_to_oid
+                    output_index_to_oid.remove(&export.output_index).map(|oid| (oid,  offset.offset.into()))
+                }).flatten()
+            }).collect();
+
+            // TODO: figure out the best default here; currently this is optimized
+            // for the speed to pass pg-cdc-resumption tests on a local machine.
+            let (dataflow_tx, dataflow_rx) = tokio::sync::mpsc::channel(50_000);
 
             let task_info = PostgresTaskInfo {
                 source_id: config.id,
@@ -378,6 +404,7 @@ impl SourceRender for PostgresSourceConnection {
                 publication: self.publication,
                 slot: self.publication_details.slot,
                 replication_lsn: start_offset.offset.into(),
+                initial_lsns,
                 metrics: PgSourceMetrics::new(&config.base_metrics, config.id),
                 source_tables,
                 row_sender: RowSender::new(dataflow_tx.clone()),
@@ -647,25 +674,57 @@ async fn postgres_replication_loop(mut task_info: PostgresTaskInfo) {
 async fn postgres_replication_loop_inner_snapshot(
     task_info: &mut PostgresTaskInfo,
 ) -> Result<(), ReplicationError> {
-    // Verify relevant tables for this publication; we do this on every loop to cleanup source
-    // tables and very lazily detect dropped tables.
-    let publication_tables = mz_postgres_util::publication_info(
-        &task_info.connection_config,
-        &task_info.publication,
-        None,
-    )
-    .await
-    .err_indefinite()?;
+    if task_info.replication_lsn == PgLsn::from(0) {
+        // Verify relevant tables for this publication; we do this on every loop to cleanup source
+        // tables and very lazily detect dropped tables.
+        let publication_tables = mz_postgres_util::publication_info(
+            &task_info.connection_config,
+            &task_info.publication,
+            None,
+        )
+        .await
+        .err_indefinite()?;
 
-    // Validate publication tables against the state snapshot
-    let incompatible_tables =
-        determine_table_compatibility(task_info.source_tables.iter(), publication_tables);
-    for (id, output, err) in incompatible_tables {
-        task_info.source_tables.remove(&id);
-        task_info
-            .row_sender
-            .send_row(task_info.replication_lsn, output, Err(err))
-            .await;
+        // Validate publication tables against the state snapshot
+        let incompatible_tables =
+            determine_table_compatibility(task_info.source_tables.iter(), publication_tables);
+        for (id, output, err) in incompatible_tables {
+            task_info.source_tables.remove(&id);
+
+            // The LSN these rows are sent at will get closed during snapshotting. TODO: allow
+            // buffering errors, which are not necessarily related to an LSN>
+            task_info
+                .row_sender
+                .send_row(task_info.replication_lsn, output, Err(err))
+                .await;
+        }
+    }
+
+    let mut snapshot_tables: BTreeSet<_> = BTreeSet::new();
+
+    // TODO: support snapshotting a subset of tables for adding new tables from previously ingested
+    // publications.
+    mz_ore::soft_assert!(
+        match task_info.initial_lsns.first_key_value() {
+            Some((_, first_lsn)) => task_info
+                .initial_lsns
+                .iter()
+                .all(|(_, lsn)| first_lsn == lsn),
+            None => true,
+        },
+        "all LSNs must be equal"
+    );
+
+    // Snapshot all tables that are still valid source tables whose LSN is 0.
+    while let Some((id, lsn)) = task_info.initial_lsns.pop_first() {
+        if lsn == PgLsn::from(0) && task_info.source_tables.contains_key(&id) {
+            snapshot_tables.insert(id);
+        }
+    }
+
+    // Nothing to snapshot.
+    if snapshot_tables.is_empty() {
+        return Ok(());
     }
 
     let client = task_info
@@ -734,6 +793,7 @@ async fn postgres_replication_loop_inner_snapshot(
         &client,
         &task_info.metrics,
         &mut task_info.source_tables,
+        &snapshot_tables,
         task_info.source_id,
     ));
 
@@ -776,6 +836,11 @@ async fn postgres_replication_loop_inner_snapshot(
 
     assert!(slot_lsn <= snapshot_lsn);
 
+    // We have to figure this out outside of the loop where we do replication to allow
+    // `snapshot_source_tables` to be mutable after entering the stream.
+    let mut snapshot_source_tables = task_info.source_tables.clone();
+    snapshot_source_tables.retain(|id, _| snapshot_tables.contains(id));
+
     // We only need to rewind values from the WAL if there are any values between the `slot_lsn`
     // and `snapshot_lsn`. If there is nothing in the WAL for us to see between those times, we
     // would just sit there dumbly waiting for a timeout.
@@ -794,6 +859,7 @@ async fn postgres_replication_loop_inner_snapshot(
         tracing::info!(
             "postgres snapshot was at {snapshot_lsn:?} but we need it at {slot_lsn:?}. Rewinding"
         );
+
         // Our snapshot was too far ahead so we must rewind it by reading the replication
         // stream until the snapshot lsn and emitting any rows that we find with negated diffs
         let replication_stream = produce_replication(
@@ -803,7 +869,7 @@ async fn postgres_replication_loop_inner_snapshot(
             slot_lsn,
             Arc::clone(&task_info.resume_lsn),
             &task_info.metrics,
-            &mut task_info.source_tables,
+            &mut snapshot_source_tables,
             task_info.source_id,
         )
         .await;
@@ -835,6 +901,13 @@ async fn postgres_replication_loop_inner_snapshot(
             }
         }
     }
+
+    // Retain tables if they were not snapshot or are still present in the snapshot tables; if they
+    // are missing from snapshot_source_tables this means they errored during rewinding.
+    task_info
+        .source_tables
+        .retain(|id, _| !snapshot_tables.contains(id) || snapshot_source_tables.contains_key(id));
+
     task_info.metrics.lsn.set(slot_lsn.into());
     task_info.row_sender.close_lsn(slot_lsn).await;
 
@@ -851,16 +924,17 @@ async fn postgres_replication_loop_inner_snapshot(
 async fn postgres_replication_loop_inner(
     task_info: &mut PostgresTaskInfo,
 ) -> Result<(), ReplicationError> {
-    if task_info.replication_lsn == PgLsn::from(0) {
-        match postgres_replication_loop_inner_snapshot(task_info).await {
-            // Snapshotting cannot, under any circmstance, return indefinite errors; everything must
-            // be restarted.
-            Err(ReplicationError::Indefinite(err)) => {
-                return Err(ReplicationError::Irrecoverable(err))
-            }
-            o => o?,
-        }
+    match postgres_replication_loop_inner_snapshot(task_info).await {
+        // Snapshotting cannot, under any circmstance, return indefinite errors; everything must
+        // be restarted.
+        Err(ReplicationError::Indefinite(err)) => return Err(ReplicationError::Irrecoverable(err)),
+        o => o?,
     }
+
+    assert!(
+        task_info.initial_lsns.is_empty(),
+        "snapshotting must consume all initial LSNs"
+    );
 
     let replication_stream = produce_replication(
         task_info.connection_config.clone(),
@@ -897,6 +971,7 @@ async fn postgres_replication_loop_inner(
     Ok(())
 }
 
+#[derive(Debug)]
 struct RowMessage {
     lsn: PgLsn,
     output_index: usize,
@@ -1063,7 +1138,10 @@ fn parse_single_row<T: FromStr>(
 fn produce_snapshot<'a>(
     client: &'a Client,
     metrics: &'a PgSourceMetrics,
+    // Require source_tables and snapshot_tables because source_tables also tracks tables which
+    // should be removed due to errors.
     source_tables: &'a mut BTreeMap<u32, SourceTable>,
+    snapshot_tables: &'a BTreeSet<u32>,
     source_id: GlobalId,
 ) -> impl futures::Stream<Item = Result<(usize, Result<(Row, Diff), anyhow::Error>), ReplicationError>>
        + 'a {
@@ -1072,7 +1150,8 @@ fn produce_snapshot<'a>(
         let mut datum_vec = DatumVec::new();
         let mut subsources_to_remove = vec![];
 
-        'tables: for (id, info) in source_tables.iter() {
+        'tables: for id in snapshot_tables.iter() {
+            let info = &source_tables[id];
             let reader = client
                 .copy_out_simple(
                     format!(
@@ -1241,7 +1320,7 @@ async fn produce_replication<'a>(
                 .connect_replication()
                 .await
                 .err_indefinite()?;
-            tracing::trace!("starting replication slot");
+            tracing::trace!("starting replication slot for publication {publication} at LSN {last_commit_lsn:?}");
             let query = format!(
                 r#"START_REPLICATION SLOT "{name}" LOGICAL {lsn}
                       ("proto_version" '1', "publication_names" '{publication}')"#,
