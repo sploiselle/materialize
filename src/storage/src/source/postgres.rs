@@ -310,7 +310,7 @@ impl SourceRender for PostgresSourceConnection {
             let (dataflow_tx, dataflow_rx) = tokio::sync::mpsc::channel(50_000);
 
             let resume_upper =
-                Antichain::from_iter(config.source_resume_upper.iter().map(MzOffset::decode_row));
+                Antichain::from_iter(config.source_resume_upper[&config.id].iter().map(MzOffset::decode_row));
             let Some(start_offset) = resume_upper.into_option() else {
                 return;
             };

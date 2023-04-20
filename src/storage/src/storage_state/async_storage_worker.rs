@@ -13,6 +13,7 @@
 //! CAUTION: This is not meant for high-throughput data processing but for
 //! one-off requests that we need to do every now and then.
 
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -68,21 +69,29 @@ pub enum AsyncStorageWorkerResponse<T: Timestamp + Lattice + Codec64> {
         GlobalId,
         IngestionDescription<CollectionMetadata>,
         Antichain<T>,
-        Vec<Row>,
+        BTreeMap<GlobalId, Vec<Row>>,
     ),
 }
 
 async fn reclock_resume_frontier<C, IntoTime>(
     persist_clients: &PersistClientCache,
     ingestion_description: &IngestionDescription<CollectionMetadata>,
-    resume_upper: &Antichain<IntoTime>,
-) -> Antichain<C::Time>
+    resume_uppers: &BTreeMap<GlobalId, Antichain<IntoTime>>,
+) -> BTreeMap<GlobalId, Antichain<C::Time>>
 where
     C: SourceConnection + SourceRender,
     IntoTime: Timestamp + Lattice + Codec64 + Display,
 {
-    if **resume_upper == [IntoTime::minimum()] {
-        return Antichain::from_elem(C::Time::minimum());
+    let mut reclocked_resume_frontiers = BTreeMap::new();
+
+    for (id, resume_upper) in resume_uppers {
+        if **resume_upper == [IntoTime::minimum()] {
+            reclocked_resume_frontiers.insert(*id, Antichain::from_elem(C::Time::minimum()));
+        }
+    }
+
+    if resume_uppers.len() == reclocked_resume_frontiers.len() {
+        return reclocked_resume_frontiers;
     }
 
     let metadata = &ingestion_description.ingestion_metadata;
@@ -104,14 +113,28 @@ where
 
     let as_of = read_handle.since().clone();
 
-    let mut remap_updates = vec![];
-
     let mut subscription = read_handle
         .subscribe(as_of.clone())
         .await
         .expect("always valid to read at since");
 
     let mut upper = as_of.clone();
+
+    let resume_upper = resume_uppers
+        .values()
+        .max_by(|x, y| {
+            if x == y {
+                std::cmp::Ordering::Equal
+            } else if PartialOrder::less_than(*x, *y) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        })
+        .expect("at least one element");
+
+    let mut remap_updates = vec![];
+
     while PartialOrder::less_than(&upper, resume_upper) {
         for event in subscription.fetch_next().await {
             match event {
@@ -135,9 +158,20 @@ where
 
     let mut timestamper = ReclockFollower::new(as_of);
     timestamper.push_trace_batch(reclock_batch);
-    timestamper
-        .source_upper_at_frontier(resume_upper.borrow())
-        .expect("enough data is loaded")
+
+    for (id, resume_upper) in resume_uppers {
+        if reclocked_resume_frontiers.contains_key(id) {
+            continue;
+        }
+
+        let reclocked = timestamper
+            .source_upper_at_frontier(resume_upper.borrow())
+            .expect("enough data is loaded");
+
+        reclocked_resume_frontiers.insert(*id, reclocked);
+    }
+
+    reclocked_resume_frontiers
 }
 
 impl<T: Timestamp + Lattice + Codec64 + Display> AsyncStorageWorker<T> {
@@ -168,48 +202,65 @@ impl<T: Timestamp + Lattice + Codec64 + Display> AsyncStorageWorker<T> {
                             .create_calc(&persist_clients)
                             .instrument(span.clone())
                             .await;
-                        let resume_upper: Antichain<T> =
+
+                        let resume_upper =
                             calc.calculate_resumption_frontier().instrument(span).await;
+
+                        let export_uppers = calc.get_uppers();
+
+                        // Convenience macro to convert `BTreeMap<GlobalId, Antichain<C>>` to
+                        // `BTreeMap<GlobalId, Vec<Row>>`.
+                        macro_rules! to_vec_row {
+                            ($uppers:expr) => {
+                                $uppers
+                                    .into_iter()
+                                    .map(|(id, upper)| {
+                                        (id, upper.into_iter().map(|ts| ts.encode_row()).collect())
+                                    })
+                                    .collect()
+                            };
+                        }
 
                         // Create a specialized description to be able to call the generic method
                         let source_resume_upper = match ingestion_description.desc.connection {
                             GenericSourceConnection::Kafka(_) => {
-                                let upper = reclock_resume_frontier::<KafkaSourceConnection, _>(
+                                let uppers = reclock_resume_frontier::<KafkaSourceConnection, _>(
                                     &persist_clients,
                                     &ingestion_description,
-                                    &resume_upper,
+                                    &export_uppers,
                                 )
                                 .await;
-                                upper.into_iter().map(|ts| ts.encode_row()).collect()
+                                to_vec_row!(uppers)
                             }
                             GenericSourceConnection::Postgres(_) => {
-                                let upper = reclock_resume_frontier::<PostgresSourceConnection, _>(
-                                    &persist_clients,
-                                    &ingestion_description,
-                                    &resume_upper,
-                                )
-                                .await;
-                                upper.into_iter().map(|ts| ts.encode_row()).collect()
+                                let uppers =
+                                    reclock_resume_frontier::<PostgresSourceConnection, _>(
+                                        &persist_clients,
+                                        &ingestion_description,
+                                        &export_uppers,
+                                    )
+                                    .await;
+                                to_vec_row!(uppers)
                             }
                             GenericSourceConnection::LoadGenerator(_) => {
-                                let upper =
+                                let uppers =
                                     reclock_resume_frontier::<LoadGeneratorSourceConnection, _>(
                                         &persist_clients,
                                         &ingestion_description,
-                                        &resume_upper,
+                                        &export_uppers,
                                     )
                                     .await;
-                                upper.into_iter().map(|ts| ts.encode_row()).collect()
+                                to_vec_row!(uppers)
                             }
                             GenericSourceConnection::TestScript(_) => {
-                                let upper =
+                                let uppers =
                                     reclock_resume_frontier::<TestScriptSourceConnection, _>(
                                         &persist_clients,
                                         &ingestion_description,
-                                        &resume_upper,
+                                        &export_uppers,
                                     )
                                     .await;
-                                upper.into_iter().map(|ts| ts.encode_row()).collect()
+                                to_vec_row!(uppers)
                             }
                         };
 
