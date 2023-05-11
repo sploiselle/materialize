@@ -26,7 +26,7 @@ use timely::dataflow::operators::generic::{
 };
 use timely::dataflow::operators::Capability;
 use timely::dataflow::{Scope, Stream};
-use timely::Data;
+use timely::{Data, ExchangeData};
 
 use crate::buffer::ConsolidateBuffer;
 use crate::builder_async::{
@@ -151,6 +151,11 @@ where
     /// provided token can be upgraded. Once the token cannot be upgraded anymore, all data flowing
     /// into the operator is dropped.
     fn with_token(&self, token: Weak<()>) -> Stream<G, D1>;
+
+    /// Distributes the data of the stream to all workers in a round-robin fashion.
+    fn distribute(&self) -> Stream<G, D1>
+    where
+        D1: ExchangeData;
 }
 
 /// Extension methods for differential [`Collection`]s.
@@ -423,6 +428,21 @@ where
                         data.swap(&mut vector);
                         output.session(&cap).give_container(&mut vector);
                     }
+                });
+            }
+        })
+    }
+
+    fn distribute(&self) -> Stream<G, D1>
+    where
+        D1: ExchangeData,
+    {
+        let mut vector = Vec::new();
+        self.unary(crate::pact::Distribute, "Distribute", move |_, _| {
+            move |input, output| {
+                input.for_each(|time, data| {
+                    data.swap(&mut vector);
+                    output.session(&time).give_vec(&mut vector);
                 });
             }
         })
