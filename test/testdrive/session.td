@@ -7,13 +7,13 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
-$ set-regex match="<VARIES>|<VARIES>|v\d+\.\d+\.\d+(-[a-z0-9]+)? \([a-f0-9]{9}\)" replacement=<VARIES>
+$ set-regex match="cluster1|default|v\d+\.\d+\.\d+(-[a-z0-9]+)? \([a-f0-9]{9}\)" replacement=<VARIES>
 
 > SHOW ALL
 application_name                    ""                      "Sets the application name to be reported in statistics and logs (PostgreSQL)."
 client_encoding                     UTF8                    "Sets the client's character set encoding (PostgreSQL)."
 client_min_messages                 notice                  "Sets the message levels that are sent to the client (PostgreSQL)."
-cluster                             default                 "Sets the current cluster (Materialize)."
+cluster                             <VARIES>                "Sets the current cluster (Materialize)."
 cluster_replica                     ""                      "Sets a target cluster replica for SELECT queries (Materialize)."
 database                            materialize             "Sets the current database (CockroachDB)."
 DateStyle                           "ISO, MDY"              "Sets the display format for date and time values (PostgreSQL)."
