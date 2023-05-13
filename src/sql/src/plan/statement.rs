@@ -710,7 +710,7 @@ impl<'a> StatementContext<'a> {
     }
 
     pub fn require_feature_flag(&self, flag: &FeatureFlag) -> Result<(), PlanError> {
-        flag.enabled(self.catalog.system_vars())?;
+        flag.enabled(Some(self.catalog.system_vars()))?;
         Ok(())
     }
 
