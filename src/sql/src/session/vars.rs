@@ -105,7 +105,7 @@ pub enum VarError {
     #[error("{} is not supported", .feature)]
     RequiresFeatureFlag {
         feature: &'static str,
-        name: &'static UncasedStr,
+        name_hint: Option<&'static UncasedStr>,
     },
 }
 
@@ -131,9 +131,9 @@ impl VarError {
             VarError::RequiresSystemVar { gate, .. } => Some(format!(
                 "contact support to see if the {gate} feature can be enabled"
             )),
-            VarError::RequiresFeatureFlag { name, .. } => Some(format!(
-                "contact support to see if the {name} flag can be enabled"
-            )),
+            VarError::RequiresFeatureFlag { name_hint, .. } => {
+                name_hint.map(|name| format!("Enable with {name} flag"))
+            }
             _ => None,
         }
     }
@@ -2260,7 +2260,11 @@ impl FeatureFlag {
         } else {
             Err(VarError::RequiresFeatureFlag {
                 feature: self.feature_desc,
-                name: &self.flag.name,
+                name_hint: if system_vars.allow_unsafe {
+                    Some(self.flag.name)
+                } else {
+                    None
+                },
             })
         }
     }
