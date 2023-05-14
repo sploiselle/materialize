@@ -1052,7 +1052,8 @@ impl SessionVars {
             ),
             timezone: SessionVar::new(&TIMEZONE),
             transaction_isolation: SessionVar::new(&TRANSACTION_ISOLATION),
-            real_time_recency: SessionVar::new(&REAL_TIME_RECENCY),
+            real_time_recency: SessionVar::new(&REAL_TIME_RECENCY)
+                .with_feature_flag(&ALLOW_REAL_TIME_RECENCY),
             emit_timestamp_notice: SessionVar::new(&EMIT_TIMESTAMP_NOTICE),
             emit_trace_id_notice: SessionVar::new(&EMIT_TRACE_ID_NOTICE),
             auto_route_introspection_queries: SessionVar::new(&AUTO_ROUTE_INTROSPECTION_QUERIES),
@@ -2388,6 +2389,7 @@ where
     staged_value: Option<V::Owned>,
     session_value: Option<V::Owned>,
     parent: &'static ServerVar<V>,
+    feature_flag: Option<&'static FeatureFlag>,
 }
 
 impl<V> SessionVar<V>
@@ -2401,7 +2403,14 @@ where
             staged_value: None,
             session_value: None,
             parent,
+            feature_flag: None,
         }
+    }
+
+    fn with_feature_flag(mut self, flag: &'static FeatureFlag) -> Self {
+        assert!(self.feature_flag.is_none(), "setting feature flag twice");
+        self.feature_flag = Some(flag);
+        self
     }
 
     fn set(&mut self, input: VarInput, local: bool) -> Result<(), VarError> {
@@ -2471,6 +2480,11 @@ where
     }
 
     fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool {
+        if let Some(flag) = self.feature_flag {
+            if flag.enabled(system_vars, None, None).is_err() {
+                return false;
+            }
+        }
         self.parent.visible(system_vars, user)
     }
 
