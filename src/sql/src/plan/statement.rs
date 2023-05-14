@@ -34,7 +34,7 @@ use crate::normalize;
 use crate::plan::error::PlanError;
 use crate::plan::{query, with_options};
 use crate::plan::{Params, Plan, PlanContext, PlanKind};
-use crate::session::vars::{FeatureFlag, SystemVars};
+use crate::session::vars::FeatureFlag;
 
 pub(crate) mod ddl;
 mod dml;
@@ -724,73 +724,6 @@ impl<'a> StatementContext<'a> {
         detail: String,
     ) -> Result<(), PlanError> {
         flag.enabled(Some(self.catalog.system_vars()), Some(desc), Some(detail))?;
-        Ok(())
-    }
-
-    fn require_var_or_unsafe_mode<F>(
-        &self,
-        feature_flag: F,
-        feature_name: &str,
-    ) -> Result<(), PlanError>
-    where
-        F: Fn(&SystemVars) -> bool,
-    {
-        if !feature_flag(self.catalog.system_vars()) {
-            return Err(PlanError::RequiresVarOrUnsafe {
-                feature: feature_name.to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn require_upsert_source_disk_available(&self) -> Result<(), PlanError> {
-        self.require_var_or_unsafe_mode(
-            SystemVars::enable_upsert_source_disk,
-            "`WITH (DISK)` syntax",
-        )
-    }
-
-    pub fn require_with_mutually_recursive(&self) -> Result<(), PlanError> {
-        self.require_var_or_unsafe_mode(
-            SystemVars::enable_with_mutually_recursive,
-            "`WITH MUTUALLY RECURSIVE` syntax",
-        )
-    }
-
-    pub fn require_format_json(&self) -> Result<(), PlanError> {
-        self.require_var_or_unsafe_mode(SystemVars::enable_format_json, "`FORMAT JSON`")
-    }
-
-    pub fn require_envelope_upsert_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self
-            .catalog
-            .system_vars()
-            .enable_envelope_upsert_in_subscribe()
-        {
-            sql_bail!("`ENVELOPE UPSERT (KEY (..))` is not enabled")
-        }
-        Ok(())
-    }
-
-    pub fn require_envelope_debezium_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self
-            .catalog
-            .system_vars()
-            .enable_envelope_debezium_in_subscribe()
-        {
-            sql_bail!("`ENVELOPE DEBEZIUM (KEY (..))` is not enabled")
-        }
-        Ok(())
-    }
-
-    pub fn require_within_timestamp_order_by_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self
-            .catalog
-            .system_vars()
-            .enable_within_timestamp_order_by_in_subscribe()
-        {
-            sql_bail!("`WITHIN TIMESTAMP ORDER BY ..` is not enabled")
-        }
         Ok(())
     }
 
