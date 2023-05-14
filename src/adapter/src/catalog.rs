@@ -208,8 +208,8 @@ impl CatalogState {
                 start_instant: Instant::now(),
                 nonce: Default::default(),
                 environment_id: EnvironmentId::for_tests(),
-                session_id: Default::default(),
                 unsafe_mode: Default::default(),
+                session_id: Default::default(),
                 build_info: &DUMMY_BUILD_INFO,
                 timestamp_interval: Default::default(),
                 now: NOW_ZERO.clone(),
@@ -1249,10 +1249,6 @@ impl CatalogState {
 
     pub fn config(&self) -> &mz_sql::catalog::CatalogConfig {
         &self.config
-    }
-
-    pub fn unsafe_mode(&self) -> bool {
-        self.config.unsafe_mode
     }
 
     pub fn resolve_database(&self, database_name: &str) -> Result<&Database, SqlCatalogError> {

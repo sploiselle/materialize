@@ -1733,12 +1733,16 @@ impl Coordinator {
         session: &Session,
         plan: ShowVariablePlan,
     ) -> Result<ExecuteResponse, AdapterError> {
-        let variable = session
+        let var = session
             .vars()
             .get(Some(self.catalog().system_config()), &plan.name)
             .or_else(|_| self.catalog().system_config().get(&plan.name))?;
 
-        let row = Row::pack_slice(&[Datum::String(&variable.value())]);
+        // In lieu of plumbing the user to all system config functions, just check that the var is
+        // visible.
+        var.visible(session.user(), Some(self.catalog().system_config()))?;
+
+        let row = Row::pack_slice(&[Datum::String(&var.value())]);
         Ok(send_immediate_rows(vec![row]))
     }
 
@@ -3886,7 +3890,16 @@ impl Coordinator {
         if session.user().is_system_user()
             || (var_name == Some(ENABLE_RBAC_CHECKS.name()) && session.is_superuser())
         {
-            Ok(())
+            match var_name {
+                Some(name) => {
+                    // In lieu of plumbing the user to all system config functions, just check that the var is
+                    // visible.
+                    let var = self.catalog().system_config().get(&name)?;
+                    var.visible(session.user(), Some(self.catalog().system_config()))?;
+                    Ok(())
+                }
+                None => Ok(()),
+            }
         } else if var_name == Some(ENABLE_RBAC_CHECKS.name()) {
             Err(AdapterError::Unauthorized(
                 rbac::UnauthorizedError::Superuser {
