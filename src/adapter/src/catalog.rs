@@ -1499,12 +1499,13 @@ impl CatalogState {
         details: EventDetails,
     ) -> Result<(), Error> {
         let user = session.map(|session| session.user().name.to_string());
-        let occurred_at = match (
-            self.unsafe_mode(),
-            self.system_configuration.mock_audit_event_timestamp(),
-        ) {
-            (true, Some(ts)) => ts.into(),
-            _ => oracle_write_ts.into(),
+        // unsafe_mock_audit_event_timestamp can only be set to Some when running in unsafe mode.
+        let occurred_at = match self
+            .system_configuration
+            .unsafe_mock_audit_event_timestamp()
+        {
+            Some(ts) => ts.into(),
+            None => oracle_write_ts.into(),
         };
         let id = tx.get_and_increment_id(storage::AUDIT_LOG_ID_ALLOC_KEY.to_string())?;
         let event = VersionedEvent::new(id, event_type, object_type, details, user, occurred_at);

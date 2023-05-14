@@ -730,8 +730,8 @@ static EMIT_TRACE_ID_NOTICE: ServerVar<bool> = ServerVar {
     safe: true,
 };
 
-static MOCK_AUDIT_EVENT_TIMESTAMP: ServerVar<Option<mz_repr::Timestamp>> = ServerVar {
-    name: UncasedStr::new("mock_audit_event_timestamp"),
+static UNSAFE_MOCK_AUDIT_EVENT_TIMESTAMP: ServerVar<Option<mz_repr::Timestamp>> = ServerVar {
+    name: UncasedStr::new("unsafe_mock_audit_event_timestamp"),
     value: &None,
     description: "Mocked timestamp to use for audit events for testing purposes",
     internal: true,
@@ -1654,7 +1654,7 @@ impl Default for SystemVars {
             .with_var(&PERSIST_PUBSUB_CLIENT_ENABLED)
             .with_var(&PERSIST_PUBSUB_PUSH_DIFF_ENABLED)
             .with_var(&METRICS_RETENTION)
-            .with_var(&MOCK_AUDIT_EVENT_TIMESTAMP)
+            .with_var(&UNSAFE_MOCK_AUDIT_EVENT_TIMESTAMP)
             .with_var(&ENABLE_LD_RBAC_CHECKS)
             .with_var(&ENABLE_RBAC_CHECKS)
             .with_var(&PG_REPLICATION_CONNECT_TIMEOUT)
@@ -2013,8 +2013,8 @@ impl SystemVars {
     }
 
     /// Returns the `mock_audit_event_timestamp` configuration parameter.
-    pub fn mock_audit_event_timestamp(&self) -> Option<mz_repr::Timestamp> {
-        *self.expect_value(&MOCK_AUDIT_EVENT_TIMESTAMP)
+    pub fn unsafe_mock_audit_event_timestamp(&self) -> Option<mz_repr::Timestamp> {
+        *self.expect_value(&UNSAFE_MOCK_AUDIT_EVENT_TIMESTAMP)
     }
 
     /// Sets the `enable_with_mutually_recursive` configuration parameter.
@@ -2078,7 +2078,7 @@ pub trait Var: fmt::Debug {
     ///
     /// Variables marked as `internal` are only visible for the
     /// system user.
-    fn visible(&self, user: &User) -> bool;
+    fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool;
 
     /// Indicates wither the [`Var`] is only visible in unsafe mode.
     ///
@@ -2154,8 +2154,14 @@ where
         V::TYPE_NAME
     }
 
-    fn visible(&self, user: &User) -> bool {
-        !self.internal || user == &*SYSTEM_USER
+    fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool {
+        !self.internal
+            || user == &*SYSTEM_USER
+                && (!self.name().starts_with("unsafe")
+                    || match system_vars {
+                        Some(s) => s.allow_unsafe(),
+                        None => false,
+                    })
     }
 
     fn safe(&self) -> bool {
@@ -2242,8 +2248,8 @@ where
         V::TYPE_NAME
     }
 
-    fn visible(&self, user: &User) -> bool {
-        self.parent.visible(user)
+    fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool {
+        self.parent.visible(system_vars, user)
     }
 
     fn safe(&self) -> bool {
@@ -2335,8 +2341,8 @@ impl Var for FeatureFlag {
         bool::TYPE_NAME
     }
 
-    fn visible(&self, user: &User) -> bool {
-        self.flag.visible(user)
+    fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool {
+        self.flag.visible(system_vars, user)
     }
 
     fn safe(&self) -> bool {
@@ -2464,8 +2470,8 @@ where
         V::TYPE_NAME
     }
 
-    fn visible(&self, user: &User) -> bool {
-        self.parent.visible(user)
+    fn visible(&self, system_vars: Option<&SystemVars>, user: &User) -> bool {
+        self.parent.visible(system_vars, user)
     }
 
     fn safe(&self) -> bool {
@@ -2490,7 +2496,7 @@ impl Var for BuildInfo {
         str::TYPE_NAME
     }
 
-    fn visible(&self, _: &User) -> bool {
+    fn visible(&self, _: Option<&SystemVars>, _: &User) -> bool {
         true
     }
 
@@ -2516,7 +2522,7 @@ impl Var for User {
         bool::TYPE_NAME
     }
 
-    fn visible(&self, _: &User) -> bool {
+    fn visible(&self, _: Option<&SystemVars>, _: &User) -> bool {
         true
     }
 

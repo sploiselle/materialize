@@ -1738,7 +1738,9 @@ impl Coordinator {
             .get(&plan.name)
             .or_else(|_| self.catalog().system_config().get(&plan.name))?;
 
-        if variable.visible(session.user()) && (variable.safe() || self.catalog().unsafe_mode()) {
+        if variable.visible(Some(self.catalog.system_config()), session.user())
+            && (variable.safe() || self.catalog().unsafe_mode())
+        {
             let row = Row::pack_slice(&[Datum::String(&variable.value())]);
             Ok(send_immediate_rows(vec![row]))
         } else {
@@ -3892,6 +3894,17 @@ impl Coordinator {
         session: &Session,
         var_name: Option<&str>,
     ) -> Result<(), AdapterError> {
+        if let Some(name) = var_name {
+            let variable = self.catalog().system_config().get(name)?;
+            if !variable.visible(Some(self.catalog.system_config()), session.user())
+                || (!variable.safe() && !self.catalog().unsafe_mode())
+            {
+                return Err(AdapterError::VarError(VarError::UnknownParameter(
+                    name.to_string(),
+                )));
+            }
+        }
+
         if session.user().is_system_user()
             || (var_name == Some(ENABLE_RBAC_CHECKS.name()) && session.is_superuser())
         {
