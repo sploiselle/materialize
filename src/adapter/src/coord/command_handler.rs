@@ -31,7 +31,7 @@ use mz_sql::plan::{
     TransactionType,
 };
 use mz_sql::session::vars::{
-    EndTransactionAction, OwnedVarInput, SystemVars, Var, MAX_CONNECTIONS,
+    EndTransactionAction, OwnedVarInput, SystemVars, Var, VarError, MAX_CONNECTIONS,
 };
 
 use crate::client::ConnectionId;
@@ -137,7 +137,9 @@ impl Coordinator {
             Command::GetSystemVars { session, tx } => {
                 let mut vars = BTreeMap::new();
                 for var in self.catalog().system_config().iter() {
-                    vars.insert(var.name().to_string(), var.value());
+                    if var.visible(Some(self.catalog.system_config()), session.user()) {
+                        vars.insert(var.name().to_string(), var.value());
+                    }
                 }
                 let _ = tx.send(Response {
                     result: Ok(vars),
@@ -146,13 +148,27 @@ impl Coordinator {
             }
 
             Command::SetSystemVars { vars, session, tx } => {
-                let ops = vars
-                    .into_iter()
-                    .map(|(name, value)| catalog::Op::UpdateSystemConfiguration {
+                let mut ops = Vec::with_capacity(vars.len());
+
+                for (name, value) in vars {
+                    match self.catalog().system_config().get(&name) {
+                        Some(var)
+                            if var.visible(Some(self.catalog.system_config()), session.user()) => {}
+                        _ => {
+                            let _ = tx.send(Response {
+                                result: Err(VarError::UnknownParameter(name).into()),
+                                session,
+                            });
+                            return;
+                        }
+                    }
+
+                    ops.push(atalog::Op::UpdateSystemConfiguration {
                         name,
                         value: OwnedVarInput::Flat(value),
-                    })
-                    .collect();
+                    });
+                }
+
                 let result = self.catalog_transact(Some(&session), ops).await;
                 let _ = tx.send(Response { result, session });
             }
