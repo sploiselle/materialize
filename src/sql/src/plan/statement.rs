@@ -727,10 +727,6 @@ impl<'a> StatementContext<'a> {
         Ok(())
     }
 
-    pub fn unsafe_mode(&self) -> bool {
-        self.catalog.config().unsafe_mode
-    }
-
     fn require_var_or_unsafe_mode<F>(
         &self,
         feature_flag: F,
@@ -739,7 +735,7 @@ impl<'a> StatementContext<'a> {
     where
         F: Fn(&SystemVars) -> bool,
     {
-        if !self.unsafe_mode() && !feature_flag(self.catalog.system_vars()) {
+        if !feature_flag(self.catalog.system_vars()) {
             return Err(PlanError::RequiresVarOrUnsafe {
                 feature: feature_name.to_string(),
             });
@@ -766,11 +762,10 @@ impl<'a> StatementContext<'a> {
     }
 
     pub fn require_envelope_upsert_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self.unsafe_mode()
-            && !self
-                .catalog
-                .system_vars()
-                .enable_envelope_upsert_in_subscribe()
+        if !self
+            .catalog
+            .system_vars()
+            .enable_envelope_upsert_in_subscribe()
         {
             sql_bail!("`ENVELOPE UPSERT (KEY (..))` is not enabled")
         }
@@ -778,11 +773,10 @@ impl<'a> StatementContext<'a> {
     }
 
     pub fn require_envelope_debezium_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self.unsafe_mode()
-            && !self
-                .catalog
-                .system_vars()
-                .enable_envelope_debezium_in_subscribe()
+        if !self
+            .catalog
+            .system_vars()
+            .enable_envelope_debezium_in_subscribe()
         {
             sql_bail!("`ENVELOPE DEBEZIUM (KEY (..))` is not enabled")
         }
@@ -790,11 +784,10 @@ impl<'a> StatementContext<'a> {
     }
 
     pub fn require_within_timestamp_order_by_in_subscribe(&self) -> Result<(), PlanError> {
-        if !self.unsafe_mode()
-            && !self
-                .catalog
-                .system_vars()
-                .enable_within_timestamp_order_by_in_subscribe()
+        if !self
+            .catalog
+            .system_vars()
+            .enable_within_timestamp_order_by_in_subscribe()
         {
             sql_bail!("`WITHIN TIMESTAMP ORDER BY ..` is not enabled")
         }

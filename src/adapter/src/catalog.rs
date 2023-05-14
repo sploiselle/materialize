@@ -70,10 +70,9 @@ use mz_sql::names::{
 use mz_sql::plan::{
     CreateConnectionPlan, CreateIndexPlan, CreateMaterializedViewPlan, CreateSecretPlan,
     CreateSinkPlan, CreateSourcePlan, CreateTablePlan, CreateTypePlan, CreateViewPlan, Params,
-    Plan, PlanContext, PlanError, SourceSinkClusterConfig as PlanStorageClusterConfig,
-    StatementDesc,
+    Plan, PlanContext, SourceSinkClusterConfig as PlanStorageClusterConfig, StatementDesc,
 };
-use mz_sql::session::user::{INTROSPECTION_USER, SYSTEM_USER};
+use mz_sql::session::user::{User, INTROSPECTION_USER, SYSTEM_USER};
 use mz_sql::session::vars::{
     OwnedVarInput, SystemVars, Var, VarError, VarInput, CONFIG_HAS_SYNCED_ONCE,
 };
@@ -6217,17 +6216,10 @@ impl Catalog {
                 Op::UpdateSystemConfiguration { name, value } => {
                     state.insert_system_configuration(&name, value.borrow())?;
                     let var = state.get_system_configuration(&name)?;
-                    if !var.safe() {
-                        state.require_unsafe_mode(var.name())?;
-                    }
                     tx.upsert_system_config(&name, var.value())?;
                 }
                 Op::ResetSystemConfiguration { name } => {
                     state.remove_system_configuration(&name)?;
-                    let var = state.get_system_configuration(&name)?;
-                    if !var.safe() {
-                        state.require_unsafe_mode(var.name())?;
-                    }
                     tx.remove_system_config(&name);
                 }
                 Op::ResetAllSystemConfiguration => {
@@ -6776,12 +6768,12 @@ impl Catalog {
         self.state.system_config()
     }
 
-    pub fn unsafe_mode(&self) -> bool {
-        self.config().unsafe_mode
-    }
-
-    pub fn require_unsafe_mode(&self, feature_name: &'static str) -> Result<(), AdapterError> {
-        self.state.require_unsafe_mode(feature_name)
+    pub fn require_var_visibility(&self, user: &User, var: &dyn Var) -> Result<(), AdapterError> {
+        if var.visible(Some(self.system_config()), user) {
+            Ok(())
+        } else {
+            Err(VarError::UnknownParameter(var.name().to_string()).into())
+        }
     }
 
     /// Return the current compute configuration, derived from the system configuration.

@@ -1738,9 +1738,7 @@ impl Coordinator {
             .get(&plan.name)
             .or_else(|_| self.catalog().system_config().get(&plan.name))?;
 
-        if variable.visible(Some(self.catalog.system_config()), session.user())
-            && (variable.safe() || self.catalog().unsafe_mode())
-        {
+        if variable.visible(Some(self.catalog.system_config()), session.user()) {
             let row = Row::pack_slice(&[Datum::String(&variable.value())]);
             Ok(send_immediate_rows(vec![row]))
         } else {
@@ -1755,6 +1753,7 @@ impl Coordinator {
         session: &mut Session,
         plan: SetVariablePlan,
     ) -> Result<ExecuteResponse, AdapterError> {
+        let user = session.user().clone();
         let vars = session.vars_mut();
         let (name, local) = (plan.name, plan.local);
         let values = match plan.value {
@@ -1763,9 +1762,8 @@ impl Coordinator {
         };
 
         let var = vars.get(&name)?;
-        if !var.safe() {
-            self.catalog().require_unsafe_mode(var.name())?;
-        }
+
+        self.catalog().require_var_visibility(&user, var)?;
 
         match values {
             Some(values) => {
@@ -1811,12 +1809,11 @@ impl Coordinator {
         session: &mut Session,
         plan: ResetVariablePlan,
     ) -> Result<ExecuteResponse, AdapterError> {
+        let user = session.user().clone();
         let vars = session.vars_mut();
         let name = plan.name;
         let var = vars.get(&name)?;
-        if !var.safe() {
-            self.catalog().require_unsafe_mode(var.name())?;
-        }
+        self.catalog().require_var_visibility(&user, var)?;
         session.vars_mut().reset(&name, false)?;
         Ok(ExecuteResponse::SetVariable { name, reset: true })
     }
@@ -3896,9 +3893,7 @@ impl Coordinator {
     ) -> Result<(), AdapterError> {
         if let Some(name) = var_name {
             let variable = self.catalog().system_config().get(name)?;
-            if !variable.visible(Some(self.catalog.system_config()), session.user())
-                || (!variable.safe() && !self.catalog().unsafe_mode())
-            {
+            if !variable.visible(Some(self.catalog.system_config()), session.user()) {
                 return Err(AdapterError::VarError(VarError::UnknownParameter(
                     name.to_string(),
                 )));

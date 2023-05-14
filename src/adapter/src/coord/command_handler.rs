@@ -152,7 +152,7 @@ impl Coordinator {
 
                 for (name, value) in vars {
                     match self.catalog().system_config().get(&name) {
-                        Some(var)
+                        Ok(var)
                             if var.visible(Some(self.catalog.system_config()), session.user()) => {}
                         _ => {
                             let _ = tx.send(Response {
@@ -163,7 +163,7 @@ impl Coordinator {
                         }
                     }
 
-                    ops.push(atalog::Op::UpdateSystemConfiguration {
+                    ops.push(catalog::Op::UpdateSystemConfiguration {
                         name,
                         value: OwnedVarInput::Flat(value),
                     });
