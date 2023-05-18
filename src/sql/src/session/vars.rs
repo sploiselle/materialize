@@ -3065,6 +3065,10 @@ impl Value for str {
     fn format(&self) -> String {
         self.to_owned()
     }
+
+    fn canonicalize(v: &mut Self::Owned) {
+        *v = v.to_ascii_lowercase();
+    }
 }
 
 // The same as the above impl, but works in `SystemVar`s.
@@ -3080,6 +3084,10 @@ impl Value for String {
 
     fn format(&self) -> String {
         self.to_owned()
+    }
+
+    fn canonicalize(v: &mut Self::Owned) {
+        *v = v.to_ascii_lowercase();
     }
 }
 
@@ -3114,6 +3122,9 @@ impl Value for Vec<String> {
     fn canonicalize(v: &mut Self::Owned) {
         v.sort();
         v.dedup();
+        for v in v {
+            *v = v.to_ascii_uppercase();
+        }
     }
 }
 
