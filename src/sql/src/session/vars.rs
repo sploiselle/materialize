@@ -14,7 +14,6 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use const_format::concatcp;
 use itertools::Itertools;
 use mz_build_info::BuildInfo;
 use mz_ore::cast;
@@ -151,21 +150,23 @@ pub const SERVER_PATCH_VERSION: u8 = 0;
 /// The name of the default database that Materialize uses.
 pub const DEFAULT_DATABASE_NAME: &str = "materialize";
 
-const APPLICATION_NAME: ServerVar<str> = ServerVar {
+pub static DEFAULT_APPLICATION_NAME: Lazy<String> = Lazy::new(|| "level".to_string());
+pub static APPLICATION_NAME: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
     name: UncasedStr::new("application_name"),
-    value: "",
+    value: &DEFAULT_APPLICATION_NAME,
     description: "Sets the application name to be reported in statistics and logs (PostgreSQL).",
     internal: false,
     safe: true,
-};
+});
 
-const CLIENT_ENCODING: ServerVar<str> = ServerVar {
-    name: UncasedStr::new("client_encoding"),
-    value: "UTF8",
-    description: "Sets the client's character set encoding (PostgreSQL).",
+pub static DEFAULT_CLIENT_ENCODING: Lazy<String> = Lazy::new(|| "UTF8".to_string());
+pub static CLIENT_ENCODING: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
+    name: UncasedStr::new("application_name"),
+    value: &DEFAULT_CLIENT_ENCODING,
+    description: "Sets the application name to be reported in statistics and logs (PostgreSQL).",
     internal: false,
     safe: true,
-};
+});
 
 const CLIENT_MIN_MESSAGES: ServerVar<ClientSeverity> = ServerVar {
     name: UncasedStr::new("client_min_messages"),
@@ -174,15 +175,16 @@ const CLIENT_MIN_MESSAGES: ServerVar<ClientSeverity> = ServerVar {
     internal: false,
     safe: true,
 };
-pub const CLUSTER_VAR_NAME: &UncasedStr = UncasedStr::new("cluster");
 
-const CLUSTER: ServerVar<str> = ServerVar {
+pub const CLUSTER_VAR_NAME: &UncasedStr = UncasedStr::new("cluster");
+pub static DEFAULT_CLUSTER: Lazy<String> = Lazy::new(|| "default".to_string());
+pub static CLUSTER: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
     name: CLUSTER_VAR_NAME,
-    value: "default",
+    value: &DEFAULT_CLUSTER,
     description: "Sets the current cluster (Materialize).",
     internal: false,
     safe: true,
-};
+});
 
 const CLUSTER_REPLICA: ServerVar<Option<String>> = ServerVar {
     name: UncasedStr::new("cluster_replica"),
@@ -193,14 +195,14 @@ const CLUSTER_REPLICA: ServerVar<Option<String>> = ServerVar {
 };
 
 pub const DATABASE_VAR_NAME: &UncasedStr = UncasedStr::new("database");
-
-const DATABASE: ServerVar<str> = ServerVar {
+pub static DEFAULT_DATABASE: Lazy<String> = Lazy::new(|| DEFAULT_DATABASE_NAME.to_string());
+pub static DATABASE: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
     name: DATABASE_VAR_NAME,
-    value: DEFAULT_DATABASE_NAME,
+    value: &DEFAULT_DATABASE,
     description: "Sets the current database (CockroachDB).",
     internal: false,
     safe: true,
-};
+});
 
 static DEFAULT_DATE_STYLE: Lazy<Vec<String>> = Lazy::new(|| vec!["ISO".into(), "MDY".into()]);
 static DATE_STYLE: Lazy<ServerVar<Vec<String>>> = Lazy::new(|| ServerVar {
@@ -236,14 +238,15 @@ const INTEGER_DATETIMES: ServerVar<bool> = ServerVar {
     safe: true,
 };
 
-const INTERVAL_STYLE: ServerVar<str> = ServerVar {
+pub static DEFAULT_INTERVAL_STYLE: Lazy<String> = Lazy::new(|| "postgres".to_string());
+pub static INTERVAL_STYLE: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
     // IntervalStyle has nonstandard capitalization for historical reasons.
     name: UncasedStr::new("IntervalStyle"),
-    value: "postgres",
+    value: &DEFAULT_INTERVAL_STYLE,
     description: "Sets the display format for interval values (PostgreSQL).",
     internal: false,
     safe: true,
-};
+});
 
 const MZ_VERSION_NAME: &UncasedStr = UncasedStr::new("mz_version");
 const IS_SUPERUSER_NAME: &UncasedStr = UncasedStr::new("is_superuser");
@@ -281,19 +284,20 @@ const IDLE_IN_TRANSACTION_SESSION_TIMEOUT: ServerVar<Duration> = ServerVar {
     safe: true,
 };
 
-const SERVER_VERSION: ServerVar<str> = ServerVar {
+pub static SERVER_VERSION_VALUE: Lazy<String> = Lazy::new(|| {
+    format!(
+        "{}.{}.{}",
+        SERVER_MAJOR_VERSION, SERVER_MINOR_VERSION, SERVER_PATCH_VERSION
+    )
+});
+
+pub static SERVER_VERSION: Lazy<ServerVar<String>> = Lazy::new(|| ServerVar {
     name: UncasedStr::new("server_version"),
-    value: concatcp!(
-        SERVER_MAJOR_VERSION,
-        ".",
-        SERVER_MINOR_VERSION,
-        ".",
-        SERVER_PATCH_VERSION
-    ),
+    value: &SERVER_VERSION_VALUE,
     description: "Shows the PostgreSQL compatible server version (PostgreSQL).",
     internal: false,
     safe: true,
-};
+});
 
 const SERVER_VERSION_NUM: ServerVar<i32> = ServerVar {
     name: UncasedStr::new("server_version_num"),
@@ -561,9 +565,12 @@ mod upsert_rocksdb {
             "rocksdb_compaction_style".to_string()
         }
 
-        fn parse(input: VarInput) -> Result<Self::Owned, ()> {
-            let s = extract_single_value(input)?;
-            CompactionStyle::from_str(s).map_err(|_| ())
+        fn parse<'a>(
+            param: &'a (dyn Var + Send + Sync),
+            input: VarInput,
+        ) -> Result<Self::Owned, VarError> {
+            let s = extract_single_value(param, input)?;
+            CompactionStyle::from_str(s).map_err(|_| VarError::InvalidParameterType(param.into()))
         }
 
         fn format(&self) -> String {
@@ -576,9 +583,12 @@ mod upsert_rocksdb {
             "rocksdb_compression_type".to_string()
         }
 
-        fn parse(input: VarInput) -> Result<Self::Owned, ()> {
-            let s = extract_single_value(input)?;
-            CompressionType::from_str(s).map_err(|_| ())
+        fn parse<'a>(
+            param: &'a (dyn Var + Send + Sync),
+            input: VarInput,
+        ) -> Result<Self::Owned, VarError> {
+            let s = extract_single_value(param, input)?;
+            CompressionType::from_str(s).map_err(|_| VarError::InvalidParameterType(param.into()))
         }
 
         fn format(&self) -> String {
@@ -1056,19 +1066,19 @@ impl OwnedVarInput {
 #[derive(Debug)]
 pub struct SessionVars {
     // Normal variables.
-    application_name: SessionVar<str>,
-    client_encoding: SessionVar<str>,
+    application_name: SessionVar<String>,
+    client_encoding: SessionVar<String>,
     client_min_messages: SessionVar<ClientSeverity>,
-    cluster: SessionVar<str>,
+    cluster: SessionVar<String>,
     cluster_replica: SessionVar<Option<String>>,
-    database: SessionVar<str>,
+    database: SessionVar<String>,
     date_style: SessionVar<Vec<String>>,
     extra_float_digits: SessionVar<i32>,
     failpoints: SessionVar<Failpoints>,
     integer_datetimes: SessionVar<bool>,
-    interval_style: SessionVar<str>,
+    interval_style: SessionVar<String>,
     search_path: SessionVar<Vec<Ident>>,
-    server_version: SessionVar<str>,
+    server_version: SessionVar<String>,
     server_version_num: SessionVar<i32>,
     sql_safe_updates: SessionVar<bool>,
     standard_conforming_strings: SessionVar<bool>,
