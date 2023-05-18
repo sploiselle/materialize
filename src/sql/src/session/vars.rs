@@ -1066,13 +1066,13 @@ pub struct SessionVars {
     date_style: &'static ServerVar<Vec<String>>,
     extra_float_digits: SessionVar<i32>,
     failpoints: SessionVar<Failpoints>,
-    integer_datetimes: ServerVar<bool>,
-    interval_style: ServerVar<str>,
+    integer_datetimes: SessionVar<bool>,
+    interval_style: SessionVar<str>,
     search_path: SessionVar<Vec<Ident>>,
-    server_version: ServerVar<str>,
-    server_version_num: ServerVar<i32>,
+    server_version: SessionVar<str>,
+    server_version_num: SessionVar<i32>,
     sql_safe_updates: SessionVar<bool>,
-    standard_conforming_strings: ServerVar<bool>,
+    standard_conforming_strings: SessionVar<bool>,
     statement_timeout: SessionVar<Duration>,
     idle_in_transaction_session_timeout: SessionVar<Duration>,
     timezone: SessionVar<TimeZone>,
@@ -1101,13 +1101,14 @@ impl SessionVars {
             date_style: &DATE_STYLE,
             extra_float_digits: SessionVar::new(&EXTRA_FLOAT_DIGITS),
             failpoints: SessionVar::new(&FAILPOINTS),
-            integer_datetimes: INTEGER_DATETIMES,
-            interval_style: INTERVAL_STYLE,
+            integer_datetimes: SessionVar::new(&INTEGER_DATETIMES).as_read_only(),
+            interval_style: SessionVar::new(&INTERVAL_STYLE).as_fixed_value(),
             search_path: SessionVar::new(&SEARCH_PATH),
-            server_version: SERVER_VERSION,
-            server_version_num: SERVER_VERSION_NUM,
+            server_version: SessionVar::new(&SERVER_VERSION).as_read_only(),
+            server_version_num: SessionVar::new(&SERVER_VERSION_NUM).as_read_only(),
             sql_safe_updates: SessionVar::new(&SQL_SAFE_UPDATES),
-            standard_conforming_strings: STANDARD_CONFORMING_STRINGS,
+            standard_conforming_strings: SessionVar::new(&STANDARD_CONFORMING_STRINGS)
+                .as_fixed_value(),
             statement_timeout: SessionVar::new(&STATEMENT_TIMEOUT),
             idle_in_transaction_session_timeout: SessionVar::new(
                 &IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
@@ -1543,12 +1544,12 @@ impl SessionVars {
 
     /// Returns the value of the `integer_datetimes` configuration parameter.
     pub fn integer_datetimes(&self) -> bool {
-        *self.integer_datetimes.value
+        *self.integer_datetimes.value()
     }
 
     /// Returns the value of the `intervalstyle` configuration parameter.
-    pub fn intervalstyle(&self) -> &'static str {
-        self.interval_style.value
+    pub fn intervalstyle(&self) -> &str {
+        self.interval_style.value()
     }
 
     /// Returns the value of the `mz_version` configuration parameter.
@@ -1562,13 +1563,13 @@ impl SessionVars {
     }
 
     /// Returns the value of the `server_version` configuration parameter.
-    pub fn server_version(&self) -> &'static str {
-        self.server_version.value
+    pub fn server_version(&self) -> &str {
+        self.server_version.value()
     }
 
     /// Returns the value of the `server_version_num` configuration parameter.
     pub fn server_version_num(&self) -> i32 {
-        *self.server_version_num.value
+        *self.server_version_num.value()
     }
 
     /// Returns the value of the `sql_safe_updates` configuration parameter.
@@ -1579,7 +1580,7 @@ impl SessionVars {
     /// Returns the value of the `standard_conforming_strings` configuration
     /// parameter.
     pub fn standard_conforming_strings(&self) -> bool {
-        *self.standard_conforming_strings.value
+        *self.standard_conforming_strings.value()
     }
 
     /// Returns the value of the `statement_timeout` configuration parameter.
