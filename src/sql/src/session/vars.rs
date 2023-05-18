@@ -1039,7 +1039,7 @@ impl OwnedVarInput {
 pub struct SessionVars {
     // Normal variables.
     application_name: SessionVar<str>,
-    client_encoding: ServerVar<str>,
+    client_encoding: SessionVar<str>,
     client_min_messages: SessionVar<ClientSeverity>,
     cluster: SessionVar<str>,
     cluster_replica: SessionVar<Option<String>>,
@@ -1073,7 +1073,7 @@ impl SessionVars {
     pub fn new(build_info: &'static BuildInfo, user: User) -> SessionVars {
         SessionVars {
             application_name: SessionVar::new(&APPLICATION_NAME),
-            client_encoding: CLIENT_ENCODING,
+            client_encoding: SessionVar::new(&CLIENT_ENCODING).as_fixed_value(),
             client_min_messages: SessionVar::new(&CLIENT_MIN_MESSAGES),
             cluster: SessionVar::new(&CLUSTER),
             cluster_replica: SessionVar::new(&CLUSTER_REPLICA),
@@ -1502,7 +1502,7 @@ impl SessionVars {
 
     /// Returns the value of the `client_encoding` configuration parameter.
     pub fn client_encoding(&self) -> &'static str {
-        self.client_encoding.value
+        self.client_encoding.parent.value
     }
 
     /// Returns the value of the `client_min_messages` configuration parameter.
@@ -1751,7 +1751,7 @@ impl SystemVars {
     fn with_var<V>(mut self, var: &'static ServerVar<V>) -> Self
     where
         V: Value + Debug + PartialEq + Clone + 'static,
-        V::Owned: Debug + PartialEq + Send + Clone + Sync,
+        V::Owned: Debug + Send + Clone + Sync,
     {
         self.vars.insert(var.name, Box::new(SystemVar::new(var)));
         self
@@ -1760,7 +1760,7 @@ impl SystemVars {
     fn expect_value<V>(&self, var: &ServerVar<V>) -> &V
     where
         V: Value + Debug + PartialEq + Clone + 'static,
-        V::Owned: Debug + PartialEq + Send + Clone + Sync,
+        V::Owned: Debug + Send + Clone + Sync,
     {
         let var = self
             .vars
@@ -2480,18 +2480,39 @@ where
 #[derive(Debug)]
 struct SessionVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
+    V: Value + Debug + ?Sized + 'static,
 {
     default_value: &'static V,
     local_value: Option<V::Owned>,
     staged_value: Option<V::Owned>,
     session_value: Option<V::Owned>,
     parent: &'static ServerVar<V>,
+    constraints: Vec<ValueConstraint<V>>,
+}
+
+#[derive(Debug)]
+enum ValueConstraint<V>
+where
+    V: ToOwned + Debug + ?Sized + 'static,
+{
+    Fixed,
+    ReadOnly,
+    // Arbitrary constraints over values.
+    Domain(&'static dyn DomainConstraint<V>),
+}
+
+trait DomainConstraint<V>: Debug + Send + Sync
+where
+    V: Value + Debug + ?Sized + 'static,
+{
+    // This useless `self` is just to make a trait object
+    fn check(&self, v: &V::Owned) -> Result<(), VarError>;
 }
 
 impl<V> SessionVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
+    V: Value + Debug + PartialEq + ?Sized + 'static,
+    V::Owned: Debug + Send + Sync,
 {
     fn new(parent: &'static ServerVar<V>) -> SessionVar<V> {
         SessionVar {
@@ -2500,12 +2521,44 @@ where
             staged_value: None,
             session_value: None,
             parent,
+            constraints: vec![],
         }
+    }
+
+    fn as_read_only(mut self) -> SessionVar<V> {
+        assert!(
+            self.constraints.is_empty(),
+            "read only params do not support any other constraints"
+        );
+        self.constraints.push(ValueConstraint::ReadOnly);
+        self
+    }
+
+    fn as_fixed_value(mut self) -> SessionVar<V> {
+        assert!(
+            self.constraints.is_empty(),
+            "fixed value params do not support any other constraints"
+        );
+        self.constraints.push(ValueConstraint::Fixed);
+        self
+    }
+
+    fn with_constraint(mut self, c: &'static dyn DomainConstraint<V>) -> SessionVar<V> {
+        assert!(
+            !self
+                .constraints
+                .iter()
+                .any(|c| matches!(c, ValueConstraint::ReadOnly | ValueConstraint::Fixed)),
+            "fixed value and read only params do not support any other constraints"
+        );
+        self.constraints.push(ValueConstraint::Domain(c));
+        self
     }
 
     fn set(&mut self, input: VarInput, local: bool) -> Result<(), VarError> {
         match V::parse(input) {
             Ok(v) => {
+                self.check_constraints(&v)?;
                 if local {
                     self.local_value = Some(v);
                 } else {
@@ -2516,6 +2569,22 @@ where
             }
             Err(()) => Err(VarError::InvalidParameterType(self.parent)),
         }
+    }
+
+    fn check_constraints(&self, v: &V::Owned) -> Result<(), VarError> {
+        for constraint in &self.constraints {
+            match constraint {
+                ValueConstraint::ReadOnly => return Err(VarError::ReadOnlyParameter(self.name())),
+                ValueConstraint::Fixed => {
+                    if self.value() != v.borrow() {
+                        return Err(VarError::FixedValueParameter(self));
+                    }
+                }
+                ValueConstraint::Domain(check) => check.check(v)?,
+            }
+        }
+
+        Ok(())
     }
 
     fn reset(&mut self, local: bool) {
@@ -2550,8 +2619,8 @@ where
 
 impl<V> Var for SessionVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
-    V::Owned: fmt::Debug,
+    V: Value + Debug + PartialEq + ?Sized + 'static,
+    V::Owned: Debug + Send + Sync,
 {
     fn name(&self) -> &'static str {
         self.parent.name()
