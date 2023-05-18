@@ -1061,21 +1061,21 @@ impl OwnedVarInput {
 pub struct SessionVars {
     // Normal variables.
     application_name: SessionVar<String>,
-    client_encoding: &'static ServerVar<String>,
+    client_encoding: SessionVar<String>,
     client_min_messages: SessionVar<ClientSeverity>,
     cluster: SessionVar<String>,
     cluster_replica: SessionVar<Option<String>>,
     database: SessionVar<String>,
-    date_style: &'static ServerVar<Vec<String>>,
+    date_style: SessionVar<Vec<String>>,
     extra_float_digits: SessionVar<i32>,
     failpoints: SessionVar<Failpoints>,
-    integer_datetimes: ServerVar<bool>,
-    interval_style: &'static ServerVar<String>,
+    integer_datetimes: SessionVar<bool>,
+    interval_style: SessionVar<String>,
     search_path: SessionVar<Vec<Ident>>,
-    server_version: &'static ServerVar<String>,
-    server_version_num: ServerVar<i32>,
+    server_version: SessionVar<String>,
+    server_version_num: SessionVar<i32>,
     sql_safe_updates: SessionVar<bool>,
-    standard_conforming_strings: ServerVar<bool>,
+    standard_conforming_strings: SessionVar<bool>,
     statement_timeout: SessionVar<Duration>,
     idle_in_transaction_session_timeout: SessionVar<Duration>,
     timezone: SessionVar<TimeZone>,
@@ -1095,21 +1095,22 @@ impl SessionVars {
     pub fn new(build_info: &'static BuildInfo, user: User) -> SessionVars {
         SessionVars {
             application_name: SessionVar::new(&APPLICATION_NAME),
-            client_encoding: &*CLIENT_ENCODING,
+            client_encoding: SessionVar::new(&CLIENT_ENCODING).as_fixed_value(),
             client_min_messages: SessionVar::new(&CLIENT_MIN_MESSAGES),
             cluster: SessionVar::new(&CLUSTER),
             cluster_replica: SessionVar::new(&CLUSTER_REPLICA),
             database: SessionVar::new(&DATABASE),
-            date_style: &DATE_STYLE,
+            date_style: SessionVar::new(&DATE_STYLE).as_fixed_value(),
             extra_float_digits: SessionVar::new(&EXTRA_FLOAT_DIGITS),
             failpoints: SessionVar::new(&FAILPOINTS),
-            integer_datetimes: INTEGER_DATETIMES,
-            interval_style: &*INTERVAL_STYLE,
+            integer_datetimes: SessionVar::new(&INTEGER_DATETIMES).as_fixed_value(),
+            interval_style: SessionVar::new(&INTERVAL_STYLE).as_fixed_value(),
             search_path: SessionVar::new(&SEARCH_PATH),
-            server_version: &*SERVER_VERSION,
-            server_version_num: SERVER_VERSION_NUM,
+            server_version: SessionVar::new(&SERVER_VERSION).as_read_only(),
+            server_version_num: SessionVar::new(&SERVER_VERSION_NUM).as_read_only(),
             sql_safe_updates: SessionVar::new(&SQL_SAFE_UPDATES),
-            standard_conforming_strings: STANDARD_CONFORMING_STRINGS,
+            standard_conforming_strings: SessionVar::new(&STANDARD_CONFORMING_STRINGS)
+                .as_fixed_value(),
             statement_timeout: SessionVar::new(&STATEMENT_TIMEOUT),
             idle_in_transaction_session_timeout: SessionVar::new(
                 &IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
@@ -1133,18 +1134,18 @@ impl SessionVars {
         #[allow(clippy::as_conversions)]
         let vars = [
             &self.application_name as &dyn Var,
-            self.client_encoding,
+            &self.client_encoding,
             &self.client_min_messages,
             &self.cluster,
             &self.cluster_replica,
             &self.database,
-            self.date_style,
+            &self.date_style,
             &self.extra_float_digits,
             &self.failpoints,
             &self.integer_datetimes,
-            self.interval_style,
+            &self.interval_style,
             &self.search_path,
-            self.server_version,
+            &self.server_version,
             &self.server_version_num,
             &self.sql_safe_updates,
             &self.standard_conforming_strings,
@@ -1169,13 +1170,13 @@ impl SessionVars {
     pub fn notify_set(&self) -> impl Iterator<Item = &dyn Var> {
         let vars: [&dyn Var; 9] = [
             &self.application_name,
-            self.client_encoding,
-            self.date_style,
+            &self.client_encoding,
+            &self.date_style,
             &self.integer_datetimes,
-            self.server_version,
+            &self.server_version,
             &self.standard_conforming_strings,
             &self.timezone,
-            self.interval_style,
+            &self.interval_style,
             // Including `mz_version` in the notify set is a Materialize
             // extension. Doing so allows applications to detect whether they
             // are talking to Materialize or PostgreSQL without an additional
@@ -1201,7 +1202,7 @@ impl SessionVars {
         if name == APPLICATION_NAME.name {
             Ok(&self.application_name)
         } else if name == CLIENT_ENCODING.name {
-            Ok(&*self.client_encoding)
+            Ok(&self.client_encoding)
         } else if name == CLIENT_MIN_MESSAGES.name {
             Ok(&self.client_min_messages)
         } else if name == CLUSTER.name {
@@ -1211,7 +1212,7 @@ impl SessionVars {
         } else if name == DATABASE.name {
             Ok(&self.database)
         } else if name == DATE_STYLE.name {
-            Ok(self.date_style)
+            Ok(&self.date_style)
         } else if name == EXTRA_FLOAT_DIGITS.name {
             Ok(&self.extra_float_digits)
         } else if name == FAILPOINTS.name {
@@ -1219,13 +1220,13 @@ impl SessionVars {
         } else if name == INTEGER_DATETIMES.name {
             Ok(&self.integer_datetimes)
         } else if name == INTERVAL_STYLE.name {
-            Ok(self.interval_style)
+            Ok(&self.interval_style)
         } else if name == MZ_VERSION_NAME {
             Ok(self.build_info)
         } else if name == SEARCH_PATH.name {
             Ok(&self.search_path)
         } else if name == SERVER_VERSION.name {
-            Ok(self.server_version)
+            Ok(&self.server_version)
         } else if name == SERVER_VERSION_NUM.name {
             Ok(&self.server_version_num)
         } else if name == SQL_SAFE_UPDATES.name {
@@ -1509,8 +1510,8 @@ impl SessionVars {
     }
 
     /// Returns the value of the `client_encoding` configuration parameter.
-    pub fn client_encoding(&self) -> &'static str {
-        self.client_encoding.value
+    pub fn client_encoding(&self) -> &str {
+        self.client_encoding.value()
     }
 
     /// Returns the value of the `client_min_messages` configuration parameter.
@@ -1530,7 +1531,7 @@ impl SessionVars {
 
     /// Returns the value of the `DateStyle` configuration parameter.
     pub fn date_style(&self) -> &[String] {
-        self.date_style.value
+        self.date_style.value()
     }
 
     /// Returns the value of the `database` configuration parameter.
@@ -1545,12 +1546,12 @@ impl SessionVars {
 
     /// Returns the value of the `integer_datetimes` configuration parameter.
     pub fn integer_datetimes(&self) -> bool {
-        *self.integer_datetimes.value
+        *self.integer_datetimes.value()
     }
 
     /// Returns the value of the `intervalstyle` configuration parameter.
-    pub fn intervalstyle(&self) -> &'static str {
-        self.interval_style.value
+    pub fn intervalstyle(&self) -> &str {
+        self.interval_style.value()
     }
 
     /// Returns the value of the `mz_version` configuration parameter.
@@ -1564,13 +1565,13 @@ impl SessionVars {
     }
 
     /// Returns the value of the `server_version` configuration parameter.
-    pub fn server_version(&self) -> &'static str {
-        self.server_version.value
+    pub fn server_version(&self) -> &str {
+        self.server_version.value()
     }
 
     /// Returns the value of the `server_version_num` configuration parameter.
     pub fn server_version_num(&self) -> i32 {
-        *self.server_version_num.value
+        *self.server_version_num.value()
     }
 
     /// Returns the value of the `sql_safe_updates` configuration parameter.
@@ -1581,7 +1582,7 @@ impl SessionVars {
     /// Returns the value of the `standard_conforming_strings` configuration
     /// parameter.
     pub fn standard_conforming_strings(&self) -> bool {
-        *self.standard_conforming_strings.value
+        *self.standard_conforming_strings.value()
     }
 
     /// Returns the value of the `statement_timeout` configuration parameter.
@@ -2488,7 +2489,7 @@ where
 
     fn set(&mut self, input: VarInput) -> Result<bool, VarError> {
         match V::parse(input) {
-            Ok(mut v) => {
+            Ok(v) => {
                 self.check_constraints(&v)?;
 
                 if self.persisted_value() != Some(v.borrow()) {
@@ -2641,7 +2642,8 @@ where
 
     fn set(&mut self, input: VarInput, local: bool) -> Result<(), VarError> {
         match V::parse(input) {
-            Ok(v) => {
+            Ok(mut v) => {
+                V::canonicalize(&mut v);
                 self.check_constraints(&v)?;
                 if local {
                     self.local_value = Some(v);
@@ -2787,6 +2789,8 @@ pub trait Value: ToOwned + Send + Sync {
     /// The resulting string is guaranteed to be parsable if provided to
     /// [`Value::parse`] as a [`VarInput::Flat`].
     fn format(&self) -> String;
+
+    fn canonicalize(_: &mut Self::Owned) {}
 }
 
 fn extract_single_value(input: VarInput) -> Result<&str, ()> {
@@ -3103,6 +3107,13 @@ impl Value for Vec<String> {
 
     fn format(&self) -> String {
         self.join(", ")
+    }
+
+    // Right now this logic works for the only parameters that use `Vec<String>` so this might need
+    // to change in the future.
+    fn canonicalize(v: &mut Self::Owned) {
+        v.sort();
+        v.dedup();
     }
 }
 
