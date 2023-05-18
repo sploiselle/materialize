@@ -1063,7 +1063,7 @@ pub struct SessionVars {
     cluster: SessionVar<str>,
     cluster_replica: SessionVar<Option<String>>,
     database: SessionVar<str>,
-    date_style: &'static ServerVar<Vec<String>>,
+    date_style: SessionVar<Vec<String>>,
     extra_float_digits: SessionVar<i32>,
     failpoints: SessionVar<Failpoints>,
     integer_datetimes: SessionVar<bool>,
@@ -1097,8 +1097,7 @@ impl SessionVars {
             cluster: SessionVar::new(&CLUSTER),
             cluster_replica: SessionVar::new(&CLUSTER_REPLICA),
             database: SessionVar::new(&DATABASE),
-            // TODO: needs canonicalization before it can be treated as a fixed value
-            date_style: &DATE_STYLE,
+            date_style: SessionVar::new(&DATE_STYLE).as_fixed_value(),
             extra_float_digits: SessionVar::new(&EXTRA_FLOAT_DIGITS),
             failpoints: SessionVar::new(&FAILPOINTS),
             integer_datetimes: SessionVar::new(&INTEGER_DATETIMES).as_read_only(),
@@ -1137,7 +1136,7 @@ impl SessionVars {
             &self.cluster,
             &self.cluster_replica,
             &self.database,
-            self.date_style,
+            &self.date_style,
             &self.extra_float_digits,
             &self.failpoints,
             &self.integer_datetimes,
@@ -1169,7 +1168,7 @@ impl SessionVars {
         let vars: [&dyn Var; 9] = [
             &self.application_name,
             &self.client_encoding,
-            self.date_style,
+            &self.date_style,
             &self.integer_datetimes,
             &self.server_version,
             &self.standard_conforming_strings,
@@ -1210,7 +1209,7 @@ impl SessionVars {
         } else if name == DATABASE.name {
             Ok(&self.database)
         } else if name == DATE_STYLE.name {
-            Ok(self.date_style)
+            Ok(&self.date_style)
         } else if name == EXTRA_FLOAT_DIGITS.name {
             Ok(&self.extra_float_digits)
         } else if name == FAILPOINTS.name {
@@ -1529,7 +1528,7 @@ impl SessionVars {
 
     /// Returns the value of the `DateStyle` configuration parameter.
     pub fn date_style(&self) -> &[String] {
-        self.date_style.value
+        self.date_style.value()
     }
 
     /// Returns the value of the `database` configuration parameter.
@@ -2564,7 +2563,8 @@ where
 
     fn set(&mut self, input: VarInput, local: bool) -> Result<(), VarError> {
         match V::parse(input) {
-            Ok(v) => {
+            Ok(mut v) => {
+                V::canonicalize(&mut v);
                 self.check_constraints(&v)?;
                 if local {
                     self.local_value = Some(v);
@@ -2717,6 +2717,8 @@ pub trait Value: ToOwned + Send + Sync {
     /// The resulting string is guaranteed to be parsable if provided to
     /// [`Value::parse`] as a [`VarInput::Flat`].
     fn format(&self) -> String;
+
+    fn canonicalize(_: &mut Self::Owned) {}
 }
 
 fn extract_single_value(input: VarInput) -> Result<&str, ()> {
@@ -3027,6 +3029,13 @@ impl Value for Vec<String> {
 
     fn format(&self) -> String {
         self.join(", ")
+    }
+
+    // Right now this logic works for the only parameters that use `Vec<String>` so this might need
+    // to change in the future.
+    fn canonicalize(v: &mut Self::Owned) {
+        v.sort();
+        v.dedup();
     }
 }
 
