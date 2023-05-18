@@ -1078,6 +1078,7 @@ impl SessionVars {
             cluster: SessionVar::new(&CLUSTER),
             cluster_replica: SessionVar::new(&CLUSTER_REPLICA),
             database: SessionVar::new(&DATABASE),
+            // TODO: needs canonicalization before it can be treated as a fixed value
             date_style: &DATE_STYLE,
             extra_float_digits: SessionVar::new(&EXTRA_FLOAT_DIGITS),
             failpoints: FAILPOINTS,
