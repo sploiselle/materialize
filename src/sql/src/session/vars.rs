@@ -1699,7 +1699,10 @@ impl SystemVars {
             .with_var(&MAX_MATERIALIZED_VIEWS)
             .with_var(&MAX_CLUSTERS)
             .with_var(&MAX_REPLICAS_PER_CLUSTER)
-            .with_var(&MAX_CREDIT_CONSUMPTION_RATE)
+            .with_constrained_var(
+                &MAX_CREDIT_CONSUMPTION_RATE,
+                ValueConstraint::Domain(&NumericNonNegNonNan),
+            )
             .with_var(&MAX_DATABASES)
             .with_var(&MAX_SCHEMAS_PER_DATABASE)
             .with_var(&MAX_OBJECTS_PER_SCHEMA)
@@ -1760,6 +1763,16 @@ impl SystemVars {
         V::Owned: Debug + Send + Clone + Sync,
     {
         self.vars.insert(var.name, Box::new(SystemVar::new(var)));
+        self
+    }
+
+    fn with_constrained_var<V>(mut self, var: &'static ServerVar<V>, c: ValueConstraint<V>) -> Self
+    where
+        V: Value + Debug + PartialEq + Clone + 'static,
+        V::Owned: Debug + Send + Clone + Sync,
+    {
+        self.vars
+            .insert(var.name, Box::new(SystemVar::new(var).with_constraint(c)));
         self
     }
 
@@ -2296,7 +2309,7 @@ pub trait VarMut: Var + Send + Sync {
 #[derive(Debug)]
 pub struct ServerVar<V>
 where
-    V: fmt::Debug + ?Sized + 'static,
+    V: fmt::Debug + 'static,
 {
     name: &'static UncasedStr,
     value: &'static V,
@@ -2307,7 +2320,7 @@ where
 
 impl<V> Var for ServerVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
+    V: Value + fmt::Debug + 'static,
 {
     fn name(&self) -> &'static str {
         self.name.as_str()
@@ -2339,18 +2352,19 @@ where
 #[derive(Debug)]
 struct SystemVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
-    V::Owned: fmt::Debug,
+    V: Value + fmt::Debug + PartialEq + 'static,
+    V::Owned: fmt::Debug + Clone,
 {
     persisted_value: Option<V::Owned>,
     dynamic_default: Option<V::Owned>,
     parent: &'static ServerVar<V>,
+    constraints: Vec<ValueConstraint<V>>,
 }
 
 // The derived `Clone` implementation requires `V: Clone`, which is not needed.
 impl<V> Clone for SystemVar<V>
 where
-    V: Value + fmt::Debug + ?Sized + 'static,
+    V: Value + fmt::Debug + PartialEq + 'static,
     V::Owned: fmt::Debug + Clone,
 {
     fn clone(&self) -> Self {
@@ -2358,21 +2372,44 @@ where
             persisted_value: self.persisted_value.clone(),
             dynamic_default: self.dynamic_default.clone(),
             parent: self.parent,
+            constraints: self.constraints.clone(),
         }
     }
 }
 
 impl<V> SystemVar<V>
 where
-    V: Value + fmt::Debug + PartialEq + ?Sized + 'static,
-    V::Owned: fmt::Debug,
+    V: Value + fmt::Debug + PartialEq + 'static,
+    V::Owned: Debug + Clone + Send + Sync,
 {
     fn new(parent: &'static ServerVar<V>) -> SystemVar<V> {
         SystemVar {
             persisted_value: None,
             dynamic_default: None,
             parent,
+            constraints: vec![],
         }
+    }
+
+    fn with_constraint(mut self, c: ValueConstraint<V>) -> SystemVar<V> {
+        assert!(
+            !self
+                .constraints
+                .iter()
+                .any(|c| matches!(c, ValueConstraint::ReadOnly | ValueConstraint::Fixed)),
+            "fixed value and read only params do not support any other constraints"
+        );
+        self.constraints.push(c);
+        self
+    }
+
+    fn check_constraints(&self, v: &V::Owned) -> Result<(), VarError> {
+        let cur_v = self.value();
+        for constraint in &self.constraints {
+            constraint.check_constraint(self, cur_v, v)?;
+        }
+
+        Ok(())
     }
 
     fn persisted_value(&self) -> Option<&V> {
@@ -2394,8 +2431,8 @@ where
 
 impl<V> Var for SystemVar<V>
 where
-    V: Value + fmt::Debug + PartialEq + ?Sized + 'static,
-    V::Owned: fmt::Debug,
+    V: Value + fmt::Debug + PartialEq + 'static,
+    V::Owned: Debug + Clone + Send + Sync,
 {
     fn name(&self) -> &'static str {
         self.parent.name()
@@ -2425,7 +2462,7 @@ where
 impl<V> VarMut for SystemVar<V>
 where
     V: Value + fmt::Debug + PartialEq + 'static,
-    V::Owned: fmt::Debug + Clone + Send + Sync,
+    V::Owned: Debug + Clone + Send + Sync,
 {
     fn as_var(&self) -> &dyn Var {
         self
@@ -2449,7 +2486,10 @@ where
 
     fn set(&mut self, input: VarInput) -> Result<bool, VarError> {
         match V::parse(input) {
-            Ok(v) => {
+            Ok(mut v) => {
+                V::canonicalize(&mut v);
+                self.check_constraints(&v)?;
+
                 if self.persisted_value() != Some(v.borrow()) {
                     self.persisted_value = Some(v);
                     Ok(true)
@@ -2486,7 +2526,7 @@ where
 #[derive(Debug)]
 struct SessionVar<V>
 where
-    V: Value + Debug + ?Sized + 'static,
+    V: Value + ToOwned + Debug + PartialEq + 'static,
 {
     default_value: &'static V,
     local_value: Option<V::Owned>,
@@ -2499,7 +2539,7 @@ where
 #[derive(Debug)]
 enum ValueConstraint<V>
 where
-    V: ToOwned + Debug + ?Sized + 'static,
+    V: Value + ToOwned + Debug + PartialEq + 'static,
 {
     Fixed,
     ReadOnly,
@@ -2507,17 +2547,54 @@ where
     Domain(&'static dyn DomainConstraint<V>),
 }
 
+impl<V> ValueConstraint<V>
+where
+    V: Value + ToOwned + Debug + PartialEq + 'static,
+{
+    fn check_constraint(
+        &self,
+        var: &(dyn Var + Send + Sync),
+        cur_value: &V,
+        new_value: &V::Owned,
+    ) -> Result<(), VarError> {
+        match self {
+            ValueConstraint::ReadOnly => return Err(VarError::ReadOnlyParameter(var.name())),
+            ValueConstraint::Fixed => {
+                if cur_value != new_value.borrow() {
+                    return Err(VarError::FixedValueParameter(var.into()));
+                }
+            }
+            ValueConstraint::Domain(check) => check.check(var, new_value)?,
+        }
+
+        Ok(())
+    }
+}
+
+impl<V> Clone for ValueConstraint<V>
+where
+    V: Value + ToOwned + Debug + PartialEq + 'static,
+{
+    fn clone(&self) -> Self {
+        match self {
+            ValueConstraint::Fixed => ValueConstraint::Fixed,
+            ValueConstraint::ReadOnly => ValueConstraint::ReadOnly,
+            ValueConstraint::Domain(c) => ValueConstraint::Domain(*c),
+        }
+    }
+}
+
 trait DomainConstraint<V>: Debug + Send + Sync
 where
-    V: Value + Debug + ?Sized + 'static,
+    V: Value + Debug + 'static,
 {
-    // This useless `self` is just to make a trait object
-    fn check(&self, v: &V::Owned) -> Result<(), VarError>;
+    // `self` is make a trait object
+    fn check(&self, var: &(dyn Var + Send + Sync), v: &V::Owned) -> Result<(), VarError>;
 }
 
 impl<V> SessionVar<V>
 where
-    V: Value + Debug + PartialEq + ?Sized + 'static,
+    V: Value + ToOwned + Debug + PartialEq + 'static,
     V::Owned: Debug + Send + Sync,
 {
     fn new(parent: &'static ServerVar<V>) -> SessionVar<V> {
@@ -2579,16 +2656,9 @@ where
     }
 
     fn check_constraints(&self, v: &V::Owned) -> Result<(), VarError> {
+        let cur_v = self.value();
         for constraint in &self.constraints {
-            match constraint {
-                ValueConstraint::ReadOnly => return Err(VarError::ReadOnlyParameter(self.name())),
-                ValueConstraint::Fixed => {
-                    if self.value() != v.borrow() {
-                        return Err(VarError::FixedValueParameter(self.into()));
-                    }
-                }
-                ValueConstraint::Domain(check) => check.check(v)?,
-            }
+            constraint.check_constraint(self, cur_v, v)?;
         }
 
         Ok(())
@@ -2626,7 +2696,7 @@ where
 
 impl<V> Var for SessionVar<V>
 where
-    V: Value + Debug + PartialEq + ?Sized + 'static,
+    V: Value + ToOwned + Debug + PartialEq + 'static,
     V::Owned: Debug + Send + Sync,
 {
     fn name(&self) -> &'static str {
@@ -2811,6 +2881,23 @@ impl Value for usize {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NumericNonNegNonNan;
+
+impl DomainConstraint<Numeric> for NumericNonNegNonNan {
+    fn check(&self, var: &(dyn Var + Send + Sync), n: &Numeric) -> Result<(), VarError> {
+        if n.is_nan() || n.is_negative() {
+            Err(VarError::InvalidParameterValue {
+                parameter: var.into(),
+                values: vec![n.to_string()],
+                reason: "only supports non-negative, non-NaN numeric values".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl Value for Numeric {
     fn type_name() -> String {
         "numeric".to_string()
@@ -2818,19 +2905,8 @@ impl Value for Numeric {
 
     fn parse(input: VarInput) -> Result<Self::Owned, ()> {
         let s = extract_single_value(input)?;
-        let n: Numeric = s.parse().map_err(|_| ())?;
-        // TODO(jkosh44) This is a hacky way of of imposing validations on Numerics. Ideally this type
-        //  of validation should be specific to the variable that requires it, not all Numerics.
-        //  Additionally, it should return an InvalidParameterValue error, but this eventually gets
-        //  turned into an InvalidParameterType error. Unfortunately, SystemVars has no way of doing
-        //  this kind of validation.
-        // NaN and negatives are not valid values. Positive infinity is allowed because it's useful
-        // to signify that there is no limit.
-        if n.is_nan() || n.is_negative() {
-            Err(())
-        } else {
-            Ok(n)
-        }
+        let n = s.parse().map_err(|_| ())?;
+        Ok(n)
     }
 
     fn format(&self) -> String {
