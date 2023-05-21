@@ -5200,6 +5200,7 @@ impl Catalog {
             &mut audit_events,
             &mut tx,
             &mut state,
+            drop_ids,
         )?;
 
         let result = f(&state)?;
@@ -5235,6 +5236,9 @@ impl Catalog {
         audit_events: &mut Vec<VersionedEvent>,
         tx: &mut Transaction<'_>,
         state: &mut CatalogState,
+        // Provide all of the IDs that are being dropped in this transaction so we can provide
+        // stronger invariants about when we change items' dependencies.
+        drop_ids: BTreeSet<GlobalId>,
     ) -> Result<(), AdapterError> {
         fn sql_type_to_object_type(sql_type: SqlCatalogItemType) -> ObjectType {
             match sql_type {
@@ -5400,7 +5404,7 @@ impl Catalog {
                     )?;
 
                     let to_name = entry.name().clone();
-                    update_item(state, builtin_table_updates, id, to_name, sink)?;
+                    update_item(state, builtin_table_updates, id, to_name, sink, &drop_ids)?;
                 }
                 Op::AlterSource { id, cluster_config } => {
                     use mz_sql::ast::Value;
@@ -5492,7 +5496,7 @@ impl Catalog {
                     )?;
 
                     let to_name = entry.name().clone();
-                    update_item(state, builtin_table_updates, id, to_name, source)?;
+                    update_item(state, builtin_table_updates, id, to_name, source, &drop_ids)?;
                 }
                 Op::CreateDatabase {
                     name,
@@ -6639,7 +6643,14 @@ impl Catalog {
                     builtin_table_updates.extend(state.pack_item_update(id, -1));
                     updates.push((id, to_qualified_name, item));
                     for (id, to_name, to_item) in updates {
-                        update_item(state, builtin_table_updates, id, to_name, to_item)?;
+                        update_item(
+                            state,
+                            builtin_table_updates,
+                            id,
+                            to_name,
+                            to_item,
+                            &drop_ids,
+                        )?;
                     }
                 }
                 Op::UpdateOwner { id, new_owner } => match id {
@@ -6807,7 +6818,7 @@ impl Catalog {
                     let ser = Self::serialize_item(&to_item);
                     tx.update_item(id, &name.item, &ser)?;
                     builtin_table_updates.extend(state.pack_item_update(id, -1));
-                    update_item(state, builtin_table_updates, id, name, to_item)?;
+                    update_item(state, builtin_table_updates, id, name, to_item, &drop_ids)?;
                 }
                 Op::UpdateStorageUsage {
                     shard_id,
@@ -6882,6 +6893,9 @@ impl Catalog {
             id: GlobalId,
             to_name: QualifiedItemName,
             to_item: CatalogItem,
+            // This lets us understand which items are dropped in this transaction so we can account
+            // for changes in dependencies.
+            drop_ids: &BTreeSet<GlobalId>,
         ) -> Result<(), AdapterError> {
             let old_entry = state.entry_by_id.remove(&id).expect("catalog out of sync");
             info!(
@@ -6890,7 +6904,16 @@ impl Catalog {
                 state.resolve_full_name(&old_entry.name, old_entry.conn_id()),
                 id
             );
-            assert_eq!(old_entry.uses(), to_item.uses());
+
+            // Ensure any removal from the uses is accompanied by a drop.
+            let to_item_uses_and_dropped_ids: BTreeSet<&GlobalId> =
+                drop_ids.iter().chain(to_item.uses()).collect();
+
+            assert!(old_entry
+                .uses()
+                .iter()
+                .all(|id| to_item_uses_and_dropped_ids.contains(id)));
+
             let conn_id = old_entry.item().conn_id().unwrap_or(&SYSTEM_CONN_ID);
             let schema = &mut state.get_schema_mut(
                 &old_entry.name().qualifiers.database_spec,
