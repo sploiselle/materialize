@@ -19,8 +19,8 @@ use mz_repr::explain::ExplainFormat;
 use mz_repr::{GlobalId, Timestamp};
 use mz_sql::catalog::CatalogCluster;
 use mz_sql::plan::{
-    AbortTransactionPlan, CommitTransactionPlan, CopyRowsPlan, CreateRolePlan, FetchPlan, Plan,
-    PlanKind, RaisePlan, RotateKeysPlan,
+    AbortTransactionPlan, CommitTransactionPlan, CopyRowsPlan, CreateRolePlan, CreateSourcePlans,
+    FetchPlan, Plan, PlanKind, RaisePlan, RotateKeysPlan,
 };
 use tracing::{event, Level};
 
@@ -100,16 +100,19 @@ impl Coordinator {
             Plan::CreateSource(plan) => {
                 let source_id = return_if_err!(self.catalog_mut().allocate_user_id().await, ctx);
                 let result = self
-                    .sequence_create_source(ctx.session_mut(), vec![(source_id, plan, depends_on)])
+                    .sequence_create_source(
+                        ctx.session_mut(),
+                        vec![CreateSourcePlans {
+                            source_id,
+                            plan,
+                            depends_on,
+                        }],
+                    )
                     .await;
                 ctx.retire(result);
             }
             Plan::CreateSources(plans) => {
                 assert!(depends_on.is_empty(), "each plan has separate depends_on");
-                let plans = plans
-                    .into_iter()
-                    .map(|plan| (plan.source_id, plan.plan, plan.depends_on))
-                    .collect();
                 let result = self.sequence_create_source(ctx.session_mut(), plans).await;
                 ctx.retire(result);
             }

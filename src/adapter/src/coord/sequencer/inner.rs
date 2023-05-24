@@ -52,7 +52,7 @@ use mz_sql::plan::{
     AlterSinkPlan, AlterSourceAction, AlterSourcePlan, AlterSystemResetAllPlan,
     AlterSystemResetPlan, AlterSystemSetPlan, CreateConnectionPlan, CreateDatabasePlan,
     CreateIndexPlan, CreateMaterializedViewPlan, CreateRolePlan, CreateSchemaPlan,
-    CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan, CreateTypePlan,
+    CreateSecretPlan, CreateSinkPlan, CreateSourcePlans, CreateTablePlan, CreateTypePlan,
     CreateViewPlan, DropObjectsPlan, DropOwnedPlan, ExecutePlan, ExplainPlan, GrantPrivilegesPlan,
     GrantRolePlan, IndexOption, InsertPlan, InspectShardPlan, MaterializedView, MutationKind,
     OptimizerConfig, Params, Plan, QueryWhen, ReadThenWritePlan, ReassignOwnedPlan,
@@ -129,28 +129,45 @@ struct DropOps {
     dropped_active_cluster: bool,
 }
 
+// A bundle of values returned from create_source_inner
+struct CreateSourceInner {
+    ops: Vec<Op>,
+    sources: Vec<(GlobalId, catalog::Source)>,
+    if_not_exists_ids: BTreeMap<GlobalId, QualifiedItemName>,
+}
+
 impl Coordinator {
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub(super) async fn sequence_create_source(
+    async fn create_source_inner(
         &mut self,
         session: &mut Session,
-        plans: Vec<(GlobalId, CreateSourcePlan, Vec<GlobalId>)>,
-    ) -> Result<ExecuteResponse, AdapterError> {
+        plans: Vec<CreateSourcePlans>,
+    ) -> Result<CreateSourceInner, AdapterError> {
         let mut ops = vec![];
         let mut sources = vec![];
 
         let if_not_exists_ids = plans
             .iter()
-            .filter_map(|(id, plan, _)| {
-                if plan.if_not_exists {
-                    Some((*id, plan.name.clone()))
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |CreateSourcePlans {
+                     source_id,
+                     plan,
+                     depends_on: _,
+                 }| {
+                    if plan.if_not_exists {
+                        Some((*source_id, plan.name.clone()))
+                    } else {
+                        None
+                    }
+                },
+            )
             .collect::<BTreeMap<_, _>>();
 
-        for (source_id, plan, depends_on) in plans {
+        for CreateSourcePlans {
+            source_id,
+            plan,
+            depends_on,
+        } in plans
+        {
             let name = plan.name.clone();
             let source_oid = self.catalog_mut().allocate_oid()?;
             let cluster_id = match plan.source.data_source {
@@ -176,6 +193,26 @@ impl Coordinator {
             });
             sources.push((source_id, source));
         }
+
+        Ok(CreateSourceInner {
+            ops,
+            sources,
+            if_not_exists_ids,
+        })
+    }
+
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(super) async fn sequence_create_source(
+        &mut self,
+        session: &mut Session,
+        plans: Vec<CreateSourcePlans>,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let CreateSourceInner {
+            ops,
+            sources,
+            if_not_exists_ids,
+        } = self.create_source_inner(session, plans).await?;
+
         match self.catalog_transact(Some(session), ops).await {
             Ok(()) => {
                 let mut source_ids = Vec::with_capacity(sources.len());
