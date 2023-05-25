@@ -977,13 +977,8 @@ impl<'w, A: Allocate> Worker<'w, A> {
             .collect::<BTreeSet<_>>();
         let mut stale_exports = self.storage_state.exports.keys().collect::<BTreeSet<_>>();
 
-        // First, we collect all "drop commands". These are `AllowCompaction`
-        // commands that compact to the empty since. Then, later, we make sure
-        // we retain only those `Create*` commands that are not dropped. We
-        // assume that the `AllowCompaction` command is ordered after the
-        // `Create*` commands but don't assert that.
-        // WIP: Should we assert?
         let mut drop_commands = BTreeSet::new();
+        let mut running_ingestion_descriptions = self.storage_state.ingestions.clone();
 
         for command in &mut commands {
             match command {
@@ -991,12 +986,41 @@ impl<'w, A: Allocate> Worker<'w, A> {
                     panic!("CreateTimely must be captured before")
                 }
                 StorageCommand::AllowCompaction(sinces) => {
+                    // collect all "drop commands". These are `AllowCompaction`
+                    // commands that compact to the empty since. Then, later, we make sure
+                    // we retain only those `Create*` commands that are not dropped. We
+                    // assume that the `AllowCompaction` command is ordered after the
+                    // `Create*` commands but don't assert that.
+                    // WIP: Should we assert?
                     let drops = sinces.drain_filter_swapping(|(_id, since)| since.is_empty());
                     drop_commands.extend(drops.map(|(id, _since)| id));
                 }
+                StorageCommand::CreateSources(ingestions) => {
+                    // Ensure that ingestions are forward-rolling alter compatible.
+                    for ingestion in ingestions {
+                        let prev = running_ingestion_descriptions
+                            .insert(ingestion.id, ingestion.description.clone());
+
+                        if let Some(prev_ingest) = prev {
+                            // If the new ingestion is not exactly equal to the currently running
+                            // ingestion, we must either track that we need to synthesize an update
+                            // command to change the ingestion, or halt.
+                            if prev_ingest
+                                .alter_compatible(ingestion.id, &ingestion.description)
+                                .is_err()
+                            {
+                                halt!(
+                                    "previous ingestion for {} incompatible with new ingestion:\n{:?}\nvs\n{:?}",
+                                    ingestion.id,
+                                    prev_ingest,
+                                    ingestion.description
+                                );
+                            }
+                        }
+                    }
+                }
                 StorageCommand::InitializationComplete
                 | StorageCommand::UpdateConfiguration(_)
-                | StorageCommand::CreateSources(_)
                 | StorageCommand::CreateSinks(_) => (),
             }
         }
