@@ -1041,21 +1041,10 @@ pub fn plan_create_source(
         timestamp_interval,
     };
 
-    // MIGRATION: v0.44 This can be converted to an unwrap in v0.46
-    let progress_subsource = progress_subsource
-        .as_ref()
-        .map(|name| match name {
-            DeferredItemName::Named(name) => match name {
-                ResolvedItemName::Item { id, .. } => Ok(*id),
-                ResolvedItemName::Cte { .. } | ResolvedItemName::Error => {
-                    sql_bail!("[internal error] invalid target id")
-                }
-            },
-            DeferredItemName::Deferred(_) => {
-                sql_bail!("[internal error] progress subsource must be named during purification")
-            }
-        })
-        .transpose()?;
+    let progress_subsource = match progress_subsource {
+        Some(DeferredItemName::Named(ResolvedItemName::Item { id, .. })) => *id,
+        _ => sql_bail!("[internal error] progress subsource must be named during purification"),
+    };
 
     let if_not_exists = *if_not_exists;
     let name = scx.allocate_qualified_name(normalize::unresolved_item_name(name.clone())?)?;
