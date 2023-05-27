@@ -367,6 +367,7 @@ Field            | Type                 | Meaning
 `cluster_id`     | [`text`]             | The ID of the cluster maintaining the source. Corresponds to [`mz_clusters.id`](/sql/system-catalog/mz_catalog/#mz_clusters).
 `owner_id`       | [`text`]             | The role ID of the owner of the source. Corresponds to [`mz_roles.id`](/sql/system-catalog/mz_catalog/#mz_roles).
 `privileges`     | [`mz_aclitem array`] | The privileges belonging to the source.
+`progress_id`    | [`text`]             | The ID of the progress collection associated with the source, if any. You can find more details about progress on each source's page (e.g. [PostgreSQL](/sql/create-source/postgres/#monitoring-source-progress)) Corresponds to [`mz_sources.id`](/sql/system-catalog/mz_catalog/#mz_sources).
 
 ### `mz_storage_usage`
 

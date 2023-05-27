@@ -1983,6 +1983,16 @@ impl Source {
             | DataSourceDesc::Source => None,
         }
     }
+
+    /// ID of the subsource that maintains the progress/remap collection.
+    pub fn progress_id(&self) -> Option<GlobalId> {
+        match &self.data_source {
+            DataSourceDesc::Ingestion(ingestion) => Some(ingestion.remap_collection_id),
+            DataSourceDesc::Introspection(_)
+            | DataSourceDesc::Progress
+            | DataSourceDesc::Source => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

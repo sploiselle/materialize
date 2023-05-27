@@ -298,7 +298,8 @@ impl CatalogState {
         let privileges = privileges_row.unpack_first();
         let mut updates = match entry.item() {
             CatalogItem::Log(_) => self.pack_source_update(
-                id, oid, schema_id, name, "log", None, None, None, None, owner_id, privileges, diff,
+                id, oid, schema_id, name, "log", None, None, None, None, owner_id, privileges,
+                None, diff,
             ),
             CatalogItem::Index(index) => {
                 self.pack_index_update(id, oid, name, owner_id, index, diff)
@@ -311,6 +312,7 @@ impl CatalogState {
                 let connection_id = source.connection_id();
                 let envelope = source.envelope();
                 let cluster_id = entry.item().cluster_id().map(|id| id.to_string());
+                let progress_id = source.progress_id();
 
                 let mut updates = self.pack_source_update(
                     id,
@@ -324,6 +326,7 @@ impl CatalogState {
                     cluster_id.as_deref(),
                     owner_id,
                     privileges,
+                    progress_id,
                     diff,
                 );
 
@@ -437,6 +440,7 @@ impl CatalogState {
         cluster_id: Option<&str>,
         owner_id: &RoleId,
         privileges: Datum,
+        progress_id: Option<GlobalId>,
         diff: Diff,
     ) -> Vec<BuiltinTableUpdate> {
         vec![BuiltinTableUpdate {
@@ -453,6 +457,7 @@ impl CatalogState {
                 Datum::from(cluster_id),
                 Datum::String(&owner_id.to_string()),
                 privileges,
+                Datum::from(progress_id.map(|id| id.to_string()).as_deref()),
             ]),
             diff,
         }]

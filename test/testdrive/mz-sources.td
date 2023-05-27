@@ -145,3 +145,9 @@ debezium
 
 > SELECT envelope_type FROM mz_sources WHERE name = 'upsert_source'
 upsert
+
+> SELECT progress_id FROM mz_sources WHERE name = 'debezium_source';
+u5
+
+> SELECT progress_id IS NULL FROM mz_sources WHERE name = 'debezium_source_progress';
+true
