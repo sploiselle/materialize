@@ -114,6 +114,39 @@ pub enum StorageCommand<T = mz_repr::Timestamp> {
     CreateSinks(Vec<CreateSinkCommand<T>>),
 }
 
+// /// A list of identifiers of traces, with new upper frontiers.
+// ///
+// /// TODO(teskje): Consider also reporting the previous upper frontier and using that
+// /// information to assert the correct implementation of our protocols at various places.
+// FrontierUppers(Vec<(GlobalId, Antichain<T>)>),
+// /// Punctuation indicates that no more responses will be transmitted for the specified ids
+// DroppedIds(BTreeSet<GlobalId>),
+
+// /// A list of statistics updates, currently only for sources.
+// StatisticsUpdates(Vec<SourceStatisticsUpdate>, Vec<SinkStatisticsUpdate>),
+
+impl<T> StorageCommand<T> {
+    fn expected_response(&self) -> Option<StorageResponse<T>> {
+        match self {
+            StorageCommand::AllowCompaction(compactions) => {
+                if compactions.iter().any(|(_, frontier)| frontier.is_empty()) {
+                    Some(StorageResponse::DroppedIds(
+                        compactions
+                            .iter()
+                            .filter_map(
+                                |(id, frontier)| if frontier.is_empty() { Some(*id) } else { None },
+                            )
+                            .collect(),
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 /// A command that starts ingesting the given ingestion description
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CreateSourceCommand<T> {

@@ -338,7 +338,7 @@ a  b
 name     type    size
 ---------------------
 data              kafka     ${arg.default-storage-size}
-data_progress     subsource <null>
+data_progress     progress  <null>
 mat_data          kafka     ${arg.default-storage-size}
 mat_data_progress subsource <null>
 
