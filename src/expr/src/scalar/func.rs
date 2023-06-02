@@ -23,11 +23,12 @@ use itertools::Itertools;
 use md5::{Digest, Md5};
 use mz_lowertest::MzReflect;
 use mz_ore::cast::CastFrom;
+use mz_ore::cast::{self, ReinterpretCast};
 use mz_ore::fmt::FormatBuffer;
 use mz_ore::lex::LexBuf;
 use mz_ore::option::OptionExt;
 use mz_ore::result::ResultExt;
-use mz_ore::{cast, soft_assert};
+use mz_ore::soft_assert;
 use mz_pgrepr::Type;
 use mz_proto::{IntoRustIfSome, ProtoType, RustType, TryFromProtoError};
 use mz_repr::adt::array::ArrayDimension;
@@ -6231,9 +6232,9 @@ where
     }
 }
 
-// TODO(benesch): remove potentially dangerous usage of `as`.
-#[allow(clippy::as_conversions)]
 fn array_index<'a>(datums: &[Datum<'a>], offset: usize) -> Datum<'a> {
+    mz_ore::soft_assert!(offset == 0 || offset == 1, "offset must be either 0 or 1");
+
     let array = datums[0].unwrap_array();
     let dims = array.dims();
     if dims.len() != datums.len() - 1 {
@@ -6251,14 +6252,20 @@ fn array_index<'a>(datums: &[Datum<'a>], offset: usize) -> Datum<'a> {
         idx,
     ) in dims.into_iter().zip_eq(datums[1..].iter())
     {
-        let idx = idx.unwrap_int64();
-        if idx < lower_bound as i64 {
-            // TODO: How does/should this affect the offset? If this isn't 1,
-            // what is the physical representation of the array?
+        // Lower bound is written in terms of 1-based indexing, which offset accounts for.
+        let idx = usize::cast_from(u64::reinterpret_cast(idx.unwrap_int64())) + offset;
+
+        // This index missed all of the data at this layer.
+        if !(lower_bound..lower_bound + length).contains(&idx) {
             return Datum::Null;
         }
 
-        final_idx = final_idx * length + (idx as usize - offset);
+        // We discover how many indices our last index represents physically.
+        final_idx *= length;
+
+        // Because both index and lower bound are handled in 1-based indexing, taking their
+        // difference moves us back into 0-based indexing.
+        final_idx += idx - lower_bound;
     }
 
     array
