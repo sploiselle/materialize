@@ -774,5 +774,6 @@ message ProtoEvalError {
         google.protobuf.Empty multi_dimensional_array_search = 66;
         string must_not_be_null = 67;
         ProtoInvalidIdentifier invalid_identifier = 68;
+        string if_null_error = 69;
     }
 }

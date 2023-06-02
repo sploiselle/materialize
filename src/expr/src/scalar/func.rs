@@ -5671,7 +5671,7 @@ fn error_if_null<'a>(
             } else {
                 datums[1].unwrap_str()
             };
-            Err(EvalError::Internal(err_msg.to_string()))
+            Err(EvalError::IfNullError(err_msg.to_string()))
         }
         _ => Ok(datums[0]),
     }

@@ -2230,6 +2230,9 @@ pub enum EvalError {
         ident: String,
         detail: Option<String>,
     },
+    // The error for ErrorIfNull; this should not be used in other contexts as a generic error
+    // printer.
+    IfNullError(String),
 }
 
 impl fmt::Display for EvalError {
@@ -2395,6 +2398,7 @@ impl fmt::Display for EvalError {
             EvalError::InvalidIdentifier { ident, .. } => {
                 write!(f, "string is not a valid identifier: {}", ident.quoted())
             }
+            EvalError::IfNullError(s) => f.write_str(s),
         }
     }
 }
@@ -2608,6 +2612,7 @@ impl RustType<ProtoEvalError> for EvalError {
                     detail: detail.into_proto(),
                 })
             }
+            EvalError::IfNullError(s) => IfNullError(s.clone()),
         };
         ProtoEvalError { kind: Some(kind) }
     }
@@ -2713,6 +2718,7 @@ impl RustType<ProtoEvalError> for EvalError {
                     ident: v.ident,
                     detail: v.detail,
                 }),
+                IfNullError(v) => Ok(EvalError::IfNullError(v)),
             },
             None => Err(TryFromProtoError::missing_field("ProtoEvalError::kind")),
         }
