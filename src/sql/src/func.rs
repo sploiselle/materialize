@@ -1671,6 +1671,40 @@ pub static PG_CATALOG_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(|
                 Ok(lhs.call_binary(rhs, BinaryFunc::ArrayArrayConcat))
             }) => ArrayAnyCompatible, 383;
         },
+        "array_fill" => Scalar {
+            params!(AnyElement, ScalarType::Array(Box::new(ScalarType::Int32))) => Operation::binary(|ecx, elem, dims| {
+                let elem_type = ecx.scalar_type(&elem);
+
+                let array_of = match elem_type.array_of_self() {
+                    Ok(a) => a,
+                    Err(elem_type) => bail_unsupported!(
+                        format!("array_fill with unsupported type {}", ecx.humanize_scalar_type(&elem_type))
+                    ),
+                };
+
+                let elem_type = array_of.unwrap_array_element_type().clone();
+
+                Ok(HirScalarExpr::CallVariadic { func: VariadicFunc::ArrayFill { elem_type }, exprs: vec![elem, dims] })
+            }) => ArrayAnyCompatible, 1193;
+            params!(
+                AnyElement,
+                ScalarType::Array(Box::new(ScalarType::Int32)),
+                ScalarType::Array(Box::new(ScalarType::Int32))
+            ) => Operation::variadic(|ecx, exprs| {
+                let elem_type = ecx.scalar_type(&exprs[0]);
+
+                let array_of = match elem_type.array_of_self() {
+                    Ok(a) => a,
+                    Err(elem_type) => bail_unsupported!(
+                        format!("array_fill with unsupported type {}", ecx.humanize_scalar_type(&elem_type))
+                    ),
+                };
+
+                let elem_type = array_of.unwrap_array_element_type().clone();
+
+                Ok(HirScalarExpr::CallVariadic { func: VariadicFunc::ArrayFill { elem_type }, exprs })
+            }) => ArrayAnyCompatible, 1286;
+        },
         "array_in" => Scalar {
             params!(String, Oid, Int32) =>
                 Operation::variadic(|_ecx, _exprs| bail_unsupported!("array_in")) => ArrayAnyCompatible, 750;

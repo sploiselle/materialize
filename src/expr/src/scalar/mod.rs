@@ -13,6 +13,7 @@ use std::{fmt, mem};
 
 use itertools::Itertools;
 use mz_lowertest::MzReflect;
+use mz_ore::cast::CastFrom;
 use mz_ore::collections::CollectionExt;
 use mz_ore::iter::IteratorExt;
 use mz_ore::stack::RecursionLimitError;
@@ -2233,6 +2234,9 @@ pub enum EvalError {
     // The error for ErrorIfNull; this should not be used in other contexts as a generic error
     // printer.
     IfNullError(String),
+    ArrayFillWrongArraySubscripts,
+    // TODO: propagate this check more widly throughout the expr crate
+    MaxArraySizeExceeded(usize),
 }
 
 impl fmt::Display for EvalError {
@@ -2399,6 +2403,12 @@ impl fmt::Display for EvalError {
                 write!(f, "string is not a valid identifier: {}", ident.quoted())
             }
             EvalError::IfNullError(s) => f.write_str(s),
+            EvalError::ArrayFillWrongArraySubscripts => {
+                f.write_str("wrong number of array subscripts")
+            }
+            EvalError::MaxArraySizeExceeded(max_size) => {
+                write!(f, "array size exceeds the maximum allowed ({max_size})")
+            }
         }
     }
 }
@@ -2417,6 +2427,9 @@ impl EvalError {
                 a_dims, b_dims
             )),
             EvalError::InvalidIdentifier { detail, .. } => detail.clone(),
+            EvalError::ArrayFillWrongArraySubscripts => {
+                Some("Low bound array has different size than dimensions array.".to_string())
+            }
             _ => None,
         }
     }
@@ -2613,6 +2626,10 @@ impl RustType<ProtoEvalError> for EvalError {
                 })
             }
             EvalError::IfNullError(s) => IfNullError(s.clone()),
+            EvalError::ArrayFillWrongArraySubscripts => ArrayFillWrongArraySubscripts(()),
+            EvalError::MaxArraySizeExceeded(max_size) => {
+                MaxArraySizeExceeded(u64::cast_from(*max_size))
+            }
         };
         ProtoEvalError { kind: Some(kind) }
     }
@@ -2719,6 +2736,10 @@ impl RustType<ProtoEvalError> for EvalError {
                     detail: v.detail,
                 }),
                 IfNullError(v) => Ok(EvalError::IfNullError(v)),
+                ArrayFillWrongArraySubscripts(()) => Ok(EvalError::ArrayFillWrongArraySubscripts),
+                MaxArraySizeExceeded(max_size) => {
+                    Ok(EvalError::MaxArraySizeExceeded(usize::cast_from(max_size)))
+                }
             },
             None => Err(TryFromProtoError::missing_field("ProtoEvalError::kind")),
         }

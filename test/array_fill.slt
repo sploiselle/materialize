@@ -1,0 +1,91 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+query T
+SELECT array_fill(1, array[3])
+----
+t
+
+query T
+SELECT (array_fill(1, array[3]))[0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3], array[2]))[0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2]))[0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2], array[2, 3]))[0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2], array[2, 3]))[0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2], array[2, 3]))[4]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2], array[2, 3]))[4][0]
+----
+t
+
+query T
+SELECT (array_fill(1, array[3, 2], array[2, 3]))[4][4]
+----
+t
+
+query error t
+SELECT array_fill(null, array[3])
+
+query T
+SELECT array_fill(null::int, array[3])
+----
+t
+
+materialize=> ;
+    array_fill    
+------------------
+ {NULL,NULL,NULL}
+(1 row)
+
+materialize=> SELECT a FROM (SELECT array_fill(0, array[3], array[2]) as a) f;
+    a    
+---------
+ {0,0,0}
+(1 row)
+
+materialize=> SELECT a[0] FROM (SELECT array_fill(0, array[3], array[2]) as a) f;
+ a 
+---
+  
+(1 row)
+
+materialize=> SELECT a[1] FROM (SELECT array_fill(0, array[3], array[2]) as a) f;
+ a 
+---
+  
+(1 row)
+
+materialize=> SELECT a[2] FROM (SELECT array_fill(0, array[3], array[2]) as a) f;
+ a 
+---
+ 0
+(1 row)
