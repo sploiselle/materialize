@@ -46,6 +46,16 @@ SELECT (array_fill(5, array[3]))[1]
 
 # Lower bound adjustment works
 query T
+SELECT array_fill(5, array[3], array[2])
+----
+[2:4]={5,5,5}
+
+query T
+SELECT array_fill(5, array[3, 1], array[2, 4])
+----
+[2:4][4:4]={{5},{5},{5}}
+
+query T
 SELECT (array_fill(5, array[3], array[2]))[1]
 ----
 NULL
@@ -88,7 +98,7 @@ ORDER BY 1;
 query T
 SELECT array_fill(5, array[3, 2], array[2, 3])
 ----
-{{5,5},{5,5},{5,5}}
+[2:4][3:4]={{5,5},{5,5},{5,5}}
 
 # Reveal structure of 2D array
 query T
