@@ -275,3 +275,12 @@ SELECT array_length(a, 1), array_length(a, 2) FROM (
 ----
 99
 101
+
+
+sean=# SELECT array_fill(1, ARRAY[3, 2], ARRAY[4, 1]) || array_fill(1, ARRAY[2], ARRAY[1]);
+[4:7][1:2]={{1,1},{1,1},{1,1},{1,1}}
+sean=# SELECT array_fill(1, ARRAY[2], ARRAY[1] || array_fill(1, ARRAY[3, 2], ARRAY[4, 1]));
+ERROR:  cannot concatenate incompatible arrays
+DETAIL:  Arrays with differing dimensions are not compatible for concatenation.
+sean=# SELECT array_fill(1, ARRAY[2], ARRAY[1]) || array_fill(1, ARRAY[3, 2], ARRAY[4, 1]);
+[4:7][1:2]={{1,1},{1,1},{1,1},{1,1}}
