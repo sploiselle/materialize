@@ -50,13 +50,13 @@ use mz_sql::plan::{
     AlterSinkPlan, AlterSourceAction, AlterSourcePlan, AlterSystemResetAllPlan,
     AlterSystemResetPlan, AlterSystemSetPlan, CreateConnectionPlan, CreateDatabasePlan,
     CreateIndexPlan, CreateMaterializedViewPlan, CreateRolePlan, CreateSchemaPlan,
-    CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateTablePlan, CreateTypePlan,
-    CreateViewPlan, DropObjectsPlan, DropOwnedPlan, ExecutePlan, ExplainPlan, GrantPrivilegesPlan,
-    GrantRolePlan, IndexOption, InsertPlan, InspectShardPlan, MaterializedView, MutationKind,
-    OptimizerConfig, Params, PeekPlan, Plan, QueryWhen, ReadThenWritePlan, ReassignOwnedPlan,
-    ResetVariablePlan, RevokePrivilegesPlan, RevokeRolePlan, SendDiffsPlan, SetTransactionPlan,
-    SetVariablePlan, ShowVariablePlan, SideEffectingFunc, SourceSinkClusterConfig, SubscribeFrom,
-    SubscribePlan, UpdatePrivilege, VariableValue, View,
+    CreateSecretPlan, CreateSinkPlan, CreateSourcePlan, CreateSourcePlans, CreateTablePlan,
+    CreateTypePlan, CreateViewPlan, DropObjectsPlan, DropOwnedPlan, ExecutePlan, ExplainPlan,
+    GrantPrivilegesPlan, GrantRolePlan, IndexOption, InsertPlan, InspectShardPlan,
+    MaterializedView, MutationKind, OptimizerConfig, Params, PeekPlan, Plan, QueryWhen,
+    ReadThenWritePlan, ReassignOwnedPlan, ResetVariablePlan, RevokePrivilegesPlan, RevokeRolePlan,
+    SendDiffsPlan, SetTransactionPlan, SetVariablePlan, ShowVariablePlan, SideEffectingFunc,
+    SourceSinkClusterConfig, SubscribeFrom, SubscribePlan, UpdatePrivilege, VariableValue, View,
 };
 use mz_sql::session::vars::{
     IsolationLevel, OwnedVarInput, Var, VarInput, CLUSTER_VAR_NAME, DATABASE_VAR_NAME,
@@ -3583,7 +3583,10 @@ impl Coordinator {
         &mut self,
         session: &mut Session,
         AlterSourcePlan { id, action }: AlterSourcePlan,
+        subsources: Vec<CreateSourcePlans>,
     ) -> Result<ExecuteResponse, AdapterError> {
+        assert!(subsources.is_empty());
+
         let cur_entry = self.catalog().get_entry(&id);
         let cur_source = cur_entry.source().expect("known to be source");
 

@@ -437,8 +437,16 @@ impl Coordinator {
                 self.sequence_plan(ctx, Plan::CreateSources(plans), Vec::new())
                     .await;
             }
-            Ok(Plan::AlterSource(_)) => {
-                todo!()
+            Ok(Plan::AlterSource(alter_source)) => {
+                self.sequence_plan(
+                    ctx,
+                    Plan::PurifiedAlterSource {
+                        alter_source,
+                        subsources: plans,
+                    },
+                    Vec::new(),
+                )
+                .await;
             }
             Ok(p) => {
                 unreachable!("{:?} is not purified", p)
