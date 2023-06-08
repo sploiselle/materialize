@@ -484,6 +484,7 @@ impl ExecuteResponse {
             | AlterSecret
             | AlterSink
             | AlterSource
+            | PurifiedAlterSource
             | RotateKeys => {
                 vec![AlteredObject]
             }

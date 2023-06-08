@@ -328,6 +328,7 @@ pub fn generate_required_role_membership(
         | Plan::AlterIndexResetOptions(_)
         | Plan::AlterSink(_)
         | Plan::AlterSource(_)
+        | Plan::PurifiedAlterSource { .. }
         | Plan::AlterItemRename(_)
         | Plan::AlterSecret(_)
         | Plan::AlterSystemSet(_)
@@ -422,7 +423,9 @@ fn generate_required_ownership(plan: &Plan) -> Vec<ObjectId> {
         Plan::AlterIndexSetOptions(plan) => vec![ObjectId::Item(plan.id)],
         Plan::AlterIndexResetOptions(plan) => vec![ObjectId::Item(plan.id)],
         Plan::AlterSink(plan) => vec![ObjectId::Item(plan.id)],
-        Plan::AlterSource(plan) => vec![ObjectId::Item(plan.id)],
+        Plan::AlterSource(alter_source) | Plan::PurifiedAlterSource { alter_source, .. } => {
+            vec![ObjectId::Item(alter_source.id)]
+        }
         Plan::AlterItemRename(plan) => vec![ObjectId::Item(plan.id)],
         Plan::AlterSecret(plan) => vec![ObjectId::Item(plan.id)],
         Plan::RotateKeys(plan) => vec![ObjectId::Item(plan.id)],
@@ -605,7 +608,7 @@ fn generate_required_privileges(
                          },
                      depends_on,
                  }| {
-                    // Sub-sources depend on not-yet created sources, so we need to filter those out.
+                    // Sources depend on not-yet created subsources, so we need to filter those out.
                     let existing_depends_on = depends_on
                         .iter()
                         .filter(|id| catalog.try_get_item(id).is_some())
@@ -622,6 +625,41 @@ fn generate_required_privileges(
                 },
             )
             .collect(),
+        Plan::PurifiedAlterSource {
+            alter_source,
+            subsources,
+        } => {
+            let item = catalog.get_item(&alter_source.id);
+            let mut p = vec![(
+                SystemObjectId::Object(item.name().qualifiers.clone().into()),
+                AclMode::CREATE,
+                role_id,
+            )];
+            p.extend(subsources.iter().flat_map(
+                |CreateSourcePlans {
+                     source_id: _,
+                     plan:
+                         CreateSourcePlan {
+                             name,
+                             source: _,
+                             if_not_exists: _,
+                             timeline: _,
+                             cluster_config,
+                         },
+                     depends_on,
+                 }| {
+                    generate_required_source_privileges(
+                        catalog,
+                        name,
+                        cluster_config,
+                        depends_on,
+                        role_id,
+                    )
+                    .into_iter()
+                },
+            ));
+            p
+        }
         Plan::CreateSecret(CreateSecretPlan {
             name,
             secret: _,
