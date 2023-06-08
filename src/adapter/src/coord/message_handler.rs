@@ -30,8 +30,8 @@ use crate::command::{Command, ExecuteResponse};
 use crate::coord::appends::Deferred;
 use crate::coord::timestamp_selection::TimestampContext;
 use crate::coord::{
-    Coordinator, CreateSourceStatementReady, Message, PeekStage, PeekStageFinish, PeekValidity,
-    PendingReadTxn, RealTimeRecencyContext, SinkConnectionReady,
+    Coordinator, Message, PeekStage, PeekStageFinish, PeekValidity, PendingReadTxn,
+    PurifiedStatementReady, RealTimeRecencyContext, SinkConnectionReady,
 };
 use crate::util::ResultExt;
 use crate::{catalog, AdapterNotice};
@@ -50,8 +50,8 @@ impl Coordinator {
                     self.message_controller(m).await
                 }
             }
-            Message::CreateSourceStatementReady(ready) => {
-                self.message_create_source_statement_ready(ready).await
+            Message::PurifiedStatementReady(ready) => {
+                self.message_purified_statement_ready(ready).await
             }
             Message::SinkConnectionReady(ready) => self.message_sink_connection_ready(ready).await,
             Message::Execute {
@@ -355,16 +355,16 @@ impl Coordinator {
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx))]
-    async fn message_create_source_statement_ready(
+    async fn message_purified_statement_ready(
         &mut self,
-        CreateSourceStatementReady {
+        PurifiedStatementReady {
             mut ctx,
             result,
             params,
             depends_on,
             original_stmt,
             otel_ctx,
-        }: CreateSourceStatementReady,
+        }: PurifiedStatementReady,
     ) {
         otel_ctx.attach_as_parent();
 
@@ -420,24 +420,31 @@ impl Coordinator {
             Ok(ok) => ok,
             Err(e) => return ctx.retire(Err(e.into())),
         };
-        let depends_on = Vec::from_iter(mz_sql::names::visit_dependencies(&stmt));
-        let source_id = match self.catalog_mut().allocate_user_id().await {
-            Ok(id) => id,
-            Err(e) => return ctx.retire(Err(e.into())),
-        };
-        let plan =
-            match self.plan_statement(ctx.session_mut(), Statement::CreateSource(stmt), &params) {
-                Ok(Plan::CreateSource(plan)) => plan,
-                Ok(_) => {
-                    unreachable!("planning CREATE SOURCE must result in a Plan::CreateSource")
-                }
-                Err(e) => return ctx.retire(Err(e)),
-            };
-        plans.push((source_id, plan, depends_on).into());
 
-        // Finally, sequence all plans in one go
-        self.sequence_plan(ctx, Plan::CreateSources(plans), Vec::new())
-            .await;
+        let depends_on = Vec::from_iter(mz_sql::names::visit_dependencies(&stmt));
+
+        match self.plan_statement(ctx.session_mut(), stmt, &params) {
+            Ok(Plan::CreateSource(plan)) => {
+                let source_id = match self.catalog_mut().allocate_user_id().await {
+                    Ok(id) => id,
+                    Err(e) => return ctx.retire(Err(e.into())),
+                };
+
+                plans.push((source_id, plan, depends_on).into());
+
+                // Finally, sequence all plans in one go
+                // Finally, sequence all plans in one go
+                self.sequence_plan(ctx, Plan::CreateSources(plans), Vec::new())
+                    .await;
+            }
+            Ok(Plan::AlterSource(_)) => {
+                todo!()
+            }
+            Ok(p) => {
+                unreachable!("{:?} is not purified", p)
+            }
+            Err(e) => return ctx.retire(Err(e)),
+        };
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx))]

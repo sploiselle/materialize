@@ -100,7 +100,7 @@ use mz_repr::explain::ExplainFormat;
 use mz_repr::role_id::RoleId;
 use mz_repr::{Datum, GlobalId, RelationType, Row, Timestamp};
 use mz_secrets::SecretsController;
-use mz_sql::ast::{CreateSourceStatement, CreateSubsourceStatement, Raw, Statement};
+use mz_sql::ast::{CreateSubsourceStatement, Raw, Statement};
 use mz_sql::catalog::EnvironmentId;
 use mz_sql::names::Aug;
 use mz_sql::plan::{CopyFormat, Params, QueryWhen};
@@ -183,7 +183,7 @@ pub const DUMMY_AVAILABILITY_ZONE: &str = "";
 pub enum Message<T = mz_repr::Timestamp> {
     Command(Command),
     ControllerReady,
-    CreateSourceStatementReady(CreateSourceStatementReady),
+    PurifiedStatementReady(PurifiedStatementReady),
     SinkConnectionReady(SinkConnectionReady),
     WriteLockGrant(tokio::sync::OwnedMutexGuard<()>),
     /// Initiates a group commit.
@@ -227,13 +227,13 @@ pub enum Message<T = mz_repr::Timestamp> {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct CreateSourceStatementReady {
+pub struct PurifiedStatementReady {
     #[derivative(Debug = "ignore")]
     pub ctx: ExecuteContext,
     pub result: Result<
         (
             Vec<(GlobalId, CreateSubsourceStatement<Aug>)>,
-            CreateSourceStatement<Aug>,
+            Statement<Aug>,
         ),
         AdapterError,
     >,
