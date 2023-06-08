@@ -3889,7 +3889,24 @@ impl<'a> Parser<'a> {
         let source_name = self.parse_item_name()?;
 
         Ok(
-            match self.expect_one_of_keywords(&[DROP, RESET, SET, RENAME, OWNER])? {
+            match self.expect_one_of_keywords(&[ADD, DROP, RESET, SET, RENAME, OWNER])? {
+                ADD => {
+                    self.expect_one_of_keywords(&[SUBSOURCE, TABLE])?;
+
+                    self.expect_token(&Token::LParen)?;
+                    let subsources =
+                        self.parse_comma_separated(Parser::parse_subsource_references)?;
+                    self.expect_token(&Token::RParen)?;
+
+                    Statement::AlterSource(AlterSourceStatement {
+                        source_name,
+                        if_exists,
+                        action: AlterSourceAction::AddSubsources {
+                            subsources,
+                            details: None,
+                        },
+                    })
+                }
                 DROP => {
                     self.expect_one_of_keywords(&[SUBSOURCE, TABLE])?;
 
