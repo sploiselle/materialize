@@ -99,7 +99,7 @@ where
 
         let since = since_handle.since();
 
-        let (write_handle, mut read_handle) = persist_client
+        let (write_handle, read_handle) = persist_client
             .open(
                 remap_shard,
                 &format!("reclock {}", id),
@@ -136,24 +136,16 @@ where
 
         use futures::stream;
         let events = stream::once(async move {
-            let updates = read_handle
-                .snapshot_and_fetch(as_of.clone())
-                .await
-                .expect("since <= as_of asserted");
-            let snapshot = stream::once(std::future::ready(ListenEvent::Updates(updates)));
-
-            let listener = read_handle
-                .listen(as_of.clone())
+            let subscriber = read_handle
+                .subscribe(as_of.clone())
                 .await
                 .expect("since <= as_of asserted");
 
-            let listen_stream = stream::unfold(listener, |mut listener| async move {
-                let events = stream::iter(listener.fetch_next().await);
-                Some((events, listener))
+            stream::unfold(subscriber, |mut subscriber| async move {
+                let events = stream::iter(subscriber.fetch_next().await);
+                Some((events, subscriber))
             })
-            .flatten();
-
-            snapshot.chain(listen_stream)
+            .flatten()
         })
         .flatten()
         .boxed_local();
