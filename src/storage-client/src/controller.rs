@@ -1428,6 +1428,18 @@ where
                     for id in ingestion.source_exports.keys() {
                         let collection = self.collection(*id).expect("known to exist");
 
+                        assert!(
+                            timely::order::PartialOrder::less_equal(
+                                &dependency_since,
+                                &collection.write_frontier
+                            ),
+                            "{:?}'s write frontier ({:?}) must not be less than dependency collection {:?} since ({:?})",
+                            id,
+                            collection.write_frontier,
+                            storage_dependencies,
+                            dependency_since,
+                        );
+
                         // At the time of collection creation, we did not yet
                         // have firm guarantees that the since of our
                         // dependencies was not advanced beyond those of its
@@ -1444,15 +1456,6 @@ where
                             &collection.implied_capability,
                             &dependency_since,
                         ) {
-                            assert!(
-                                timely::order::PartialOrder::less_than(
-                                    &dependency_since,
-                                    &collection.write_frontier
-                                ),
-                                "write frontier ({:?}) must be in advance dependency collection's since ({:?})",
-                                collection.write_frontier,
-                                dependency_since,
-                            );
                             mz_ore::soft_assert!(
                                 matches!(collection.read_policy, ReadPolicy::NoPolicy { .. }),
                                 "subsources should not have external read holds installed until \
