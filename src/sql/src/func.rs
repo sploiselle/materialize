@@ -3348,9 +3348,9 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
             // message is the second argument.
             params!(Any, String) => VariadicFunc::ErrorIfNull => Any, oid::FUNC_MZ_ERROR_IF_NULL_OID;
         },
-        "mz_resolve_object_name" => Table {
-            // This implementation is available primarily to drive the other, single-param
-            // implementation.
+        "mz_name_rank" => Table {
+            // Determines the id, rank of all objects that can be matched using
+            // the provided args.
             params!(
                 // Database
                 String,
@@ -3361,25 +3361,25 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
             ) =>
             // credit for using rank() to @def-
             sql_impl_table_func("
-                SELECT id, oid, schema_id, name, type, owner_id, privileges
-                FROM (
-                    SELECT o.*, rank() OVER (ORDER BY pg_catalog.array_position($2, search_schema.name))
-                    FROM
-                        mz_catalog.mz_objects AS o
-                        JOIN mz_catalog.mz_schemas AS s
-                            ON o.schema_id = s.id
-                        JOIN unnest($2::text[]) AS search_schema (name)
-                            ON search_schema.name = s.name
-                        JOIN mz_catalog.mz_databases AS d
-                            -- Schemas without database IDs are present in every
-                            -- database that exists.
-                            ON d.id = COALESCE(s.database_id, d.id)
-                    WHERE
-                        o.name = $3::pg_catalog.text
-                        AND d.name = $1::pg_catalog.text
-                )
-                WHERE rank = 1;
-            ") => ReturnType::set_of(RecordAny), oid::FUNC_MZ_RESOLVE_OBJECT_NAME_FULL;
+                SELECT DISTINCT o.id, rank() OVER (ORDER BY pg_catalog.array_position($2, search_schema.name))
+                FROM
+                    (
+                        SELECT DISTINCT o.id, o.schema_id, o.name FROM mz_catalog.mz_objects AS o
+                    ) AS o
+                    JOIN mz_catalog.mz_schemas AS s
+                        ON o.schema_id = s.id
+                    JOIN unnest($2::text[]) AS search_schema (name)
+                        ON search_schema.name = s.name
+                    JOIN mz_catalog.mz_databases AS d
+                        -- Schemas without database IDs are present in every
+                        -- database that exists.
+                        ON d.id = COALESCE(s.database_id, d.id)
+                WHERE
+                    o.name = $3::pg_catalog.text
+                    AND d.name = $1::pg_catalog.text;
+            ") => ReturnType::set_of(RecordAny), oid::FUNC_MZ_NAME_RANK;
+        },
+        "mz_resolve_object_name" => Table {
             params!(String) =>
             // Normalize the input name, and for any NULL values (e.g. not database qualified), use
             // the defaults used during name resolution.
@@ -3389,7 +3389,7 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
                 FROM
                     (SELECT mz_internal.mz_normalize_object_name($1))
                             AS normalized (n),
-                    mz_internal.mz_resolve_object_name(
+                    mz_internal.mz_name_rank(
                         COALESCE(n[1], pg_catalog.current_database()),
                         CASE
                             WHEN n[2] IS NULL
@@ -3398,7 +3398,9 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
                                 ARRAY[n[2]]
                         END,
                         n[3]
-                    ) AS o
+                    ) AS r,
+                    mz_catalog.mz_objects AS o
+                WHERE r.id = o.id AND r.rank = 1;
             ") => ReturnType::set_of(RecordAny), oid::FUNC_MZ_RESOLVE_OBJECT_NAME;
         },
         "mz_global_id_to_name" => Scalar {
