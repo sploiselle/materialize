@@ -246,6 +246,7 @@ t 1396
 t 1397
 t 1398
 t 1705
+<<<<<<< HEAD
 
 statement ok
 CREATE TABLE "#" ();
@@ -255,3 +256,5 @@ SELECT mz_internal.mz_global_id_to_name(id)
 FROM mz_internal.mz_resolve_object_name('"#"');
 ----
 materialize.public."#"
+=======
+>>>>>>> 71c6364ab1... sql: create SHOW SUBSOURCES

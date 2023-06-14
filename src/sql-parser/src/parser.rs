@@ -5251,8 +5251,8 @@ impl<'a> Parser<'a> {
                 from,
                 filter: self.parse_show_statement_filter()?,
             }))
-        } else if let Some(object_type) = self.parse_plural_object_type() {
-            let from = if object_type.lives_in_schema() {
+        } else if let Some(object_type) = dbg!(self.parse_plural_object_type()) {
+            let from = if dbg!(object_type.lives_in_schema()) {
                 if self.parse_keywords(&[FROM]) {
                     Some(self.parse_schema_name()?)
                 } else {
@@ -5322,10 +5322,11 @@ impl<'a> Parser<'a> {
                     )
                 }
             };
+            println!("escaped");
             Ok(ShowStatement::ShowObjects(ShowObjectsStatement {
                 object_type: show_object_type,
                 from,
-                filter: self.parse_show_statement_filter()?,
+                filter: dbg!(self.parse_show_statement_filter())?,
             }))
         } else if self.parse_keyword(CLUSTER) {
             Ok(ShowStatement::ShowVariable(ShowVariableStatement {
