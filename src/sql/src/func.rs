@@ -3361,7 +3361,18 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
             ) =>
             // credit for using rank() to @def-
             sql_impl_table_func("
-                SELECT DISTINCT o.id, rank() OVER (ORDER BY pg_catalog.array_position($2, search_schema.name))
+                SELECT DISTINCT
+                    o.id,
+                    ARRAY[
+                        CASE
+                            WHEN s.database_id IS NULL
+                                THEN NULL
+                            ELSE d.name
+                        END,
+                        s.name,
+                        o.name
+                    ] AS name,
+                    rank() OVER (ORDER BY pg_catalog.array_position($2, search_schema.name))
                 FROM
                     (
                         SELECT DISTINCT o.id, o.schema_id, o.name FROM mz_catalog.mz_objects AS o
@@ -3403,40 +3414,75 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
                 WHERE r.id = o.id AND r.rank = 1;
             ") => ReturnType::set_of(RecordAny), oid::FUNC_MZ_RESOLVE_OBJECT_NAME;
         },
+        "mz_minimal_name_qualification" => Scalar {
+            params!(ScalarType::Array(Box::new(ScalarType::String))) => {
+                // Brute force approach to finding the minimal qualification
+                // performs much better locally than some of the more deliberate
+                // approaches.
+                sql_impl_func("
+                    CASE
+                        WHEN $1 IS NULL THEN NULL
+                        -- Requires no qualification?
+                        WHEN (
+                            SELECT name = $1
+                            FROM  mz_internal.mz_name_rank(pg_catalog.current_database(), pg_catalog.current_schemas(true), $1[3])
+                            WHERE rank = 1
+                        ) THEN
+                            ARRAY[$1[3]]
+                        -- Requires schema qualification? i.e. is it in this database
+                        WHEN (
+                            SELECT name = $1
+                            FROM  mz_internal.mz_name_rank(pg_catalog.current_database(), ARRAY[$1[2]], $1[3])
+                            WHERE rank = 1
+                        ) THEN
+                            ARRAY[$1[2], $1[3]]
+                        -- Requires database qualification or DNE
+                        ELSE
+                            mz_internal.mz_error_if_null((
+                                SELECT $1
+                                FROM  mz_internal.mz_name_rank($1[1], ARRAY[$1[2]], $1[3])
+                                WHERE rank = 1
+                            ), 'object must exist')::text[]
+                    END
+                ")
+            } => ScalarType::Array(Box::new(ScalarType::String)), 2;
+        },
         "mz_global_id_to_name" => Scalar {
             params!(String) => sql_impl_func("
             CASE
                 WHEN $1 IS NULL THEN NULL
                 ELSE (
-                    SELECT mz_internal.mz_error_if_null(
-                        (
-                            SELECT DISTINCT
-                                concat_ws(
-                                    '.',
-                                    qual.d,
-                                    qual.s,
-                                    pg_catalog.quote_ident(item.name)
-                                )
-                            FROM
-                                mz_objects AS item
-                            JOIN
+                    SELECT array_to_string(minimal_name, '.')
+                    FROM (
+                        SELECT mz_internal.mz_error_if_null(
                             (
-                                SELECT
-                                    pg_catalog.quote_ident(d.name) AS d,
-                                    pg_catalog.quote_ident(s.name) AS s,
-                                    s.id AS schema_id
+                                -- Return the fully-qualified name
+                                SELECT DISTINCT ARRAY[qual.d, qual.s, item.name]
                                 FROM
-                                    mz_schemas AS s
-                                    LEFT JOIN
-                                        (SELECT id, name FROM mz_databases)
-                                        AS d
-                                        ON s.database_id = d.id
-                            ) AS qual
-                            ON qual.schema_id = item.schema_id
-                            WHERE item.id = CAST($1 AS text)
-                        ),
-                        'global ID ' || $1 || ' does not exist'
-                    )
+                                    mz_objects AS item
+                                JOIN
+                                (
+                                    SELECT
+                                        d.name AS d,
+                                        s.name AS s,
+                                        s.id AS schema_id
+                                    FROM
+                                        mz_schemas AS s
+                                        LEFT JOIN
+                                            (SELECT id, name FROM mz_databases)
+                                            AS d
+                                            ON s.database_id = d.id
+                                ) AS qual
+                                ON qual.schema_id = item.schema_id
+                                WHERE item.id = CAST($1 AS text)
+                            ),
+                            'global ID ' || $1 || ' does not exist'
+                        )
+                    ) AS n (fqn),
+                    LATERAL (
+                        -- Get the minimal qualification of the fully qualified name
+                        SELECT mz_internal.mz_minimal_name_qualification(fqn)
+                    ) AS m (minimal_name)
                 )
                 END
             ") => String, oid::FUNC_MZ_GLOBAL_ID_TO_NAME;
