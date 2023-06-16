@@ -13,6 +13,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
+use dynfmt::{Format, SimpleCurlyFormat};
 use itertools::Itertools;
 use mz_expr::{func, VariadicFunc};
 use mz_repr::{ColumnName, ColumnType, Datum, RelationType, ScalarBaseType, ScalarType};
@@ -28,6 +29,21 @@ use crate::plan::scope::Scope;
 fn sql_impl_cast(expr: &'static str) -> CastTemplate {
     let invoke = crate::func::sql_impl(expr);
     CastTemplate::new(move |ecx, _ccx, from_type, _to_type| {
+        let mut out = invoke(ecx.qcx, vec![from_type.clone()]).ok()?;
+        Some(move |e| {
+            out.splice_parameters(&[e], 0);
+            out
+        })
+    })
+}
+
+fn sql_impl_cast_per_context(casts: &[(CastContext, &'static str)]) -> CastTemplate {
+    let casts: BTreeMap<CastContext, _> = casts
+        .iter()
+        .map(|(ccx, expr)| (ccx.clone(), crate::func::sql_impl(expr)))
+        .collect();
+    CastTemplate::new(move |ecx, ccx, from_type, _to_type| {
+        let invoke = &casts[&ccx];
         let mut out = invoke(ecx.qcx, vec![from_type.clone()]).ok()?;
         Some(move |e| {
             out.splice_parameters(&[e], 0);
@@ -485,19 +501,12 @@ static VALID_CASTS: Lazy<BTreeMap<(ScalarBaseType, ScalarBaseType), CastImpl>> =
         // TODO: Support the correct error code for does not exist (42883).
         // TODO: Support qualified names.
         // TODO: This should take into account the search path when looking for an object.
-        (String, RegClass) => Explicit: sql_impl_cast("(
-                SELECT
-                    CASE
-                    WHEN $1 IS NULL THEN NULL
-                    WHEN $1 ~ '^\\d+$' THEN $1::pg_catalog.oid::pg_catalog.regclass
-                    ELSE (
-                        mz_internal.mz_error_if_null(
-                            (SELECT oid::pg_catalog.regclass FROM mz_catalog.mz_objects WHERE name = $1),
-                            'object \"' || $1 || '\" does not exist'
-                        )
-                    )
-                    END
-            )"),
+        (String, RegClass) => Explicit: sql_impl_cast_per_context(
+            &[
+                (CastContext::Explicit, &REGCLASS_EXPLICIT),
+                (CastContext::Coerced, &REGCLASS_COERCED)
+            ]
+        ),
         (String, RegProc) => Explicit: sql_impl_cast("(
                 SELECT
                     CASE

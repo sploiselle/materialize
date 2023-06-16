@@ -1,0 +1,76 @@
+# Copyright Materialize, Inc. and contributors. All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file at the root of this repository.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# regclass
+
+statement OK
+create schema s
+
+statement ok
+CREATE TABLE t(i int);
+
+statement ok
+CREATE TABLE s.t(i int);
+
+statement ok
+CREATE MATERIALIZED VIEW m AS SELECT * FROM t;
+
+statement ok
+CREATE MATERIALIZED VIEW s.m AS SELECT * FROM s.t;
+
+# OIDs are not stable, so we just validate that the output is number-like
+
+query T
+SELECT 't'::regclass::oid::int = 0
+----
+false
+
+query T
+SELECT 's.t'::regclass::oid::int = 0
+----
+false
+
+query T
+SELECT 't'::regclass = 's.t'::regclass
+----
+false
+
+query T
+SELECT 'm'::regclass::oid::int = 0
+----
+false
+
+query T
+SELECT 's.m'::regclass::oid::int = 0
+----
+false
+
+query T
+SELECT 'm'::regclass = 's.m'::regclass
+----
+false
+
+query T
+SELECT 2::regclass
+----
+2
+
+query T
+SELECT '2'::regclass
+----
+2
+
+query error db error: ERROR: Evaluation error: relation "abs" does not exist
+SELECT 'abs'::regclass
+
+query error db error: ERROR: Evaluation error: relation "dne" does not exist
+SELECT 'dne'::regclass
+
+query error db error: ERROR: string is not a valid identifier: "2"
+SELECT '2'::text::regclass
