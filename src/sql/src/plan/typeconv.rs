@@ -90,8 +90,86 @@ impl<const N: usize> From<[UnaryFunc; N]> for CastTemplate {
     }
 }
 
+// Provides a template for creating REG* casts. Arguments in order are:
+// - 0: type catalog name this is casting to
+// - 1: the category of this reg for the error message
+// - 2: The "type" values from mz_objects permitted to match this value.
+// - 3: Whether or not to permit parsing integer values.
+const STRING_REG_CAST_TEMPLATE: &'static str = "
+mz_internal.mz_error_if_null(
+    (
+        SELECT
+            CASE
+        -- Handle null
+            WHEN $1 IS NULL THEN NULL
+        -- Handle OID-like input; this should only be available for coerced casts
+            WHEN {3} AND pg_catalog.substring($1, 1, 1) BETWEEN '0' AND '9' THEN
+                $1::pg_catalog.oid::pg_catalog.{0}
+            ELSE (
+        -- String case
+                SELECT
+                    CASE
+                -- Handle too many OIDs
+                    WHEN mz_catalog.list_length(oids) > 1 THEN
+                        mz_internal.mz_error_if_null(
+                            NULL::pg_catalog.{0},
+                            'more than one {1} named \"' || $1 || '\"'
+                        )
+                    ELSE
+                -- Resolve object name's OID if we know there is only one
+                        CAST(oids[1] AS pg_catalog.regclass)
+                    END
+                FROM (
+                    -- Determine how many OIDs share this name
+                    SELECT id AS name_id, mz_catalog.list_agg(oid) AS oids
+                    FROM mz_internal.mz_resolve_object_name($1)
+                    -- This future proofs us against allowing multiple names to be shared among
+                    -- different types, e.g. UDFs.
+                    WHERE type =ANY (LIST[{2}])
+                    GROUP BY name_id
+                )
+            )
+            END
+    ),
+    '{1} \"' || $1 || '\" does not exist'
+)";
+
+static REGCLASS_EXPLICIT: Lazy<String> = Lazy::new(|| {
+    SimpleCurlyFormat
+        .format(
+            STRING_REG_CAST_TEMPLATE,
+            &[
+                "regclass",
+                "relation",
+                "'view', 'index', 'table', 'source', 'materialized-view'",
+                "false",
+            ],
+        )
+        .unwrap()
+        .to_string()
+});
+
+static REGCLASS_COERCED: Lazy<String> = Lazy::new(|| {
+    SimpleCurlyFormat
+        .format(
+            STRING_REG_CAST_TEMPLATE,
+            &[
+                "regclass",
+                "relation",
+                "'view', 'index', 'table', 'source', 'materialized-view'",
+                "true",
+            ],
+        )
+        .unwrap()
+        .to_string()
+});
+
 /// Describes the context of a cast.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+///
+/// n.b. this type derived `Ord, PartialOrd` and the ordering of these values
+/// has semantics meaning; casts are only permitted when the caller's cast
+/// context is geq the ccx we store, which is the minimum required context.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum CastContext {
     /// Implicit casts are "no-brainer" casts that apply automatically in
     /// expressions. They are typically lossless, such as `ScalarType::Int32` to
@@ -105,6 +183,12 @@ pub enum CastContext {
     /// casting `ScalarType::Json` to `ScalarType::Int32`, and therefore they do
     /// not happen unless explicitly requested by the user with a cast operator.
     Explicit,
+    /// Coerced casts permit different behavior when a type is coerced from a
+    /// string literal vs. a value of type `pg_catalog::text`.
+    ///
+    /// The only call site that should pass this value in to this module is
+    /// string coercion.
+    Coerced,
 }
 
 /// The implementation of a cast.
@@ -683,11 +767,10 @@ fn get_cast(
     }
 
     let imp = VALID_CASTS.get(&(from.into(), to.into()))?;
-    let template = match (ccx, imp.context) {
-        (Explicit, Implicit) | (Explicit, Assignment) | (Explicit, Explicit) => Some(&imp.template),
-        (Assignment, Implicit) | (Assignment, Assignment) => Some(&imp.template),
-        (Implicit, Implicit) => Some(&imp.template),
-        _ => None,
+    let template = if ccx >= imp.context {
+        Some(&imp.template)
+    } else {
+        None
     };
     template.and_then(|template| (template.0)(ecx, ccx, from, to))
 }
@@ -843,7 +926,7 @@ pub fn plan_coerce<'a>(
             // (with either implicit or explicit semantics) via a separate call
             // to `plan_cast`.
             let coerce_to_base = &coerce_to.without_modifiers();
-            plan_cast(ecx, CastContext::Explicit, lit, coerce_to_base)?
+            plan_cast(ecx, CastContext::Coerced, lit, coerce_to_base)?
         }
 
         LiteralRecord(exprs) => {

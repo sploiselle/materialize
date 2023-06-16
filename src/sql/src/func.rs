@@ -3372,6 +3372,7 @@ pub static MZ_INTERNAL_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(
                         s.name,
                         o.name
                     ] AS name,
+                    -- TODO: this needs to be expanded to group by type for UDF support.
                     rank() OVER (ORDER BY pg_catalog.array_position($2, search_schema.name))
                 FROM
                     (
