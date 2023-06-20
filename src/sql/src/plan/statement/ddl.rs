@@ -3592,11 +3592,9 @@ pub fn plan_drop_objects(
             referenced_ids.push(id);
         }
     }
-    let drop_ids = scx.catalog.object_dependents(&referenced_ids);
 
     Ok(Plan::DropObjects(DropObjectsPlan {
         referenced_ids,
-        drop_ids,
         object_type,
     }))
 }
@@ -3997,22 +3995,6 @@ pub fn plan_drop_owned(
                 ));
             }
         }
-    }
-
-    let drop_ids = scx.catalog.object_dependents(&drop_ids);
-
-    let system_ids: Vec<_> = drop_ids.iter().filter(|id| id.is_system()).collect();
-    if !system_ids.is_empty() {
-        let mut owners = system_ids
-            .into_iter()
-            .filter_map(|object_id| scx.catalog.get_owner_id(object_id))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|role_id| scx.catalog.get_role(&role_id).name().quoted());
-        sql_bail!(
-            "cannot drop objects owned by role {} because they are required by the database system",
-            owners.join(", "),
-        );
     }
 
     Ok(Plan::DropOwned(DropOwnedPlan {

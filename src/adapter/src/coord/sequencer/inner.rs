@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::future::BoxFuture;
+use itertools::Itertools;
 use maplit::btreeset;
 use mz_cloud_resources::VpcEndpointConfig;
 use mz_compute_client::types::dataflows::{DataflowDesc, DataflowDescription, IndexDesc};
@@ -29,6 +30,7 @@ use mz_expr::{
 };
 use mz_ore::collections::CollectionExt;
 use mz_ore::result::ResultExt as OreResultExt;
+use mz_ore::str::StrExt;
 use mz_ore::task;
 use mz_ore::vec::VecExt;
 use mz_repr::adt::mz_acl_item::{MzAclItem, PrivilegeMap};
@@ -1095,13 +1097,20 @@ impl Coordinator {
     pub(super) async fn sequence_drop_objects(
         &mut self,
         session: &mut Session,
-        plan: DropObjectsPlan,
+        DropObjectsPlan {
+            referenced_ids,
+            object_type,
+        }: DropObjectsPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
+        let drop_ids = self
+            .catalog()
+            .object_dependents(&referenced_ids, session.conn_id());
+
         let DropOps {
             ops,
             dropped_active_db,
             dropped_active_cluster,
-        } = self.sequence_drop_common(session, plan.drop_ids)?;
+        } = self.sequence_drop_common(session, drop_ids)?;
 
         self.catalog_transact(Some(session), ops).await?;
 
@@ -1117,7 +1126,7 @@ impl Coordinator {
                 name: session.vars().cluster().to_string(),
             });
         }
-        Ok(ExecuteResponse::DroppedObject(plan.object_type))
+        Ok(ExecuteResponse::DroppedObject(object_type))
     }
 
     fn validate_dropped_role_ownership(
@@ -1269,13 +1278,39 @@ impl Coordinator {
     pub(super) async fn sequence_drop_owned(
         &mut self,
         session: &mut Session,
-        plan: DropOwnedPlan,
+        DropOwnedPlan {
+            role_ids,
+            drop_ids,
+            default_privilege_revokes,
+            privilege_revokes,
+        }: DropOwnedPlan,
     ) -> Result<ExecuteResponse, AdapterError> {
-        for role_id in &plan.role_ids {
+        let drop_ids = self
+            .catalog()
+            .object_dependents(&drop_ids, session.conn_id());
+
+        let system_ids: Vec<_> = drop_ids.iter().filter(|id| id.is_system()).collect();
+        if !system_ids.is_empty() {
+            let conn_id = session.conn_id();
+
+            let mut owners = system_ids
+                .into_iter()
+                .filter_map(|object_id| self.catalog().get_owner_id(object_id, conn_id))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|role_id| self.catalog().get_role(&role_id).name().quoted());
+
+            Err(AdapterError::Unstructured(anyhow!(
+                "cannot drop objects owned by role {} because they are required by the database system",
+                owners.join(", ")
+            )))?;
+        }
+
+        for role_id in &role_ids {
             self.catalog().ensure_not_reserved_role(role_id)?;
         }
 
-        let mut privilege_revokes = plan.privilege_revokes;
+        let mut privilege_revokes = privilege_revokes;
 
         // Make sure this stays in sync with the beginning of `rbac::check_plan`.
         let session_catalog = self.catalog().for_session(session);
@@ -1304,18 +1339,21 @@ impl Coordinator {
                 variant: UpdatePrivilegeVariant::Revoke,
             }
         });
-        let default_privilege_revoke_ops = plan.default_privilege_revokes.into_iter().map(
-            |(privilege_object, privilege_acl_item)| catalog::Op::UpdateDefaultPrivilege {
-                privilege_object,
-                privilege_acl_item,
-                variant: UpdatePrivilegeVariant::Revoke,
-            },
-        );
+        let default_privilege_revoke_ops =
+            default_privilege_revokes
+                .into_iter()
+                .map(|(privilege_object, privilege_acl_item)| {
+                    catalog::Op::UpdateDefaultPrivilege {
+                        privilege_object,
+                        privilege_acl_item,
+                        variant: UpdatePrivilegeVariant::Revoke,
+                    }
+                });
         let DropOps {
             ops: drop_ops,
             dropped_active_db,
             dropped_active_cluster,
-        } = self.sequence_drop_common(session, plan.drop_ids)?;
+        } = self.sequence_drop_common(session, drop_ids)?;
 
         let ops = privilege_revoke_ops
             .chain(default_privilege_revoke_ops)

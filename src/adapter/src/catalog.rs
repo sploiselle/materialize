@@ -1613,6 +1613,23 @@ impl CatalogState {
         tx.insert_storage_usage_event(details);
         Ok(())
     }
+
+    fn get_owner_id(&self, id: &ObjectId, conn_id: &ConnectionId) -> Option<RoleId> {
+        match id {
+            ObjectId::Cluster(id) => Some(self.get_cluster(*id).owner_id()),
+            ObjectId::ClusterReplica((cluster_id, replica_id)) => Some(
+                self.get_cluster_replica(*cluster_id, *replica_id)
+                    .owner_id(),
+            ),
+            ObjectId::Database(id) => Some(self.get_database(id).owner_id()),
+            ObjectId::Schema((database_spec, schema_spec)) => Some(
+                self.get_schema(database_spec, schema_spec, conn_id)
+                    .owner_id(),
+            ),
+            ObjectId::Item(id) => Some(self.get_entry(id).owner_id().clone()),
+            ObjectId::Role(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -7422,6 +7439,10 @@ impl Catalog {
             }
         }
     }
+
+    pub(crate) fn get_owner_id(&self, id: &ObjectId, conn_id: &ConnectionId) -> Option<RoleId> {
+        self.state.get_owner_id(id, conn_id)
+    }
 }
 
 pub fn is_reserved_name(name: &str) -> bool {
@@ -8104,19 +8125,7 @@ impl SessionCatalog for ConnCatalog<'_> {
     }
 
     fn get_owner_id(&self, id: &ObjectId) -> Option<RoleId> {
-        match id {
-            ObjectId::Cluster(id) => Some(self.get_cluster(*id).owner_id()),
-            ObjectId::ClusterReplica((cluster_id, replica_id)) => Some(
-                self.get_cluster_replica(*cluster_id, *replica_id)
-                    .owner_id(),
-            ),
-            ObjectId::Database(id) => Some(self.get_database(id).owner_id()),
-            ObjectId::Schema((database_spec, schema_spec)) => {
-                Some(self.get_schema(database_spec, schema_spec).owner_id())
-            }
-            ObjectId::Item(id) => Some(self.get_item(id).owner_id()),
-            ObjectId::Role(_) => None,
-        }
+        self.state.get_owner_id(id, self.conn_id())
     }
 
     fn get_privileges(&self, id: &ObjectId) -> Option<&PrivilegeMap> {
@@ -8129,11 +8138,6 @@ impl SessionCatalog for ConnCatalog<'_> {
             ObjectId::Item(id) => Some(self.get_item(id).privileges()),
             ObjectId::ClusterReplica(_) | ObjectId::Role(_) => None,
         }
-    }
-
-    fn object_dependents(&self, ids: &Vec<ObjectId>) -> Vec<ObjectId> {
-        let mut seen = BTreeSet::new();
-        self.state.object_dependents(ids, &self.conn_id, &mut seen)
     }
 
     fn item_dependents(&self, id: GlobalId) -> Vec<ObjectId> {

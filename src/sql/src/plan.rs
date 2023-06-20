@@ -619,8 +619,6 @@ pub struct CreateTypePlan {
 pub struct DropObjectsPlan {
     /// The IDs of only the objects directly referenced in the `DROP` statement.
     pub referenced_ids: Vec<ObjectId>,
-    /// All object IDs to drop. Includes `referenced_ids` and all descendants.
-    pub drop_ids: Vec<ObjectId>,
     /// The type of object that was dropped explicitly in the DROP statement. `ids` may contain
     /// objects of different types due to CASCADE.
     pub object_type: ObjectType,

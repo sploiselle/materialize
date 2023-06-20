@@ -864,7 +864,6 @@ fn generate_required_privileges(
         }
         Plan::DropObjects(DropObjectsPlan {
             referenced_ids,
-            drop_ids: _,
             object_type: _,
         }) => referenced_ids
             .iter()
