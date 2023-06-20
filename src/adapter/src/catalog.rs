@@ -7343,6 +7343,7 @@ impl Catalog {
                     }
                 }
             },
+            finalize_shards: self.system_config().storage_client_finalize_shards(),
         }
     }
 

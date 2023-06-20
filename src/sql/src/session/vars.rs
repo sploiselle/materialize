@@ -959,6 +959,15 @@ const KEEP_N_SOURCE_STATUS_HISTORY_ENTRIES: ServerVar<usize> = ServerVar {
     internal: true
 };
 
+/// Whether compute rendering should use Materialize's custom linear join implementation rather
+/// than the one from Differential Dataflow.
+const STORAGE_CLIENT_FINALIZE_SHARDS: ServerVar<bool> = ServerVar {
+    name: UncasedStr::new("storage_client_finalize_shards"),
+    value: &true,
+    description: "Whether to all the storage client to finalize shards (Materialize).",
+    internal: true,
+};
+
 // Macro to simplify creating feature flags, i.e. boolean flags that we use to toggle the
 // availability of features.
 //
@@ -2202,6 +2211,11 @@ impl SystemVars {
     /// Returns the `enable_mz_join_core` configuration parameter.
     pub fn enable_mz_join_core(&self) -> bool {
         *self.expect_value(&ENABLE_MZ_JOIN_CORE)
+    }
+
+    /// Returns the `pg_replication_tcp_user_timeout` configuration parameter.
+    pub fn storage_client_finalize_shards(&self) -> bool {
+        *self.expect_value(&STORAGE_CLIENT_FINALIZE_SHARDS)
     }
 }
 

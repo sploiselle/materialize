@@ -2295,7 +2295,9 @@ where
                     .await
                     .expect("stash operation must succeed");
 
-                self.finalize_shards().await;
+                if self.state.config.finalize_shards {
+                    self.finalize_shards().await;
+                }
             }
             Some(StorageResponse::StatisticsUpdates(source_stats, sink_stats)) => {
                 // Note we only hold the locks while moving some plain-old-data around here.
