@@ -3155,6 +3155,18 @@ pub static MZ_CATALOG_BUILTINS: Lazy<BTreeMap<&'static str, Func>> = Lazy::new(|
     use ParamType::*;
     use ScalarType::*;
     builtins! {
+        "hi_dan" => Scalar {
+            params!(Int64, String) => Operation::binary(move |_ecx, some_int, literal_string| {
+                match literal_string.into_literal_string() {
+                    None => {
+                        sql_bail!("this is not a literal string");
+                    },
+                    Some(x) if x != "foo" => sql_bail!("this is the wrong string"),
+                    Some(_) => {},
+                };
+                panic!("you need to implement some function call here using {:?}", some_int);
+            }) => Int64, 9;
+        },
         "csv_extract" => Table {
             params!(Int64, String) => Operation::binary(move |_ecx, ncols, input| {
                 let ncols = match ncols.into_literal_int64() {
