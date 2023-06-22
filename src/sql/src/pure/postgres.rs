@@ -149,6 +149,7 @@ pub(super) async fn validate_requested_subsources(
 pub(super) fn generate_text_columns(
     publication_catalog: &ErsatzCatalog<'_, PostgresTableDesc>,
     text_columns: &mut [UnresolvedItemName],
+    // TODO: why is this a parameter?
     option_name: &str,
 ) -> Result<BTreeMap<u32, BTreeSet<String>>, PlanError> {
     let mut text_cols_dict: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();

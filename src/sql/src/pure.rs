@@ -23,11 +23,11 @@ use mz_proto::RustType;
 use mz_repr::{strconv, GlobalId};
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{
-    AlterSourceAction, AlterSourceStatement, CreateSubsourceOption, CreateSubsourceOptionName,
-    CsrConnection, CsrSeedAvro, CsrSeedProtobuf, CsrSeedProtobufSchema, DbzMode, DeferredItemName,
-    Envelope, KafkaConfigOption, KafkaConfigOptionName, KafkaConnection, KafkaSourceConnection,
-    PgConfigOption, PgConfigOptionName, RawItemName, ReaderSchemaSelectionStrategy, Statement,
-    UnresolvedItemName,
+    AlterSourceAction, AlterSourceAddSubsourceOptionName, AlterSourceStatement,
+    CreateSubsourceOption, CreateSubsourceOptionName, CsrConnection, CsrSeedAvro, CsrSeedProtobuf,
+    CsrSeedProtobufSchema, DbzMode, DeferredItemName, Envelope, KafkaConfigOption,
+    KafkaConfigOptionName, KafkaConnection, KafkaSourceConnection, PgConfigOption,
+    PgConfigOptionName, RawItemName, ReaderSchemaSelectionStrategy, Statement, UnresolvedItemName,
 };
 use mz_storage_client::types::connections::{Connection, ConnectionContext};
 use mz_storage_client::types::sources::{
@@ -414,10 +414,14 @@ async fn purify_create_source(
                 .iter_mut()
                 .find(|option| option.name == PgConfigOptionName::TextColumns)
             {
-                let seq = text_columns
+                let mut seq: Vec<_> = text_columns
                     .into_iter()
                     .map(WithOptionValue::UnresolvedItemName)
                     .collect();
+
+                seq.sort();
+                seq.dedup();
+
                 text_cols_option.value = Some(WithOptionValue::Sequence(seq));
             }
 
@@ -667,11 +671,12 @@ async fn purify_alter_source(
     };
 
     // If there's no further work to do here, early return.
-    let (targeted_subsources, details) = match action {
+    let (targeted_subsources, details, options) = match action {
         AlterSourceAction::AddSubsources {
             subsources,
             details,
-        } => (subsources, details),
+            options,
+        } => (subsources, details, options),
         _ => return Ok((vec![], Statement::AlterSource(stmt))),
     };
 
@@ -679,6 +684,11 @@ async fn purify_alter_source(
         details.is_none(),
         "details cannot be set before purification"
     );
+
+    let crate::plan::statement::ddl::AlterSourceAddSubsourceOptionExtracted {
+        mut text_columns,
+        ..
+    } = options.clone().try_into()?;
 
     for CreateSourceSubsource {
         subsource,
@@ -743,19 +753,38 @@ async fn purify_alter_source(
     }
 
     postgres::validate_requested_subsources(&config, &validated_requested_subsources).await?;
-
-    // TODO: text columns
-
     let mut subsource_id_counter = 0;
     let get_transient_subsource_id = move || {
         subsource_id_counter += 1;
         subsource_id_counter
     };
 
+    let text_cols_dict = postgres::generate_text_columns(
+        &publication_catalog,
+        &mut text_columns,
+        &AlterSourceAddSubsourceOptionName::TextColumns.to_ast_string(),
+    )?;
+
+    // Normalize options to contain full qualified values.
+    if let Some(text_cols_option) = options
+        .iter_mut()
+        .find(|option| option.name == AlterSourceAddSubsourceOptionName::TextColumns)
+    {
+        let mut seq: Vec<_> = text_columns
+            .into_iter()
+            .map(WithOptionValue::UnresolvedItemName)
+            .collect();
+
+        seq.sort();
+        seq.dedup();
+
+        text_cols_option.value = Some(WithOptionValue::Sequence(seq));
+    }
+
     let (named_subsources, new_subsources) = postgres::generate_targeted_subsources(
         &scx,
         validated_requested_subsources,
-        BTreeMap::new(),
+        text_cols_dict,
         get_transient_subsource_id,
     )?;
 

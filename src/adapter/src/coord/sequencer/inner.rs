@@ -63,7 +63,7 @@ use mz_sql::session::vars::{
     ENABLE_RBAC_CHECKS, SCHEMA_ALIAS, TRANSACTION_ISOLATION_VAR_NAME,
 };
 use mz_sql_parser::ast::display::AstDisplay;
-use mz_sql_parser::ast::TransactionMode;
+use mz_sql_parser::ast::{AlterSourceAddSubsourceOptionName, TransactionMode, WithOptionValue};
 use mz_sql_parser::ast::{
     CreateSourceConnection, CreateSourceSubsource, DeferredItemName, PgConfigOption,
     PgConfigOptionName, ReferencedSubsources, Statement,
@@ -3785,6 +3785,7 @@ impl Coordinator {
             AlterSourceAction::AddSubsourceExports {
                 subsources,
                 details,
+                options,
             } => {
                 const ALTER_SOURCE: &'static str = "ALTER SOURCE...ADD SUBSOURCES";
 
@@ -3827,20 +3828,51 @@ impl Coordinator {
                     _ => return Err(purification_err()),
                 };
 
-                let options = match &mut create_source_stmt.connection {
+                let curr_options = match &mut create_source_stmt.connection {
                     CreateSourceConnection::Postgres { options, .. } => options,
                     _ => return Err(purification_err()),
                 };
 
                 // Remove any old detail references
-                options.retain(|PgConfigOption { name, .. }| name != &PgConfigOptionName::Details);
+                curr_options
+                    .retain(|PgConfigOption { name, .. }| name != &PgConfigOptionName::Details);
 
-                options.push(PgConfigOption {
+                curr_options.push(PgConfigOption {
                     name: PgConfigOptionName::Details,
                     value: details,
                 });
 
-                // TODO text columns
+                // Merge text columns
+                let curr_text_columns = curr_options
+                    .iter_mut()
+                    .find(|option| option.name == PgConfigOptionName::TextColumns);
+
+                let new_text_columns = options
+                    .into_iter()
+                    .find(|option| option.name == AlterSourceAddSubsourceOptionName::TextColumns);
+
+                match (curr_text_columns, new_text_columns) {
+                    (Some(curr), Some(new)) => {
+                        let curr = match curr.value {
+                            Some(WithOptionValue::Sequence(ref mut curr)) => curr,
+                            _ => unreachable!(),
+                        };
+                        let new = match new.value {
+                            Some(WithOptionValue::Sequence(new)) => new,
+                            _ => unreachable!(),
+                        };
+
+                        curr.extend(new);
+                        curr.sort();
+                        curr.dedup();
+                    }
+                    (None, Some(new)) => curr_options.push(PgConfigOption {
+                        name: PgConfigOptionName::TextColumns,
+                        value: new.value,
+                    }),
+                    // No change
+                    _ => {}
+                }
 
                 let mut catalog = self.catalog().for_system_session();
                 catalog.mark_id_unresolvable(cur_entry.id());
