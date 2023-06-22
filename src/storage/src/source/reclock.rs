@@ -1155,7 +1155,7 @@ mod tests {
 
         // Starting a new operator with an `as_of` is the same as having compacted
         let (_operator, follower) =
-            make_test_operator(remap_shard, Antichain::from_elem(1000.into())).await;
+            make_test_operator(remap_shard, Antichain::from_elem(1500.into())).await;
 
         // Reclocking offsets 3 and 4 should succeed
         let batch = vec![
@@ -1176,7 +1176,7 @@ mod tests {
             .reclock(batch)
             .map(|(m, ts)| (m, ts.unwrap()))
             .collect_vec();
-        assert_eq!(reclocked_msgs, &[(2, 1000.into())]);
+        assert_eq!(reclocked_msgs, &[(2, 1500.into())]);
     }
 
     #[mz_ore::test(tokio::test)]
