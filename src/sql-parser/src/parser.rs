@@ -3932,12 +3932,28 @@ impl<'a> Parser<'a> {
                     let subsources =
                         self.parse_comma_separated(Parser::parse_subsource_references)?;
 
+                    let options = if self.parse_keyword(WITH) {
+                        self.expect_token(&Token::LParen)?;
+                        let o = if matches!(self.peek_token(), Some(Token::RParen)) {
+                            vec![]
+                        } else {
+                            self.parse_comma_separated(
+                                Parser::parse_alter_source_add_subsource_option,
+                            )?
+                        };
+                        self.expect_token(&Token::RParen)?;
+                        o
+                    } else {
+                        vec![]
+                    };
+
                     Statement::AlterSource(AlterSourceStatement {
                         source_name,
                         if_exists,
                         action: AlterSourceAction::AddSubsources {
                             subsources,
                             details: None,
+                            options,
                         },
                     })
                 }
@@ -4007,6 +4023,35 @@ impl<'a> Parser<'a> {
                 _ => unreachable!(),
             },
         )
+    }
+
+    fn parse_alter_source_add_subsource_option(
+        &mut self,
+    ) -> Result<AlterSourceAddSubsourceOption<Raw>, ParserError> {
+        match self.expect_one_of_keywords(&[TEXT])? {
+            TEXT => {
+                self.expect_keyword(COLUMNS)?;
+
+                let _ = self.consume_token(&Token::Eq);
+
+                let value = self
+                    .parse_option_sequence(Parser::parse_item_name)?
+                    .map(|inner| {
+                        WithOptionValue::Sequence(
+                            inner
+                                .into_iter()
+                                .map(WithOptionValue::UnresolvedItemName)
+                                .collect_vec(),
+                        )
+                    });
+
+                Ok(AlterSourceAddSubsourceOption {
+                    name: AlterSourceAddSubsourceOptionName::TextColumns,
+                    value,
+                })
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn parse_alter_index(&mut self) -> Result<Statement<Raw>, ParserError> {
