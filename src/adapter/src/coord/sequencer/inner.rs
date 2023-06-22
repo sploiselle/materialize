@@ -3633,7 +3633,7 @@ impl Coordinator {
                     .as_mut()
                     .ok_or(purification_err())?
                 {
-                    ReferencedSubsources::SubsetTables(c) => c,
+                    ReferencedSubsources::SubsetTables(ref mut s) => s,
                     _ => return Err(purification_err()),
                 };
 
