@@ -720,9 +720,15 @@ impl<T: Timestamp + Lattice + Codec64> ResumptionFrontierCalculator<T> {
     /// Determine the resumption frontier of an ingestion comprised of the shards described by
     /// `upper_states`.
     pub async fn calculate_resumption_frontier(&mut self) -> Antichain<T> {
+        let mut all_empty = self.initial_frontier.is_empty();
         // Refresh all write handles' uppers.
         for UpperState { handle, last_upper } in self.upper_states.values_mut() {
             *last_upper = handle.fetch_recent_upper().await.clone();
+            all_empty = all_empty && last_upper.is_empty();
+        }
+
+        if all_empty {
+            return Antichain::new();
         }
 
         let mut resume_upper = self.initial_frontier.clone();
@@ -731,22 +737,24 @@ impl<T: Timestamp + Lattice + Codec64> ResumptionFrontierCalculator<T> {
         for t in self
             .upper_states
             .values()
-            .map(|UpperState { last_upper, .. }| last_upper.elements())
+            .filter_map(|UpperState { last_upper, .. }| {
+                if last_upper.elements() == [T::minimum()] {
+                    None
+                } else {
+                    Some(last_upper.elements())
+                }
+            })
             .flatten()
         {
             resume_upper.insert(t.clone());
         }
 
-        // Ensure no upper exceeds the resume upper; however, uppers are permitted to be below it;
-        // this is currently the same as setting each upper to the resume upper, but will, in the
-        // future, let us add collections whose uppers are beneath the resume upper.
-        for UpperState { last_upper, .. } in self.upper_states.values_mut() {
-            if PartialOrder::less_than(&resume_upper, last_upper) {
-                *last_upper = resume_upper.clone();
-            }
+        // All elements were minimum, so this was actually the minimum timestamp
+        if resume_upper.is_empty() {
+            Antichain::from_elem(T::minimum())
+        } else {
+            resume_upper
         }
-
-        resume_upper
     }
 
     /// Get the most recent uppers of the shards used to generate the last resumption frontier.
