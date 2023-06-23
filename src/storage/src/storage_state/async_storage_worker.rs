@@ -144,10 +144,14 @@ where
         upper,
     };
 
+    let beyond_since = as_of.clone().into_option();
+
     // This cannot be instantiated earlier because `AsyncStorageWorker` then needs to be `+ Send +
     // Sync`.
     let mut timestamper = ReclockFollower::new(as_of);
     timestamper.push_trace_batch(reclock_batch);
+
+    // let since = timestamper.source_upper_at_frontier()
 
     source_resume_uppers
         .into_iter()

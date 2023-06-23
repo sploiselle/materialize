@@ -52,11 +52,12 @@ use serde::{Deserialize, Serialize};
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::Capability;
 use timely::dataflow::{Scope, Stream};
-use timely::progress::Antichain;
+use timely::progress::{Antichain, Timestamp};
+use timely::PartialOrder;
 use tokio_postgres::replication::LogicalReplicationStream;
 use tokio_postgres::types::PgLsn;
 use tokio_postgres::Client;
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use mz_expr::MirScalarExpr;
 use mz_ore::cast::CastFrom;
@@ -108,7 +109,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     config: RawSourceCreationConfig,
     connection: PostgresSourceConnection,
     context: ConnectionContext,
-    subsource_resume_uppers: BTreeMap<GlobalId, Antichain<MzOffset>>,
+    mut subsource_resume_uppers: BTreeMap<GlobalId, Antichain<MzOffset>>,
     table_info: BTreeMap<u32, (usize, PostgresTableDesc, Vec<MirScalarExpr>)>,
     rewind_stream: &Stream<G, RewindRequest>,
     committed_uppers: impl futures::Stream<Item = Antichain<MzOffset>> + 'static,
@@ -141,24 +142,40 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 return Ok(());
             }
 
+            let connection_config = connection
+                .connection
+                .config(&*context.secrets_reader)
+                .await?
+                .replication_timeouts(config.params.pg_replication_timeouts.clone());
+            let slot = &connection.publication_details.slot;
+
+            // Set up replication slot
+            let replication_client = connection_config.connect_replication().await?;
+            super::ensure_replication_slot(&replication_client, slot).await?;
+
+            // Determine our slot's LSN
+            let client = connection_config.connect("replication metadata").await?;
+            let slot_lsn = super::fetch_slot_resume_lsn(&client, slot).await?;
+
+            let filler = [slot_lsn + 1];
+
             let resume_upper = Antichain::from_iter(
                 subsource_resume_uppers
                     .values()
-                    .flat_map(|f| f.elements())
+                    .flat_map(|f| if f.elements() == [MzOffset::minimum()] {
+                        filler.iter()
+                    } else {
+                        f.elements().iter()
+                    })
                     .cloned(),
             );
 
             let Some(resume_lsn) = resume_upper.into_option() else {
                 return Ok(());
             };
+
             data_cap.downgrade(&resume_lsn);
             upper_cap.downgrade(&resume_lsn);
-
-            let connection_config = connection
-                .connection
-                .config(&*context.secrets_reader)
-                .await?
-                .replication_timeouts(config.params.pg_replication_timeouts.clone());
 
             let mut rewinds = BTreeMap::new();
             while let Some(event) = rewind_input.next_mut().await {
@@ -178,7 +195,6 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             // This loop alternates  between streaming the replication slot and using normal SQL
             // queries with pg admin functions to fast-foward our cursor in the event of WAL lag.
-            let client = connection_config.connect("replication metadata").await?;
             loop {
                 if let Err(err) = ensure_publication_exists(&client, &connection.publication).await? {
                     // If the publication gets deleted there is nothing else to do. These errors
@@ -190,15 +206,17 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                     return Ok(());
                 }
 
+
+                tracing::info!("data cap advance_upper {data_cap:?}");
+
                 // We will peek the slot first to eagerly advance the frontier in case the stream
                 // is currently empty. This avoids needlesly holding back the capability and allows
                 // the rest of the ingestion pipeline to proceed immediately.
-                let slot = &connection.publication_details.slot;
                 advance_upper(&client, slot, &connection.publication, data_cap).await?;
                 upper_cap.downgrade(data_cap.time());
                 rewinds.retain(|_, (_, req)| data_cap.time() <= &req.snapshot_lsn);
-                trace!(%id, "timely-{worker_id} downgraded capability to {}", data_cap.time());
-                trace!(%id, "timely-{worker_id} pending rewinds {rewinds:?}");
+                info!(%id, "timely-{worker_id} downgraded capability to {}", data_cap.time());
+                info!(%id, "timely-{worker_id} pending rewinds {rewinds:?}");
 
                 let mut stream = pin!(raw_stream(
                     &config,
@@ -230,7 +248,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                                     &mut errored
                                 ));
 
-                                trace!(%id, "timely-{worker_id} extracting transaction at {tx_lsn}");
+                                info!(%id, "timely-{worker_id} extracting transaction at {tx_lsn}");
                                 while let Some((oid, event, diff)) = tx.try_next().await? {
                                     if !table_info.contains_key(&oid) {
                                         continue;
@@ -312,6 +330,8 @@ fn raw_stream<'a>(
     async_stream::try_stream!({
         let mut uppers = pin!(uppers);
         let mut last_committed_upper = resume_lsn;
+
+        tracing::info!("init resume_lsn {last_committed_upper:?}");
 
         let replication_client = connection_config.connect_replication().await?;
         super::ensure_replication_slot(&replication_client, slot).await?;
@@ -495,6 +515,8 @@ async fn advance_upper(
     publication: &str,
     cap: &mut Capability<MzOffset>,
 ) -> Result<(), TransientError> {
+    tracing::info!("advance_upper cap {cap:?}");
+
     // Figure out the last written LSN and then add one to convert it into an upper.
     let row = client.query_one("SELECT pg_current_wal_lsn()", &[]).await?;
     let last_write: PgLsn = row.get("pg_current_wal_lsn");

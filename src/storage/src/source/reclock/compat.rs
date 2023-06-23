@@ -63,7 +63,7 @@ where
     pub async fn new(
         persist_clients: Arc<PersistClientCache>,
         metadata: CollectionMetadata,
-        as_of: Antichain<IntoTime>,
+        mut as_of: Antichain<IntoTime>,
         shared_write_frontier: Rc<RefCell<Antichain<IntoTime>>>,
         // additional information to improve logging
         id: GlobalId,
@@ -126,6 +126,17 @@ where
             as_of.elements() == [IntoTime::minimum()] || PartialOrder::less_than(&as_of, upper),
             "invalid as_of: upper({upper:?}) <= as_of({as_of:?})",
         );
+
+        if as_of.elements() == [IntoTime::minimum()] && PartialOrder::less_equal(&as_of, since) {
+            tracing::info!(
+                ?since,
+                ?as_of,
+                ?upper,
+                "{operator}({id}) {worker_id}/{worker_count} new subsource added, fixing up as of to match since"
+            );
+
+            as_of = since.clone();
+        }
 
         tracing::info!(
             ?since,

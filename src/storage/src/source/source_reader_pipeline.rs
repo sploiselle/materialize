@@ -185,6 +185,8 @@ pub fn create_raw_source<'g, G: Scope<Timestamp = ()>, C, R>(
 where
     C: SourceConnection + SourceRender + Clone + 'static,
     R: CreateResumptionFrontierCalc<mz_repr::Timestamp> + 'static,
+    <C as SourceRender>::Key: std::fmt::Debug,
+    <C as SourceRender>::Value: std::fmt::Debug,
 {
     let worker_id = config.worker_id;
     let id = config.id;
@@ -279,7 +281,7 @@ where
 
     let resume_uppers = resume_uppers.inspect(move |upper| {
         let upper = upper.pretty();
-        trace!(%upper, "timely-{worker_id} source({source_id}) received resume upper");
+        info!(%upper, "timely-{worker_id} source({source_id}) received resume upper");
     });
 
     let (data, progress, health, token) =
@@ -830,8 +832,8 @@ fn reclock_operator<G, K, V, FromTime, D>(
 )>
 where
     G: Scope<Timestamp = mz_repr::Timestamp>,
-    K: timely::Data + MaybeLength,
-    V: timely::Data + MaybeLength,
+    K: timely::Data + MaybeLength + std::fmt::Debug,
+    V: timely::Data + MaybeLength + std::fmt::Debug,
     FromTime: SourceTimestamp,
     D: Semigroup + Into<Diff>,
 {
@@ -974,6 +976,7 @@ where
 
                     let mut total_processed = 0;
                     for ((message, from_ts, diff), into_ts) in timestamper.reclock(msgs) {
+                        tracing::info!("message {message:?},from_ts {from_ts:?},diff {diff:?},into_ts {into_ts:?}");
                         let into_ts = into_ts.expect("reclock for update not beyond upper failed");
                         handle_message(
                             message,

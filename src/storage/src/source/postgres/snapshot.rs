@@ -145,7 +145,7 @@ use timely::dataflow::{Scope, Stream};
 use timely::progress::{Antichain, Timestamp};
 use tokio_postgres::types::PgLsn;
 use tokio_postgres::Client;
-use tracing::trace;
+use tracing::{info, trace};
 
 use mz_expr::MirScalarExpr;
 use mz_ore::result::ResultExt;
@@ -197,6 +197,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
     let is_snapshot_leader = config.responsible_for("snapshot_leader");
 
+    info!("subsource_resume_uppers {subsource_resume_uppers:#?}");
+
     // A global view of all exports that need to be snapshot by all workers. Note that this affects
     // `reader_snapshot_table_info` but must be kept separate from it because each worker needs to
     // understand if any worker is snapshotting any subsource.
@@ -233,7 +235,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             let [data_cap, rewind_cap, snapshot_cap]: &mut [_; 3] = caps.try_into().unwrap();
             let data_cap = data_cap.as_mut().unwrap();
-            trace!(
+            info!(
                 %id,
                 "timely-{worker_id} initializing table reader with {} and {} tables to snapshot",
                 config.resume_upper.pretty(),
@@ -259,7 +261,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 super::ensure_replication_slot(&client, &connection.publication_details.slot).await?;
 
                 let snapshot_info = export_snapshot(&client).await?;
-                trace!(%id, "timely-{worker_id} exporting snapshot info {snapshot_info:?}");
+                info!(%id, "timely-{worker_id} exporting snapshot info {snapshot_info:?}");
                 let cap = snapshot_cap.as_ref().unwrap();
                 snapshot_handle.give(cap, snapshot_info).await;
             }
@@ -273,13 +275,13 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             };
             // Snapshot leader is already in identified transaction but all other workers need to enter it.
             if !is_snapshot_leader {
-                trace!(%id, "timely-{worker_id} using snapshot id {snapshot:?}");
+                info!(%id, "timely-{worker_id} using snapshot id {snapshot:?}");
                 use_snapshot(&client, &snapshot).await?;
             }
 
             // We have established a snapshot LSN so we can broadcast the rewind requests
             for &oid in reader_snapshot_table_info.keys() {
-                trace!(%id, "timely-{worker_id} producing rewind request for {oid}");
+                info!(%id, "timely-{worker_id} producing rewind request for {oid}");
                 let req = RewindRequest { oid, snapshot_lsn };
                 rewinds_handle.give(rewind_cap.as_ref().unwrap(), req).await;
             }
@@ -297,12 +299,12 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let desc = match verify_schema(oid, expected_desc, &upstream_info) {
                     Ok(()) => expected_desc,
                     Err(err) => {
-                        raw_handle.give(data_cap, ((oid, Err(err)), MzOffset::minimum(), 1)).await;
+                        raw_handle.give(data_cap, ((oid, Err(err)), MzOffset {offset:1}, 1)).await;
                         continue;
                     }
                 };
 
-                trace!(%id, "timely-{worker_id} snapshotting table {:?}({oid}) @ {snapshot_lsn}", desc.name);
+                info!(%id, "timely-{worker_id} snapshotting table {:?}({oid}) @ {snapshot_lsn}", desc.name);
                 // To handle quoted/keyword names, we can use `Ident`'s AST printing, which
                 // emulate's PG's rules for name formatting.
                 let query = format!(
@@ -313,7 +315,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let mut stream = pin!(client.copy_out_simple(&query).await?);
 
                 while let Some(bytes) = stream.try_next().await? {
-                    raw_handle.give(data_cap, ((oid, Ok(bytes)), MzOffset::minimum(), 1)).await;
+                    raw_handle.give(data_cap, ((oid, Ok(bytes)),MzOffset {offset:2}, 1)).await;
                 }
             }
             // Failure scenario after we have produced the snapshot, but before a successful COMMIT
@@ -322,13 +324,13 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             // The exporting worker should wait for all the other workers to commit before dropping
             // its client since this is what holds the exported transaction alive.
             if is_snapshot_leader {
-                trace!(%id, "timely-{worker_id} waiting for all workers to finish");
+                info!(%id, "timely-{worker_id} waiting for all workers to finish");
                 *snapshot_cap = None;
                 while snapshot_input.next().await.is_some() {}
-                trace!(%id, "timely-{worker_id} (leader) comitting COPY transaction");
+                info!(%id, "timely-{worker_id} (leader) comitting COPY transaction");
                 client.simple_query("COMMIT").await?;
             } else {
-                trace!(%id, "timely-{worker_id} comitting COPY transaction");
+                info!(%id, "timely-{worker_id} comitting COPY transaction");
                 client.simple_query("COMMIT").await?;
                 *snapshot_cap = None;
             }

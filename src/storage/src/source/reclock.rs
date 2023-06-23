@@ -119,7 +119,7 @@ where
     ///
     /// This method is most efficient when the to be reclocked iterator presents data in contiguous
     /// runs with the same `FromTime`.
-    pub fn reclock<'a, M: 'a>(
+    pub fn reclock<'a, M: 'a + std::fmt::Debug>(
         &'a self,
         batch: impl IntoIterator<Item = (M, FromTime)> + 'a,
     ) -> impl Iterator<Item = (M, Result<IntoTime, ReclockError<FromTime>>)> + 'a
