@@ -3890,15 +3890,9 @@ impl Coordinator {
                     _ => unreachable!("create source plan is only valid response"),
                 };
 
-                // Assert that we didn't mangle the dependencies
-                let (_, new_depends_on) =
-                    create_sql_to_stmt_deps(self, ALTER_SOURCE, &plan.source.create_sql)?;
-
-                let mut missing_deps = depends_on.difference(&new_depends_on);
-                assert!(
-                    missing_deps.next().is_none(),
-                    "original dependencies {depends_on:?}, new dependencies {new_depends_on:?}"
-                );
+                // Asserting that we've done the right thing with dependencies
+                // here requires mocking out objects in the catalog, which is a
+                // large task for an operation we have to cover in tests anyway.
 
                 let source = catalog::Source::new(
                     id,

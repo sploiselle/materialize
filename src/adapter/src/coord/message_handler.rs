@@ -448,6 +448,7 @@ impl Coordinator {
                 )
                 .await;
             }
+            Ok(plan @ Plan::AlterNoop(..)) => self.sequence_plan(ctx, plan, vec![]).await,
             Ok(p) => {
                 unreachable!("{:?} is not purified", p)
             }
