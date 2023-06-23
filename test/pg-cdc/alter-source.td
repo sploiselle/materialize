@@ -206,3 +206,66 @@ contains:SOURCE "mz_source" must retain at least one non-progress subsource
 # Show that all table definitions have been updated
 > SELECT regexp_match(create_sql, 'FOR TABLES \((.+?)\) EXPOSE') FROM (SHOW CREATE SOURCE mz_source);
 "{\"postgres\".\"public\".\"table_g\" AS \"materialize\".\"public\".\"table_g\"}"
+
+#
+# Add subsources
+
+! ALTER SOURCE mz_source ADD SUBSOURCE (table_g);
+contains:cannot create multiple subsources in the same source that refer to upstream table postgres.public.table_g
+
+> ALTER SOURCE mz_source ADD SUBSOURCE (table_a, table_b AS tb);
+
+> SELECT * FROM table_a;
+1 one
+2 two
+
+! ALTER SOURCE mz_source ADD SUBSOURCE (table_a);
+contains:cannot create multiple subsources in the same source that refer to upstream table postgres.public.table_a
+
+> SELECT * FROM tb;
+1 one
+2 two
+3 three
+
+!SELECT * FROM table_b;
+contains:unknown catalog item
+
+# We can add tables that didn't exist at the time of publication
+$ postgres-execute connection=postgres://postgres:postgres@postgres
+CREATE TABLE table_h (pk INTEGER PRIMARY KEY, f2 TEXT);
+INSERT INTO table_h VALUES (1, 'one');
+ALTER TABLE table_h REPLICA IDENTITY FULL;
+INSERT INTO table_h VALUES (2, 'two');
+
+> ALTER SOURCE mz_source ADD SUBSOURCE (table_h);
+
+> SELECT * FROM table_h;
+1 one
+2 two
+
+> SHOW SUBSOURCES ON mz_source
+mz_source_progress progress
+table_a            subsource
+table_g            subsource
+table_h            subsource
+tb                 subsource
+
+#
+# Complex subsource operations
+
+# If your schema change breaks the subsource, you can fix it.
+$ postgres-execute connection=postgres://postgres:postgres@postgres
+ALTER TABLE table_a DROP COLUMN f2;
+INSERT INTO table_a VALUES (3);
+
+! SELECT * FROM table_a;
+contains:incompatible schema change
+
+> ALTER SOURCE mz_source DROP SUBSOURCE table_a;
+
+> ALTER SOURCE mz_source ADD SUBSOURCE (table_a);
+
+> SELECT * FROM table_a;
+1
+2
+4
