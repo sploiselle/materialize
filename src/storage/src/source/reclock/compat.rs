@@ -115,7 +115,7 @@ where
         // shard has advanced to far.
         fail_point!("invalid_remap_as_of");
         assert!(
-            PartialOrder::less_equal(since, &as_of),
+            as_of.elements() == [IntoTime::minimum()] || PartialOrder::less_equal(since, &as_of),
             "invalid as_of: as_of({as_of:?}) < since({since:?}), \
             source {id}, \
             remap_shard: {:?}",
