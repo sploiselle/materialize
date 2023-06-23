@@ -55,7 +55,7 @@ pub(super) fn derive_output_to_name_map_from_publication_tables(
     let mut name_by_output_idx = BTreeMap::new();
     for (i, table) in publication_tables.iter().enumerate() {
         name_by_output_idx.insert(
-            i + 1,
+            i,
             UnresolvedItemName(vec![
                 database.clone().into(),
                 table.namespace.clone().into(),
@@ -80,7 +80,7 @@ pub(super) fn derive_name_to_output_map_from_publication_tables(
                 table.namespace.clone().into(),
                 table.name.clone().into(),
             ]),
-            i + 1,
+            i,
         );
     }
 

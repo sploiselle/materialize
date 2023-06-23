@@ -702,9 +702,11 @@ pub async fn purify_alter_source(
     for idx in pg_source_connection.table_casts.keys() {
         current_subsources.insert(
             current_output_to_name_map
-                .remove(idx)
+                // Table casts domain
+                .remove(&(*idx - 1))
                 .expect("known to exist"),
-            *idx,
+            // Table casts domain
+            *idx - 1,
         );
     }
 
