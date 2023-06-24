@@ -144,7 +144,7 @@ where
         upper,
     };
 
-    let beyond_since = as_of.clone().into_option();
+    // let beyond_since = as_of.clone().into_option();
 
     // This cannot be instantiated earlier because `AsyncStorageWorker` then needs to be `+ Send +
     // Sync`.

@@ -287,6 +287,7 @@ where
         &self,
         source_frontier: AntichainRef<'_, FromTime>,
     ) -> Result<Antichain<IntoTime>, ReclockError<FromTime>> {
+        tracing::info!("reclock frontier {:?}", source_frontier);
         let mut dest_frontier = self.inner.borrow().upper.clone();
 
         for src_ts in source_frontier.iter() {
@@ -310,6 +311,8 @@ where
         frontier: AntichainRef<'a, IntoTime>,
     ) -> Result<Antichain<FromTime>, ReclockError<AntichainRef<'a, IntoTime>>> {
         let inner = self.inner.borrow();
+        tracing::info!("source_upper_at_frontier frontier {:?}", frontier);
+        tracing::info!("source_upper_at_frontier {:#?}", inner);
         if *frontier == [IntoTime::minimum()] {
             return Ok(Antichain::from_elem(FromTime::minimum()));
         }

@@ -135,7 +135,7 @@ where
                 "{operator}({id}) {worker_id}/{worker_count} new subsource added, fixing up as of to match since"
             );
 
-            as_of = since.clone();
+            // as_of = since.clone();
         }
 
         tracing::info!(

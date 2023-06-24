@@ -268,4 +268,4 @@ contains:incompatible schema change
 > SELECT * FROM table_a;
 1
 2
-4
+3

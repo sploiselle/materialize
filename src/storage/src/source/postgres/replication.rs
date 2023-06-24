@@ -162,17 +162,19 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             let resume_upper = Antichain::from_iter(
                 subsource_resume_uppers
                     .values()
-                    .flat_map(|f| if f.elements() == [MzOffset::minimum()] {
-                        filler.iter()
-                    } else {
-                        f.elements().iter()
+                    .flat_map(|f| {
+                        if f.elements() == [MzOffset::minimum()] {
+                            [].iter()
+                        } else {
+                            f.elements().iter()
+                        }
                     })
                     .cloned(),
             );
 
-            let Some(resume_lsn) = resume_upper.into_option() else {
-                return Ok(());
-            };
+            let resume_lsn = resume_upper.into_option().unwrap_or(MzOffset::minimum());
+
+            info!("replication resume_lsn {:?}", resume_lsn);
 
             data_cap.downgrade(&resume_lsn);
             upper_cap.downgrade(&resume_lsn);
@@ -186,6 +188,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                             resume_lsn <= req.snapshot_lsn,
                             "slot compacted past snapshot point. snapshot_lsn={} resume_lsn={resume_lsn}", req.snapshot_lsn
                         );
+                        info!("rewinder requested for {} with cap {:?}", req.oid, cap);
                         rewinds.insert(req.oid, (cap.clone(), req));
                     }
                 }
@@ -214,7 +217,11 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 // the rest of the ingestion pipeline to proceed immediately.
                 advance_upper(&client, slot, &connection.publication, data_cap).await?;
                 upper_cap.downgrade(data_cap.time());
-                rewinds.retain(|_, (_, req)| data_cap.time() <= &req.snapshot_lsn);
+                rewinds.retain(|_, (cap, req)| {
+                    info!("considering whether or not to keep {:?} w/ cap {:?} @ data_cap {:?}", req, cap, data_cap.time());
+
+                    data_cap.time() <= &req.snapshot_lsn
+                });
                 info!(%id, "timely-{worker_id} downgraded capability to {}", data_cap.time());
                 info!(%id, "timely-{worker_id} pending rewinds {rewinds:?}");
 
@@ -255,8 +262,9 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                                     }
                                     let data = (oid, event);
                                     if let Some((rewind_cap, req)) = rewinds.get(&oid) {
+                                        info!("rewind cap {:?}, req {:?}, tx_lsn {:?}", rewind_cap, req, tx_lsn);
                                         if tx_lsn <= req.snapshot_lsn {
-                                            let update = (data.clone(), MzOffset::from(0), -diff);
+                                            let update = (data.clone(), resume_lsn, -diff);
                                             data_output.give(rewind_cap, update).await;
                                         }
                                     }

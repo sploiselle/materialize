@@ -199,6 +199,23 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
     info!("subsource_resume_uppers {subsource_resume_uppers:#?}");
 
+    let resume_upper = Antichain::from_iter(
+        subsource_resume_uppers
+            .values()
+            .flat_map(|f| {
+                if f.elements() == [MzOffset::minimum()] {
+                    [].iter()
+                } else {
+                    f.elements().iter()
+                }
+            })
+            .cloned(),
+    );
+
+    let resume_lsn = resume_upper.into_option().unwrap_or(MzOffset::minimum());
+
+    info!("snapshot resume_lsn {:?}", resume_lsn);
+
     // A global view of all exports that need to be snapshot by all workers. Note that this affects
     // `reader_snapshot_table_info` but must be kept separate from it because each worker needs to
     // understand if any worker is snapshotting any subsource.
@@ -235,6 +252,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             let [data_cap, rewind_cap, snapshot_cap]: &mut [_; 3] = caps.try_into().unwrap();
             let data_cap = data_cap.as_mut().unwrap();
+            rewind_cap.as_mut().map(|cap|cap.downgrade(&resume_lsn));
+
             info!(
                 %id,
                 "timely-{worker_id} initializing table reader with {} and {} tables to snapshot",
@@ -281,7 +300,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             // We have established a snapshot LSN so we can broadcast the rewind requests
             for &oid in reader_snapshot_table_info.keys() {
-                info!(%id, "timely-{worker_id} producing rewind request for {oid}");
+                info!(%id, "timely-{worker_id} producing rewind request for {oid} @ {:?}", rewind_cap);
                 let req = RewindRequest { oid, snapshot_lsn };
                 rewinds_handle.give(rewind_cap.as_ref().unwrap(), req).await;
             }
@@ -299,7 +318,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let desc = match verify_schema(oid, expected_desc, &upstream_info) {
                     Ok(()) => expected_desc,
                     Err(err) => {
-                        raw_handle.give(data_cap, ((oid, Err(err)), MzOffset {offset:1}, 1)).await;
+                        raw_handle.give(data_cap, ((oid, Err(err)), resume_lsn, 1)).await;
                         continue;
                     }
                 };
@@ -315,7 +334,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let mut stream = pin!(client.copy_out_simple(&query).await?);
 
                 while let Some(bytes) = stream.try_next().await? {
-                    raw_handle.give(data_cap, ((oid, Ok(bytes)),MzOffset {offset:2}, 1)).await;
+                    raw_handle.give(data_cap, ((oid, Ok(bytes)), resume_lsn, 1)).await;
                 }
             }
             // Failure scenario after we have produced the snapshot, but before a successful COMMIT
