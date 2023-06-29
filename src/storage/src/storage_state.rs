@@ -734,7 +734,7 @@ impl<'w, A: Allocate> Worker<'w, A> {
                 // An empty resume upper means that we can never write down any
                 // more data for this ingestion. We therefore don't render a
                 // dataflow for it.
-                let is_closed = as_of.is_empty();
+                let is_closed = resume_uppers[&ingestion_id].is_empty();
 
                 for (export_id, export) in ingestion_description.source_exports.iter() {
                     // This is a separate line cause rustfmt :(
