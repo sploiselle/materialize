@@ -141,11 +141,20 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 return Ok(());
             }
 
+            let connection_config = connection
+                .connection
+                .config(&*context.secrets_reader)
+                .await?
+                .replication_timeouts(config.params.pg_replication_timeouts.clone());
+            let client = connection_config.connect("replication metadata").await?;
+            let slot = &connection.publication_details.slot;
+            let slot_lsn = super::fetch_slot_resume_lsn(&client, slot).await?;
+
             let resume_upper = Antichain::from_iter(
                 subsource_resume_uppers
                     .values()
                     .flat_map(|f| f.elements())
-                    .cloned(),
+                    .map(|t| std::cmp::max(*t, slot_lsn))
             );
 
             let Some(resume_lsn) = resume_upper.into_option() else {
@@ -153,12 +162,6 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             };
             data_cap.downgrade(&resume_lsn);
             upper_cap.downgrade(&resume_lsn);
-
-            let connection_config = connection
-                .connection
-                .config(&*context.secrets_reader)
-                .await?
-                .replication_timeouts(config.params.pg_replication_timeouts.clone());
 
             let mut rewinds = BTreeMap::new();
             while let Some(event) = rewind_input.next_mut().await {
@@ -178,7 +181,6 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             // This loop alternates  between streaming the replication slot and using normal SQL
             // queries with pg admin functions to fast-foward our cursor in the event of WAL lag.
-            let client = connection_config.connect("replication metadata").await?;
             loop {
                 if let Err(err) = ensure_publication_exists(&client, &connection.publication).await? {
                     // If the publication gets deleted there is nothing else to do. These errors
@@ -193,7 +195,6 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 // We will peek the slot first to eagerly advance the frontier in case the stream
                 // is currently empty. This avoids needlesly holding back the capability and allows
                 // the rest of the ingestion pipeline to proceed immediately.
-                let slot = &connection.publication_details.slot;
                 advance_upper(&client, slot, &connection.publication, data_cap).await?;
                 upper_cap.downgrade(data_cap.time());
                 rewinds.retain(|_, (_, req)| data_cap.time() <= &req.snapshot_lsn);
