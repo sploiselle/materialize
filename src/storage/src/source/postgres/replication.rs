@@ -89,7 +89,11 @@ const FEEDBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The maximum amount of waiting for a transaction to appear in the replication stream before
 /// checking for replication lag.
-const TX_TIMEOUT: Duration = Duration::from_secs(30);
+const INIT_TX_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The maximum amount of waiting for a transaction to appear in the replication stream before
+/// checking for replication lag.
+const FOLLOWUP_TX_TIMEOUT: Duration = Duration::from_secs(1);
 
 // A request to rewind a snapshot taken at `snapshot_lsn` to the initial LSN of the replication
 // slot. This is accomplished by emitting `(data, 0, -diff)` for all updates `(data, lsn, diff)`
@@ -216,7 +220,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let mut container = Vec::new();
                 let max_capacity = timely::container::buffer::default_capacity::<((u32, Result<Vec<Option<Bytes>>, DefiniteError>), MzOffset, Diff)>();
 
-                while let Ok(_) = tokio::time::timeout(TX_TIMEOUT, stream.as_mut().peek()).await {
+                let mut timeout = INIT_TX_TIMEOUT;
+                while let Ok(_) = tokio::time::timeout(timeout, stream.as_mut().peek()).await {
                     let mut new_upper = *data_cap.time();
                     while let Some(event) = stream.as_mut().peek().now_or_never() {
                         match event {
@@ -263,6 +268,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                     upper_cap.downgrade(&new_upper);
                     data_cap.downgrade(&new_upper);
                     rewinds.retain(|_, (_, req)| data_cap.time() <= &req.snapshot_lsn);
+
+                    timeout = FOLLOWUP_TX_TIMEOUT;
                 }
             }
         })
