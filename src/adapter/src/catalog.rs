@@ -2259,6 +2259,7 @@ impl Sink {
     }
 }
 
+// This must be removed from the catalog.
 #[derive(Debug, Clone, Serialize)]
 pub enum StorageSinkConnectionState {
     Pending(StorageSinkConnectionBuilder),

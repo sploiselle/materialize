@@ -1769,6 +1769,9 @@ impl SourceDesc<GenericSourceConnection> {
     }
 }
 
+// Mirror this struct for sinks. We don't have any immediate plans for other
+// sinks, but the parity between sources and sinks is nominally more typing for
+// the sake of explicit parity.
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GenericSourceConnection {
     Kafka(KafkaSourceConnection),

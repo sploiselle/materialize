@@ -42,8 +42,10 @@ pub(crate) fn render_sink<G: Scope<Timestamp = Timestamp>>(
     tokens: &mut std::collections::BTreeMap<GlobalId, Rc<dyn std::any::Any>>,
     import_ids: BTreeSet<GlobalId>,
     sink_id: GlobalId,
+    // This looks like it's equivalent to source connections.
     sink: &StorageSinkDesc<MetadataFilled, mz_repr::Timestamp>,
 ) {
+    // It looks like restarting sinks is meant to be idempotent, so we
     let sink_render = get_sink_render_for(&sink.connection);
 
     // put together tokens that belong to the export
@@ -242,13 +244,13 @@ pub(crate) trait SinkRender<G>
 where
     G: Scope<Timestamp = Timestamp>,
 {
-    /// TODO
+    /// TODO--todo(p2): fix this--huge pet peeve of mine
     fn uses_keys(&self) -> bool;
-    /// TODO
+    /// TODO--todo(p2): fix this--huge pet peeve of mine
     fn get_key_indices(&self) -> Option<&[usize]>;
-    /// TODO
+    /// TODO--todo(p2): fix this--huge pet peeve of mine
     fn get_relation_key_indices(&self) -> Option<&[usize]>;
-    /// TODO
+    /// TODO--todo(p2): fix this--huge pet peeve of mine
     fn render_continuous_sink(
         &self,
         storage_state: &mut StorageState,

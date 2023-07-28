@@ -25,8 +25,11 @@ use crate::types::sinks::{
 };
 
 /// Build a sink connection.
-// N.B.: We don't want to use a `StorageError` here because some of those variants should not be
-// infinitely retried -- and we don't one to unintentionally be introduced in this function.
+// N.B.: We don't want to use a `StorageError` here because some of those
+// variants should not be infinitely retried -- and we don't one to
+// unintentionally be introduced in this function.
+//
+// This should only be called in "storage" code.
 pub async fn build_sink_connection(
     builder: StorageSinkConnectionBuilder,
     connection_context: ConnectionContext,
@@ -220,6 +223,17 @@ async fn publish_kafka_schemas(
     Ok((key_schema_id, value_schema_id))
 }
 
+// This should only be invoked in "storage" code; my hunch is that this ought to
+// run in src/storage/src/sink/kafka.rs
+//
+// We might also want there to be a dry-run of this so that we can ensure that
+// we expect building the connection to succeed in the async portion of the
+// planning code (and error if not), but then just accept that TOCTOU errors may
+// occur and let those error in the general sink reporting. The important part
+// here will be to ensure that we do not leave any state dangling in the Kafka
+// broker.
+//
+//
 async fn build_kafka(
     builder: KafkaSinkConnectionBuilder,
     connection_context: ConnectionContext,

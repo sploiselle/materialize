@@ -541,6 +541,7 @@ pub fn plan_create_source(
             key: _,
         }) => {
             let connection_item = scx.get_item_by_resolved_name(connection_name)?;
+            // e.g. this is all we should be doing for sinks.
             let mut kafka_connection = match connection_item.connection()? {
                 Connection::Kafka(connection) => connection.clone(),
                 _ => sql_bail!(
@@ -609,6 +610,7 @@ pub fn plan_create_source(
 
             let encoding = get_encoding(scx, format, &envelope, Some(connection))?;
 
+            // e.g. this is all we should be doing for sinks.
             let mut connection = KafkaSourceConnection {
                 connection: kafka_connection,
                 connection_id: connection_item.id(),
@@ -1135,6 +1137,8 @@ pub fn plan_create_source(
     };
 
     let source_desc = SourceDesc {
+        // When describing sink connections, this is the struct field with which
+        // we need to establish parity.
         connection: external_connection,
         encoding,
         envelope: envelope.clone(),
@@ -2436,6 +2440,8 @@ fn kafka_sink_builder(
         bytes: retention_bytes,
     };
 
+    // This looks suspicious; we likely don't need to build the connection as
+    // much as describe it.
     Ok(StorageSinkConnectionBuilder::Kafka(
         KafkaSinkConnectionBuilder {
             connection_id,

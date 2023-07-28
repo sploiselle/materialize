@@ -144,6 +144,9 @@ impl Coordinator {
                             }
                         }
                         CatalogItem::Sink(catalog::Sink { connection, .. }) => match connection {
+                            // We should do something similar as is done with PG
+                            // here if we need to drop anything related to the
+                            // sink.
                             StorageSinkConnectionState::Ready(_) => {
                                 storage_sinks_to_drop.push(*id);
                             }

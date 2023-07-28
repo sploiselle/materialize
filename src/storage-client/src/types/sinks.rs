@@ -41,11 +41,14 @@ pub struct StorageSinkDesc<S: StorageSinkDescFillState, T = mz_repr::Timestamp> 
     pub from_storage_metadata: <S as StorageSinkDescFillState>::StorageMetadata,
 }
 
+// todo(p2): this should more closely parallel the structs for sources, i.e.
+// IngestionDescription.
 pub trait StorageSinkDescFillState {
     type StatusId: Debug + Clone + Serialize + for<'a> Deserialize<'a> + Eq + PartialEq;
     type StorageMetadata: Debug + Clone + Serialize + for<'a> Deserialize<'a> + Eq + PartialEq;
 }
 
+// todo(p2): this should more closely parallel the structs for sources.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct MetadataUnfilled;
 impl StorageSinkDescFillState for MetadataUnfilled {
@@ -438,6 +441,8 @@ impl RustType<ProtoPublishedSchemaInfo> for PublishedSchemaInfo {
     }
 }
 
+// This connection builder shouldn't exist, or it should exist only in as much
+// as we need something akin to it to be build parity with sources.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum StorageSinkConnectionBuilder {
     Kafka(KafkaSinkConnectionBuilder),

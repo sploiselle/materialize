@@ -180,6 +180,7 @@ pub fn create_raw_source<'g, G: Scope<Timestamp = ()>, C>(
     scope: &mut Child<'g, G, mz_repr::Timestamp>,
     resume_stream: &Stream<Child<'g, G, mz_repr::Timestamp>, ()>,
     config: RawSourceCreationConfig,
+    // This is what we should do to handle sink connection.
     source_connection: C,
     connection_context: ConnectionContext,
 ) -> (

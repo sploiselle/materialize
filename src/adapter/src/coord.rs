@@ -256,6 +256,7 @@ pub struct CreateConnectionValidationReady {
     pub otel_ctx: OpenTelemetryContext,
 }
 
+// This struct should be removed and the connection managed inside of "storage."
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct SinkConnectionReady {
@@ -1160,6 +1161,7 @@ impl Coordinator {
                     // System sources were created above, add others here.
                     if !entry.id().is_system() {
                         let source_desc = source_desc(source_status_collection_id, source);
+                        // This is all that we can do to make this work.
                         self.controller
                             .storage
                             .create_collections(vec![(entry.id(), source_desc)])
@@ -1253,6 +1255,7 @@ impl Coordinator {
                         .prepare_export(id, sink.from)
                         .unwrap_or_terminate("cannot fail to prepare export");
 
+                    // This must be removed.
                     task::spawn(
                         || format!("sink_connection_ready:{}", sink.from),
                         async move {
@@ -1336,6 +1339,8 @@ impl Coordinator {
             self.initialize_read_policies(&policies, Some(ts)).await;
         }
 
+        // By this time _everything_ that is going to be in the catalog must be
+        // in the catalog.
         info!("coordinator init: announcing completion of initialization to controller");
         // Announce the completion of initialization.
         self.controller.initialization_complete();

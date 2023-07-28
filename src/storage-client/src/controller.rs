@@ -213,6 +213,8 @@ impl<T> From<RelationDesc> for CollectionDescription<T> {
     }
 }
 
+// todo(p2): I'd like this and `CollectionDescription` to be more obviously
+// parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExportDescription<T = mz_repr::Timestamp> {
     pub sink: StorageSinkDesc<MetadataUnfilled, T>,
@@ -220,9 +222,12 @@ pub struct ExportDescription<T = mz_repr::Timestamp> {
     pub instance_id: StorageInstanceId,
 }
 
-/// Opaque token to ensure `prepare_export` is called before `create_exports`.  This token proves
-/// that compaction is being held back on `from_id` at least until `id` is created.  It should be
-/// held while the AS OF is determined.
+/// Opaque token to ensure `prepare_export` is called before `create_exports`.
+/// This token proves that compaction is being held back on `from_id` at least
+/// until `id` is created.  It should be held while the AS OF is determined.
+///
+/// Remove export tokens with this refactor.
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateExportToken<T = mz_repr::Timestamp> {
     id: GlobalId,
@@ -360,6 +365,9 @@ pub trait StorageController: Debug + Send {
     ) -> Result<&mut ExportState<Self::Timestamp>, StorageError>;
 
     /// Create the sinks described by the `ExportDescription`.
+    ///
+    /// todo: this should work without first creating export tokens, i.e.
+    /// `ExportDescription` should be createable  within the coordinator.
     async fn create_exports(
         &mut self,
         exports: Vec<(
@@ -369,6 +377,8 @@ pub trait StorageController: Debug + Send {
     ) -> Result<(), StorageError>;
 
     /// Notify the storage controller to prepare for an export to be created
+    ///
+    /// todo: remove this
     fn prepare_export(
         &mut self,
         id: GlobalId,
@@ -376,6 +386,8 @@ pub trait StorageController: Debug + Send {
     ) -> Result<CreateExportToken<Self::Timestamp>, StorageError>;
 
     /// Cancel the pending export
+    ///
+    /// todo: remove this
     fn cancel_prepare_export(&mut self, token: CreateExportToken<Self::Timestamp>);
 
     /// Drops the read capability for the sources and allows their resources to be reclaimed.
@@ -1493,6 +1505,7 @@ where
                         })?;
                     let augmented_ingestion = RunIngestionCommand {
                         id,
+                        // Sinks need parity with sources for this field.
                         description,
                         update: false,
                     };

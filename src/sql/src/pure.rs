@@ -139,6 +139,11 @@ pub async fn purify_statement(
     PlanError,
 > {
     match stmt {
+        // We likely want to add a purify_create_sink so that we can validate
+        // the connection, i.e. perform a dry-run of setting up the topic for
+        // the sink (though this requires a bit of care because I believe it's
+        // easy to inadvertently create a topic by just stating that you're
+        // looking for one).
         Statement::CreateSource(stmt) => {
             purify_create_source(catalog, now, stmt, connection_context).await
         }

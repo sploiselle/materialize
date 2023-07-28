@@ -438,6 +438,14 @@ impl KafkaSinkState {
                     "synthetic error"
                 )));
 
+                // This looks like the most reasonable place to actually set up
+                // the Kafka connection, e.g. creating the topics. I am under
+                // the impression that starting and restarting the sinks are
+                // idempotent operations, so this should be fine, but likely
+                // requires a chat with a sink/kafka expert, i.e. Ben. If the
+                // code that creates the Kafka connection cannot be imported
+                // here, we'll just move it here because this is the only place
+                // that particular code should be invoked.
                 connection
                     .connection
                     .create_with_context(

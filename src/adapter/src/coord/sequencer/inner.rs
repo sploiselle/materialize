@@ -767,6 +767,8 @@ impl Coordinator {
         let connection_builder = sink.connection_builder;
         let internal_cmd_tx = self.internal_cmd_tx.clone();
         let connection_context = self.connection_context.clone();
+
+        // This must be removed.
         task::spawn(
             || format!("sink_connection_ready:{}", sink.from),
             async move {
