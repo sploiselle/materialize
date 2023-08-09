@@ -39,8 +39,8 @@ use mz_storage_client::client::SinkStatisticsUpdate;
 use mz_storage_client::types::connections::ConnectionContext;
 use mz_storage_client::types::errors::DataflowError;
 use mz_storage_client::types::sinks::{
-    KafkaSinkConnection, MetadataFilled, PublishedSchemaInfo, SinkAsOf, SinkEnvelope,
-    StorageSinkDesc,
+    KafkaSinkConnection, KafkaSinkConnectionBuilder, MetadataFilled, PublishedSchemaInfo, SinkAsOf,
+    SinkEnvelope, StorageSinkConnection, StorageSinkDesc,
 };
 use mz_timely_util::builder_async::{Event, OperatorBuilder as AsyncOperatorBuilder};
 use prometheus::core::AtomicU64;
@@ -126,6 +126,7 @@ where
             sinked_collection,
             sink_id,
             self.clone(),
+            self.builder.clone(),
             sink.envelope,
             sink.as_of.clone(),
             Rc::clone(&shared_frontier),
@@ -403,6 +404,7 @@ struct KafkaSinkState {
 impl KafkaSinkState {
     async fn new(
         connection: KafkaSinkConnection,
+        builder: KafkaSinkConnectionBuilder,
         sink_name: String,
         sink_id: &GlobalId,
         worker_id: String,
@@ -429,53 +431,61 @@ impl KafkaSinkState {
 
         let healthchecker = healthchecker.map(Mutex::new);
 
-        let producer = halt_on_err(
-            &healthchecker,
-            *sink_id,
-            &internal_cmd_tx,
-            (|| async {
-                fail::fail_point!("kafka_sink_creation_error", |_| Err(anyhow::anyhow!(
-                    "synthetic error"
-                )));
+        let producer =
+            halt_on_err(
+                &healthchecker,
+                *sink_id,
+                &internal_cmd_tx,
+                (|| async {
+                    fail::fail_point!("kafka_sink_creation_error", |_| Err(anyhow::anyhow!(
+                        "synthetic error"
+                    )));
 
-                connection
-                    .connection
-                    .create_with_context(
-                        connection_context,
-                        producer_context,
-                        &btreemap! {
-                            // Ensure that messages are sinked in order and without
-                            // duplicates. Note that this only applies to a single
-                            // instance of a producer - in the case of restarts, all
-                            // bets are off and full exactly once support is required.
-                            "enable.idempotence" => "true".into(),
-                            // Increase limits for the Kafka producer's internal
-                            // buffering of messages Currently we don't have a great
-                            // backpressure mechanism to tell indexes or views to slow
-                            // down, so the only thing we can do with a message that we
-                            // can't immediately send is to put it in a buffer and
-                            // there's no point having buffers within the dataflow layer
-                            // and Kafka If the sink starts falling behind and the
-                            // buffers start consuming too much memory the best thing to
-                            // do is to drop the sink Sets the buffer size to be 16 GB
-                            // (note that this setting is in KB)
-                            "queue.buffering.max.kbytes" => format!("{}", 16 << 20),
-                            // Set the max messages buffered by the producer at any time
-                            // to 10MM which is the maximum allowed value.
-                            "queue.buffering.max.messages" => format!("{}", 10_000_000),
-                            // Make the Kafka producer wait at least 10 ms before
-                            // sending out MessageSets TODO(rkhaitan): experiment with
-                            // different settings for this value to see if it makes a
-                            // big difference.
-                            "queue.buffering.max.ms" => format!("{}", 10),
-                            "transactional.id" => format!("mz-producer-{sink_id}-{worker_id}"),
-                        },
-                    )
-                    .await
-            })()
-            .await,
-        )
-        .await;
+                    let connection =
+                        match mz_storage_client::sink::build_kafka(builder, connection_context)
+                            .await?
+                        {
+                            StorageSinkConnection::Kafka(kafka) => kafka,
+                        };
+
+                    connection
+                        .connection
+                        .create_with_context(
+                            connection_context,
+                            producer_context,
+                            &btreemap! {
+                                // Ensure that messages are sinked in order and without
+                                // duplicates. Note that this only applies to a single
+                                // instance of a producer - in the case of restarts, all
+                                // bets are off and full exactly once support is required.
+                                "enable.idempotence" => "true".into(),
+                                // Increase limits for the Kafka producer's internal
+                                // buffering of messages Currently we don't have a great
+                                // backpressure mechanism to tell indexes or views to slow
+                                // down, so the only thing we can do with a message that we
+                                // can't immediately send is to put it in a buffer and
+                                // there's no point having buffers within the dataflow layer
+                                // and Kafka If the sink starts falling behind and the
+                                // buffers start consuming too much memory the best thing to
+                                // do is to drop the sink Sets the buffer size to be 16 GB
+                                // (note that this setting is in KB)
+                                "queue.buffering.max.kbytes" => format!("{}", 16 << 20),
+                                // Set the max messages buffered by the producer at any time
+                                // to 10MM which is the maximum allowed value.
+                                "queue.buffering.max.messages" => format!("{}", 10_000_000),
+                                // Make the Kafka producer wait at least 10 ms before
+                                // sending out MessageSets TODO(rkhaitan): experiment with
+                                // different settings for this value to see if it makes a
+                                // big difference.
+                                "queue.buffering.max.ms" => format!("{}", 10),
+                                "transactional.id" => format!("mz-producer-{sink_id}-{worker_id}"),
+                            },
+                        )
+                        .await
+                })()
+                .await,
+            )
+            .await;
 
         let producer = KafkaTxProducer {
             name: sink_name.clone(),
@@ -986,6 +996,7 @@ fn kafka<G>(
     collection: Collection<G, (Option<Row>, Option<Row>), Diff>,
     id: GlobalId,
     connection: KafkaSinkConnection,
+    builder: KafkaSinkConnectionBuilder,
     envelope: Option<SinkEnvelope>,
     as_of: SinkAsOf,
     write_frontier: Rc<RefCell<Antichain<Timestamp>>>,
@@ -1053,6 +1064,7 @@ where
         id,
         name,
         connection,
+        builder,
         as_of,
         shared_gate_ts,
         write_frontier,
@@ -1080,6 +1092,7 @@ pub fn produce_to_kafka<G>(
     id: GlobalId,
     name: String,
     connection: KafkaSinkConnection,
+    kafka_conn_builder: KafkaSinkConnectionBuilder,
     as_of: SinkAsOf,
     shared_gate_ts: Rc<Cell<Option<Timestamp>>>,
     write_frontier: Rc<RefCell<Antichain<Timestamp>>>,
@@ -1127,6 +1140,7 @@ where
         };
         let mut s = KafkaSinkState::new(
             connection,
+            kafka_conn_builder,
             name,
             &id,
             worker_id.to_string(),

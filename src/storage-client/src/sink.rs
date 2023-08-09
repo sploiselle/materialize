@@ -32,7 +32,7 @@ pub async fn build_sink_connection(
     connection_context: ConnectionContext,
 ) -> Result<StorageSinkConnection, anyhow::Error> {
     match builder {
-        StorageSinkConnectionBuilder::Kafka(k) => build_kafka(k, connection_context).await,
+        StorageSinkConnectionBuilder::Kafka(k) => build_kafka(k, &connection_context).await,
     }
 }
 
@@ -220,10 +220,11 @@ async fn publish_kafka_schemas(
     Ok((key_schema_id, value_schema_id))
 }
 
-async fn build_kafka(
+pub async fn build_kafka(
     builder: KafkaSinkConnectionBuilder,
-    connection_context: ConnectionContext,
+    connection_context: &ConnectionContext,
 ) -> Result<StorageSinkConnection, anyhow::Error> {
+    let builder_inner = builder.clone();
     // Create Kafka topic.
     let client: AdminClient<_> = builder
         .connection
@@ -247,7 +248,7 @@ async fn build_kafka(
             csr_connection,
             ..
         } => {
-            let ccsr = csr_connection.connect(&connection_context).await?;
+            let ccsr = csr_connection.connect(connection_context).await?;
             let (key_schema_id, value_schema_id) = publish_kafka_schemas(
                 &ccsr,
                 &builder.topic_name,
@@ -284,6 +285,7 @@ async fn build_kafka(
 
     Ok(StorageSinkConnection::Kafka(KafkaSinkConnection {
         connection: builder.connection,
+        builder: builder_inner,
         connection_id: builder.connection_id,
         topic: builder.topic_name,
         relation_key_indices: builder.relation_key_indices,
