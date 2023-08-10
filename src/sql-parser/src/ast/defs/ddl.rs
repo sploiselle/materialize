@@ -560,7 +560,7 @@ impl<T: AstInfo> AstDisplay for DbzTxMetadataOption<T> {
 }
 impl_display_t!(DbzTxMetadataOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KafkaConnectionOptionName {
     Broker,
     Brokers,
@@ -610,7 +610,7 @@ impl<T: AstInfo> AstDisplay for KafkaConnectionOption<T> {
 }
 impl_display_t!(KafkaConnectionOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CsrConnectionOptionName {
     AwsPrivatelink,
     Password,
@@ -658,7 +658,7 @@ impl<T: AstInfo> AstDisplay for CsrConnectionOption<T> {
 }
 impl_display_t!(CsrConnectionOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PostgresConnectionOptionName {
     AwsPrivatelink,
     Database,
@@ -710,7 +710,7 @@ impl<T: AstInfo> AstDisplay for PostgresConnectionOption<T> {
 }
 impl_display_t!(PostgresConnectionOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AwsConnectionOptionName {
     AccessKeyId,
     Endpoint,
@@ -752,7 +752,7 @@ impl<T: AstInfo> AstDisplay for AwsConnectionOption<T> {
 }
 impl_display_t!(AwsConnectionOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AwsPrivatelinkConnectionOptionName {
     ServiceName,
     AvailabilityZones,
@@ -786,7 +786,7 @@ impl<T: AstInfo> AstDisplay for AwsPrivatelinkConnectionOption<T> {
 }
 impl_display_t!(AwsPrivatelinkConnectionOption);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SshConnectionOptionName {
     Host,
     Port,
@@ -882,7 +882,7 @@ impl<T: AstInfo> AstDisplay for CreateConnection<T> {
 }
 impl_display_t!(CreateConnection);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CreateConnectionOptionName {
     Validate,
 }

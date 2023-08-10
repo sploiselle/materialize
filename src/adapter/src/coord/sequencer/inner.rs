@@ -61,9 +61,9 @@ use mz_sql::session::vars::{
 };
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{
-    AlterSourceAddSubsourceOptionName, CreateSourceConnection, CreateSourceSubsource,
-    DeferredItemName, PgConfigOption, PgConfigOptionName, ReferencedSubsources, Statement,
-    TransactionMode, WithOptionValue,
+    AlterSourceAddSubsourceOptionName, CreateConnection, CreateSourceConnection,
+    CreateSourceSubsource, DeferredItemName, PgConfigOption, PgConfigOptionName,
+    ReferencedSubsources, Statement, TransactionMode, WithOptionValue,
 };
 use mz_ssh_util::keys::SshKeyPairSet;
 use mz_storage_client::controller::{CollectionDescription, DataSource, ReadPolicy, StorageError};
@@ -3836,6 +3836,73 @@ impl Coordinator {
         }
 
         Ok(ExecuteResponse::AlteredObject(ObjectType::Sink))
+    }
+
+    pub(super) async fn sequence_alter_connection(
+        &mut self,
+        id: GlobalId,
+        updated_options: CreateConnection<mz_sql::names::Aug>,
+    ) -> Result<ExecuteResponse, AdapterError> {
+        let cur_entry = self.catalog().get_entry(&id);
+        let cur_conn = cur_entry.connection().expect("known to be source");
+
+        // Parse statement.
+        let create_conn_stmt = match mz_sql::parse::parse(&cur_conn.create_sql)
+            .expect("invalid create sql persisted to catalog")
+            .into_element()
+            .ast
+        {
+            Statement::CreateConnection(stmt) => stmt,
+            _ => unreachable!("proved type is source"),
+        };
+
+        let catalog = self.catalog().for_system_session();
+
+        // Resolve items in statement
+        let (mut create_conn_stmt, mut resolved_ids) =
+            mz_sql::names::resolve(&catalog, create_conn_stmt)
+                .map_err(|e| AdapterError::internal("ALTER CONNECTION", e))?;
+
+        macro_rules! update_options {
+            ($old:expr, $new:expr) => {
+                let new_option_names = $new.iter().map(|o| o.name).collect::<BTreeSet<_>>();
+                $old.retain(|o| !new_option_names.contains(&o.name));
+                $old.extend($new);
+                $old.sort();
+            };
+        }
+
+        // Rewrite any connection options
+        match (&mut create_conn_stmt.connection, updated_options) {
+            (CreateConnection::Aws { options }, CreateConnection::Aws { options: new }) => {
+                update_options!(options, new);
+            }
+            (
+                CreateConnection::AwsPrivatelink { options },
+                CreateConnection::AwsPrivatelink { options: new },
+            ) => {
+                update_options!(options, new);
+            }
+            (CreateConnection::Kafka { options }, CreateConnection::Kafka { options: new }) => {
+                update_options!(options, new);
+            }
+            (CreateConnection::Csr { options }, CreateConnection::Csr { options: new }) => {
+                update_options!(options, new);
+            }
+            (
+                CreateConnection::Postgres { options },
+                CreateConnection::Postgres { options: new },
+            ) => {
+                update_options!(options, new);
+            }
+            (CreateConnection::Ssh { options }, CreateConnection::Ssh { options: new }) => {
+                update_options!(options, new);
+            }
+            _ => unreachable!("ALTER CONNECTION supplied mismatched options for connection"),
+        }
+
+        // todo: fix
+        Ok(ExecuteResponse::AlteredRole)
     }
 
     pub(super) async fn sequence_alter_source(
