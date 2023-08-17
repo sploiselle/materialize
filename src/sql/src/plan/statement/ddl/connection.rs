@@ -15,7 +15,8 @@ use itertools::Itertools;
 use mz_ore::str::StrExt;
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::{
-    ConnectionOption, ConnectionOptionName, CreateConnectionType, KafkaBroker, KafkaBrokerTunnel,
+    ConnectionOption, ConnectionOptionName, CreateConnectionType, KafkaBroker,
+    KafkaBrokerAwsPrivatelinkOption, KafkaBrokerAwsPrivatelinkOptionName, KafkaBrokerTunnel,
 };
 use mz_storage_types::connections::aws::{AwsAssumeRole, AwsConfig, AwsCredentials};
 use mz_storage_types::connections::inline::ReferencedConnection;
@@ -29,8 +30,6 @@ use crate::names::Aug;
 use crate::plan::statement::{Connection, ResolvedItemName};
 use crate::plan::with_options::{self, TryFromValue};
 use crate::plan::{PlanError, StatementContext};
-
-use super::KafkaBrokerAwsPrivatelinkOptionExtracted;
 
 const SSL_CONFIG: [ConnectionOptionName; 2] = [
     ConnectionOptionName::SslKey,
@@ -71,6 +70,12 @@ generate_extracted_config!(
     (Token, StringOrSecret),
     (Url, String),
     (User, StringOrSecret)
+);
+
+generate_extracted_config!(
+    KafkaBrokerAwsPrivatelinkOption,
+    (AvailabilityZone, String),
+    (Port, u16)
 );
 
 impl ConnectionOptionExtracted {
@@ -417,18 +422,19 @@ impl TryFrom<&ConnectionOptionExtracted> for Option<SaslConfig> {
     type Error = PlanError;
     fn try_from(k: &ConnectionOptionExtracted) -> Result<Self, Self::Error> {
         let res = if SASL_CONFIG.iter().all(|config| k.seen.contains(config)) {
-            let sasl_mechanism = k.sasl_mechanisms.clone().unwrap();
-            if sasl_mechanism
-                .chars()
-                .any(|c| c.is_ascii_alphabetic() && !c.is_uppercase())
-            {
-                sql_bail!(
-                    "invalid SASL MECHANISM {}: must be uppercase",
-                    sasl_mechanism.quoted()
-                );
-            }
+            // librdkafka requires SASL mechanisms to be upper case (PLAIN,
+            // SCRAM-SHA-256). For usability, we automatically uppercase the
+            // mechanism that user provides. This avoids a frustrating
+            // interaction with identifier case folding. Consider `SASL
+            // MECHANISMS = PLAIN`. Identifier case folding results in a SASL
+            // mechanism of `plain` (note the lowercase), which Materialize
+            // previously rejected with an error of "SASL mechanism must be
+            // uppercase." This was deeply frustarting for users who were not
+            // familiar with identifier case folding rules. See #22205.
+            let sasl_mechanism = k.sasl_mechanisms.clone().unwrap().to_uppercase();
+
             Some(SaslConfig {
-                mechanisms: sasl_mechanism,
+                sasl_mechanism,
                 username: k.sasl_username.clone().unwrap(),
                 password: k.sasl_password.unwrap().into(),
                 tls_root_cert: k.ssl_certificate_authority.clone(),
