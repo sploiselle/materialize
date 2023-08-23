@@ -226,6 +226,8 @@ impl Coordinator {
 
                     let (data_source, status_collection_id) = match source.data_source {
                         DataSourceDesc::Ingestion(ingestion) => (
+                            // TODO: take this ingestiondescription into the one
+                            // we want in storage.
                             DataSource::Ingestion(ingestion),
                             source_status_collection_id,
                         ),

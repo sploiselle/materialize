@@ -85,7 +85,8 @@ use mz_storage_client::types::sinks::{
     SinkEnvelope, StorageSinkConnection, StorageSinkConnectionBuilder,
 };
 use mz_storage_client::types::sources::{
-    IngestionDescription, SourceConnection, SourceDesc, SourceEnvelope, SourceExport, Timeline,
+    GenericSourceConnection, IngestionDescription, SourceConnection, SourceDesc, SourceEnvelope,
+    SourceExport, Timeline, Unloaded,
 };
 use mz_transform::Optimizer;
 use once_cell::sync::Lazy;
@@ -2016,7 +2017,7 @@ impl Table {
 #[derive(Debug, Clone, Serialize)]
 pub enum DataSourceDesc {
     /// Receives data from an external system
-    Ingestion(IngestionDescription),
+    Ingestion(IngestionDescription<(), GenericSourceConnection<Unloaded>>),
     /// Receives data from some other source
     Source,
     /// Receives introspection data from an internal system
@@ -2061,6 +2062,7 @@ impl DataSourceDesc {
             .collect();
 
         DataSourceDesc::Ingestion(IngestionDescription {
+            // TODO: this is the point at which we instantiate
             desc: ingestion.desc.clone(),
             ingestion_metadata: (),
             source_imports,

@@ -55,7 +55,7 @@ use mz_storage_client::types::sources::{
     GenericSourceConnection, IncludedColumnPos, KafkaSourceConnection, KeyEnvelope, LoadGenerator,
     LoadGeneratorSourceConnection, PostgresSourceConnection, PostgresSourcePublicationDetails,
     ProtoPostgresSourcePublicationDetails, SourceConnection, SourceDesc, SourceEnvelope,
-    TestScriptSourceConnection, Timeline, UnplannedSourceEnvelope, UpsertStyle,
+    TestScriptSourceConnection, Timeline, Unloaded, UnplannedSourceEnvelope, UpsertStyle,
 };
 use prost::Message;
 
@@ -578,6 +578,7 @@ pub fn plan_create_source(
             let optional_start_offset =
                 Option::<kafka_util::KafkaStartOffsetType>::try_from(&extracted_options)?;
 
+            // TODO(move options from KafkaConnection to KafkaSourceConnection)
             for (k, v) in kafka_util::LibRdKafkaConfig::try_from(&extracted_options)?.0 {
                 kafka_connection.options.insert(k, v);
             }
@@ -609,8 +610,8 @@ pub fn plan_create_source(
 
             let encoding = get_encoding(scx, format, &envelope, Some(connection))?;
 
-            let mut connection = KafkaSourceConnection {
-                connection: kafka_connection,
+            let mut connection = KafkaSourceConnection::<Unloaded> {
+                connection: connection_item.id(),
                 connection_id: connection_item.id(),
                 topic,
                 start_offsets,
@@ -667,7 +668,7 @@ pub fn plan_create_source(
                 }
             }
 
-            let connection = GenericSourceConnection::from(connection);
+            let connection = GenericSourceConnection::Kafka(connection);
 
             (connection, encoding, None)
         }
@@ -888,7 +889,7 @@ pub fn plan_create_source(
             let publication_details = PostgresSourcePublicationDetails::from_proto(details)
                 .map_err(|e| sql_err!("{}", e))?;
 
-            let connection = GenericSourceConnection::from(PostgresSourceConnection {
+            let connection = GenericSourceConnection::<Unloaded>::from(PostgresSourceConnection {
                 connection,
                 connection_id: connection_item.id(),
                 table_casts,
@@ -1134,7 +1135,7 @@ pub fn plan_create_source(
         None => scx.catalog.config().timestamp_interval,
     };
 
-    let source_desc = SourceDesc {
+    let source_desc = SourceDesc::<GenericSourceConnection<Unloaded>> {
         connection: external_connection,
         encoding,
         envelope: envelope.clone(),

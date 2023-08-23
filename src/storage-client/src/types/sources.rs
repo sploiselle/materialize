@@ -1525,13 +1525,16 @@ impl<C: ConnectionReference> SourceConnection for KafkaSourceConnection<C> {
     }
 }
 
-impl Arbitrary for KafkaSourceConnection<Loaded> {
+impl<C: ConnectionReference> Arbitrary for KafkaSourceConnection<C>
+where
+    <<C as ConnectionReference>::Kafka as Arbitrary>::Strategy: 'static,
+{
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (
-            any::<KafkaConnection>(),
+            any::<C::Kafka>(),
             any::<GlobalId>(),
             any::<String>(),
             proptest::collection::btree_map(any::<i32>(), any::<i64>(), 1..4),
@@ -1821,13 +1824,16 @@ pub enum GenericSourceConnection<C: ConnectionReference = Loaded> {
     TestScript(TestScriptSourceConnection),
 }
 
-impl Arbitrary for GenericSourceConnection {
+impl<C: ConnectionReference + 'static> Arbitrary for GenericSourceConnection<C>
+where
+    <<C as ConnectionReference>::Kafka as Arbitrary>::Strategy: 'static,
+{
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         prop_oneof![
-            any::<KafkaSourceConnection<Loaded>>().prop_map(GenericSourceConnection::Kafka),
+            any::<KafkaSourceConnection<C>>().prop_map(GenericSourceConnection::Kafka),
             any::<PostgresSourceConnection>().prop_map(GenericSourceConnection::Postgres),
             any::<LoadGeneratorSourceConnection>().prop_map(GenericSourceConnection::LoadGenerator),
             any::<TestScriptSourceConnection>().prop_map(GenericSourceConnection::TestScript)
@@ -1836,34 +1842,31 @@ impl Arbitrary for GenericSourceConnection {
     }
 }
 
-impl<C: ConnectionReference> From<KafkaSourceConnection<C>> for GenericSourceConnection<C>
-where
-    KafkaSourceConnection<C>: Arbitrary,
-{
+impl<C: ConnectionReference> From<KafkaSourceConnection<C>> for GenericSourceConnection<C> {
     fn from(conn: KafkaSourceConnection<C>) -> Self {
         Self::Kafka(conn)
     }
 }
 
-impl From<PostgresSourceConnection> for GenericSourceConnection<Loaded> {
+impl<C: ConnectionReference> From<PostgresSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: PostgresSourceConnection) -> Self {
         Self::Postgres(conn)
     }
 }
 
-impl From<LoadGeneratorSourceConnection> for GenericSourceConnection<Loaded> {
+impl<C: ConnectionReference> From<LoadGeneratorSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: LoadGeneratorSourceConnection) -> Self {
         Self::LoadGenerator(conn)
     }
 }
 
-impl From<TestScriptSourceConnection> for GenericSourceConnection<Loaded> {
+impl<C: ConnectionReference> From<TestScriptSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: TestScriptSourceConnection) -> Self {
         Self::TestScript(conn)
     }
 }
 
-impl SourceConnection for GenericSourceConnection<Loaded> {
+impl<C: ConnectionReference> SourceConnection for GenericSourceConnection<C> {
     fn name(&self) -> &'static str {
         match self {
             Self::Kafka(conn) => conn.name(),
