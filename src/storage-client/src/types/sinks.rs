@@ -24,6 +24,8 @@ use timely::PartialOrder;
 use crate::controller::CollectionMetadata;
 use crate::types::connections::{CsrConnection, KafkaConnection};
 
+use super::sources::{ConnectionAccess, InlinedConnection};
+
 include!(concat!(
     env!("OUT_DIR"),
     "/mz_storage_client.types.sinks.rs"
@@ -293,9 +295,9 @@ impl RustType<ProtoKafkaSinkProgressConnection> for KafkaSinkProgressConnection 
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct KafkaSinkConnection {
-    pub connection: KafkaConnection,
+#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KafkaSinkConnection<C: ConnectionAccess = InlinedConnection> {
+    pub connection: KafkaConnection<C>,
     pub connection_id: GlobalId,
     pub topic: String,
     pub key_desc_and_indices: Option<(RelationDesc, Vec<usize>)>,
@@ -306,41 +308,6 @@ pub struct KafkaSinkConnection {
     // Maximum number of records the sink will attempt to send each time it is
     // invoked
     pub fuel: usize,
-}
-
-proptest::prop_compose! {
-    fn any_kafka_sink_connection()(
-        connection in any::<KafkaConnection>(),
-        connection_id in any::<GlobalId>(),
-        topic in any::<String>(),
-        key_desc_and_indices in any::<Option<(RelationDesc, Vec<usize>)>>(),
-        relation_key_indices in any::<Option<Vec<usize>>>(),
-        value_desc in any::<RelationDesc>(),
-        published_schema_info in any::<Option<PublishedSchemaInfo>>(),
-        progress in any::<KafkaSinkProgressConnection>(),
-        fuel in any::<usize>(),
-    ) -> KafkaSinkConnection {
-        KafkaSinkConnection {
-            connection,
-            connection_id,
-            topic,
-            key_desc_and_indices,
-            relation_key_indices,
-            value_desc,
-            published_schema_info,
-            progress,
-            fuel,
-        }
-    }
-}
-
-impl Arbitrary for KafkaSinkConnection {
-    type Strategy = BoxedStrategy<Self>;
-    type Parameters = ();
-
-    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        any_kafka_sink_connection().boxed()
-    }
 }
 
 impl RustType<proto_kafka_sink_connection::ProtoKeyDescAndIndices> for (RelationDesc, Vec<usize>) {

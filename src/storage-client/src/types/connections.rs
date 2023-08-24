@@ -169,10 +169,10 @@ impl ConnectionContext {
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum Connection {
-    Kafka(KafkaConnection),
+pub enum Connection<C: ConnectionAccess = InlinedConnection> {
+    Kafka(KafkaConnection<C>),
     Csr(CsrConnection),
-    Postgres(PostgresConnection),
+    Postgres(PostgresConnection<C>),
     Ssh(SshConnection),
     Aws(AwsConfig),
     AwsPrivatelink(AwsPrivatelinkConnection),
@@ -271,11 +271,11 @@ impl From<SaslConfig> for KafkaSecurity {
 
 /// Specifies a Kafka broker in a [`KafkaConnection`].
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct KafkaBroker {
+pub struct KafkaBroker<C: ConnectionAccess = InlinedConnection> {
     /// The address of the Kafka broker.
     pub address: String,
     /// An optional tunnel to use when connecting to the broker.
-    pub tunnel: Tunnel,
+    pub tunnel: Tunnel<C>,
 }
 
 impl RustType<ProtoKafkaBroker> for KafkaBroker {
@@ -297,8 +297,8 @@ impl RustType<ProtoKafkaBroker> for KafkaBroker {
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct KafkaConnection {
-    pub brokers: Vec<KafkaBroker>,
+pub struct KafkaConnection<C: ConnectionAccess = InlinedConnection> {
+    pub brokers: Vec<KafkaBroker<C>>,
     pub progress_topic: Option<String>,
     pub security: Option<KafkaSecurity>,
     pub options: BTreeMap<String, StringOrSecret>,
@@ -544,7 +544,7 @@ impl RustType<ProtoKafkaConnection> for KafkaConnection {
 
 /// A connection to a Confluent Schema Registry.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct CsrConnection {
+pub struct CsrConnection<C: ConnectionAccess = InlinedConnection> {
     /// The URL of the schema registry.
     pub url: Url,
     /// Trusted root TLS certificate in PEM format.
@@ -555,7 +555,7 @@ pub struct CsrConnection {
     /// Optional HTTP authentication credentials for the schema registry.
     pub http_auth: Option<CsrConnectionHttpAuth>,
     /// A tunnel through which to route traffic.
-    pub tunnel: Tunnel,
+    pub tunnel: Tunnel<C>,
 }
 
 impl CsrConnection {
@@ -730,7 +730,7 @@ impl RustType<ProtoCsrConnection> for CsrConnection {
     }
 }
 
-impl Arbitrary for CsrConnection {
+impl<C: ConnectionAccess> Arbitrary for CsrConnection<C> {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
 
@@ -740,7 +740,7 @@ impl Arbitrary for CsrConnection {
             any::<Option<StringOrSecret>>(),
             any::<Option<TlsIdentity>>(),
             any::<Option<CsrConnectionHttpAuth>>(),
-            any::<Tunnel>(),
+            any::<Tunnel<C>>(),
         )
             .prop_map(
                 |(url, tls_root_cert, tls_identity, http_auth, tunnel)| CsrConnection {
@@ -810,7 +810,7 @@ impl RustType<ProtoCsrConnectionHttpAuth> for CsrConnectionHttpAuth {
 
 /// A connection to a PostgreSQL server.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct PostgresConnection {
+pub struct PostgresConnection<C: ConnectionAccess = InlinedConnection> {
     /// The hostname of the server.
     pub host: String,
     /// The port of the server.
@@ -822,7 +822,7 @@ pub struct PostgresConnection {
     /// An optional password for authentication.
     pub password: Option<GlobalId>,
     /// A tunnel through which to route traffic.
-    pub tunnel: Tunnel,
+    pub tunnel: Tunnel<C>,
     /// Whether to use TLS for encryption, authentication, or both.
     pub tls_mode: SslMode,
     /// An optional root TLS certificate in PEM format, to verify the server's
@@ -832,7 +832,7 @@ pub struct PostgresConnection {
     pub tls_identity: Option<TlsIdentity>,
 }
 
-impl PostgresConnection {
+impl PostgresConnection<InlinedConnection> {
     pub async fn config(
         &self,
         secrets_reader: &dyn mz_secrets::SecretsReader,
@@ -936,7 +936,7 @@ impl RustType<ProtoPostgresConnection> for PostgresConnection {
     }
 }
 
-impl Arbitrary for PostgresConnection {
+impl<C: ConnectionAccess> Arbitrary for PostgresConnection<C> {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
 
@@ -947,7 +947,7 @@ impl Arbitrary for PostgresConnection {
             any::<String>(),
             any::<StringOrSecret>(),
             any::<Option<GlobalId>>(),
-            any::<Tunnel>(),
+            any::<Tunnel<C>>(),
             any_ssl_mode(),
             any::<Option<StringOrSecret>>(),
             any::<Option<TlsIdentity>>(),
@@ -983,16 +983,16 @@ impl Arbitrary for PostgresConnection {
 
 /// Specifies how to tunnel a connection.
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum Tunnel {
+pub enum Tunnel<C: ConnectionAccess = InlinedConnection> {
     /// No tunneling.
     Direct,
     /// Via the specified SSH tunnel connection.
-    Ssh(SshTunnel),
+    Ssh(SshTunnel<C>),
     /// Via the specified AWS PrivateLink connection.
     AwsPrivatelink(AwsPrivatelink),
 }
 
-impl RustType<ProtoTunnel> for Tunnel {
+impl RustType<ProtoTunnel> for Tunnel<InlinedConnection> {
     fn into_proto(&self) -> ProtoTunnel {
         use proto_tunnel::Tunnel as ProtoTunnelField;
         ProtoTunnel {
@@ -1025,6 +1025,8 @@ pub struct SshConnection {
 }
 
 use proto_ssh_connection::ProtoPublicKeys;
+
+use super::sources::{ConnectionAccess, InlinedConnection};
 
 impl RustType<ProtoPublicKeys> for (String, String) {
     fn into_proto(&self) -> ProtoPublicKeys {
@@ -1093,14 +1095,14 @@ impl RustType<ProtoAwsPrivatelink> for AwsPrivatelink {
 
 /// Specifies an AWS PrivateLink service for a [`Tunnel`].
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct SshTunnel {
+pub struct SshTunnel<C: ConnectionAccess = InlinedConnection> {
     /// id of the ssh connection
     pub connection_id: GlobalId,
     /// ssh connection object
-    pub connection: SshConnection,
+    pub connection: C::Ssh,
 }
 
-impl RustType<ProtoSshTunnel> for SshTunnel {
+impl RustType<ProtoSshTunnel> for SshTunnel<InlinedConnection> {
     fn into_proto(&self) -> ProtoSshTunnel {
         ProtoSshTunnel {
             connection_id: Some(self.connection_id.into_proto()),
@@ -1120,7 +1122,7 @@ impl RustType<ProtoSshTunnel> for SshTunnel {
     }
 }
 
-impl SshTunnel {
+impl SshTunnel<InlinedConnection> {
     /// Like [`SshTunnelConfig::connect`], but the SSH key is loaded from a
     /// secret.
     async fn connect(

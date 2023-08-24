@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::ops::{Add, AddAssign, Deref, DerefMut};
 use std::str::FromStr;
 use std::time::Duration;
@@ -36,7 +37,7 @@ use mz_repr::{
 };
 use mz_timely_util::order::{Interval, Partitioned, RangeBound};
 use once_cell::sync::Lazy;
-use proptest::prelude::{any, prop_oneof, Arbitrary, BoxedStrategy, Strategy};
+use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use proptest_derive::Arbitrary;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,8 @@ use crate::types::instances::StorageInstanceId;
 use crate::types::sources::encoding::{DataEncoding, DataEncodingInner, SourceDataEncoding};
 use crate::types::sources::proto_ingestion_description::{ProtoSourceExport, ProtoSourceImport};
 use crate::types::sources::proto_load_generator_source_connection::Generator as ProtoGenerator;
+
+use super::connections::SshConnection;
 
 pub mod encoding;
 
@@ -1885,48 +1888,49 @@ impl<C: ConnectionAccess> SourceDesc<C> {
 
 /// Connection details might change over time, so offer a means of understanding
 /// how different structs access those details.
-pub trait ConnectionAccess: Arbitrary + Clone + Debug + Eq + PartialEq + Serialize {
-    type Kafka: Arbitrary + Clone + Debug + Eq + PartialEq + Serialize + for<'a> Deserialize<'a>;
+pub trait ConnectionAccess:
+    Arbitrary + Clone + Debug + Eq + PartialEq + Serialize + 'static
+{
+    type Kafka: Arbitrary
+        + Clone
+        + Debug
+        + Eq
+        + PartialEq
+        + Hash
+        + Serialize
+        + for<'a> Deserialize<'a>;
+    type Ssh: Arbitrary
+        + Clone
+        + Debug
+        + Eq
+        + PartialEq
+        + Hash
+        + Serialize
+        + for<'a> Deserialize<'a>;
 }
 
-#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ReferencedConnection;
 
 impl ConnectionAccess for ReferencedConnection {
     type Kafka = GlobalId;
+    type Ssh = GlobalId;
 }
 
-#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct InlinedConnection;
 
 impl ConnectionAccess for InlinedConnection {
     type Kafka = KafkaConnection;
+    type Ssh = SshConnection;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GenericSourceConnection<C: ConnectionAccess = InlinedConnection> {
     Kafka(KafkaSourceConnection<C>),
     Postgres(PostgresSourceConnection),
     LoadGenerator(LoadGeneratorSourceConnection),
     TestScript(TestScriptSourceConnection),
-}
-
-impl<C: ConnectionAccess + 'static> Arbitrary for GenericSourceConnection<C>
-where
-    <<C as ConnectionAccess>::Kafka as Arbitrary>::Strategy: 'static,
-{
-    type Strategy = BoxedStrategy<Self>;
-    type Parameters = ();
-
-    fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
-        prop_oneof![
-            any::<KafkaSourceConnection<C>>().prop_map(GenericSourceConnection::Kafka),
-            any::<PostgresSourceConnection>().prop_map(GenericSourceConnection::Postgres),
-            any::<LoadGeneratorSourceConnection>().prop_map(GenericSourceConnection::LoadGenerator),
-            any::<TestScriptSourceConnection>().prop_map(GenericSourceConnection::TestScript)
-        ]
-        .boxed()
-    }
 }
 
 impl<C: ConnectionAccess> From<KafkaSourceConnection<C>> for GenericSourceConnection<C> {
