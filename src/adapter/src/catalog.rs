@@ -1713,15 +1713,41 @@ impl CatalogState {
         }
     }
 
+    pub fn inline_connections(
+        &self,
+        connection: mz_storage_client::types::connections::Connection<ReferencedConnection>,
+    ) -> mz_storage_client::types::connections::Connection {
+        let ssh_requests = connection.get_ssh_connections();
+
+        let ssh_connections = ssh_requests
+            .into_iter()
+            .map(|id| {
+                id.map(|id| {
+                    match &self
+                        .get_entry(&id)
+                        .connection()
+                        .expect("only request connections")
+                        .connection
+                    {
+                        mz_storage_client::types::connections::Connection::Ssh(ssh) => ssh.clone(),
+                        o => panic!("{id} refers to {o:?}, but expected SSH connection"),
+                    }
+                })
+            })
+            .collect();
+
+        connection.inline_connections(ssh_connections)
+    }
+
     pub fn inline_connections_for_ingestion(
         &self,
         ingestion: IngestionDescription<(), ReferencedConnection>,
     ) -> IngestionDescription<(), InlinedConnection> {
-        let connection = self.inline_connections(ingestion.desc.connection.clone());
+        let connection = self.inline_source_connections(ingestion.desc.connection.clone());
         ingestion.inline_connection(connection)
     }
 
-    fn inline_connections(
+    pub fn inline_source_connections(
         &self,
         connection: GenericSourceConnection<ReferencedConnection>,
     ) -> GenericSourceConnection<InlinedConnection> {
@@ -7627,9 +7653,11 @@ impl Catalog {
                 create_sql: secret.create_sql,
             }),
             Plan::CreateConnection(CreateConnectionPlan { connection, .. }) => {
+                let create_sql = connection.create_sql;
+                let connection = self.state().inline_connections(connection.connection);
                 CatalogItem::Connection(Connection {
-                    create_sql: connection.create_sql,
-                    connection: connection.connection,
+                    create_sql,
+                    connection,
                     resolved_ids,
                 })
             }

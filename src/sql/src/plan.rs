@@ -1131,7 +1131,7 @@ pub struct WebhookValidationSecret {
 #[derive(Clone, Debug)]
 pub struct Connection {
     pub create_sql: String,
-    pub connection: mz_storage_client::types::connections::Connection,
+    pub connection: mz_storage_client::types::connections::Connection<ReferencedConnection>,
 }
 
 #[derive(Clone, Debug)]

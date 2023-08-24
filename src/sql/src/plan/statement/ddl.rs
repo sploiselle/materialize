@@ -3166,7 +3166,10 @@ impl KafkaConnectionOptionExtracted {
     pub fn get_brokers(
         &self,
         scx: &StatementContext,
-    ) -> Result<Vec<mz_storage_client::types::connections::KafkaBroker>, PlanError> {
+    ) -> Result<
+        Vec<mz_storage_client::types::connections::KafkaBroker<ReferencedConnection>>,
+        PlanError,
+    > {
         let mut brokers = match (&self.broker, &self.brokers) {
             (Some(_), Some(_)) => sql_bail!("invalid CONNECTION: cannot set BROKER and BROKERS"),
             (None, None) => sql_bail!("invalid CONNECTION: must set either BROKER or BROKERS"),
@@ -3232,9 +3235,9 @@ Instead, specify BROKERS using multiple strings, e.g. BROKERS ('kafka:9092', 'ka
                     };
                     let ssh_tunnel = scx.catalog.get_item(id);
                     match ssh_tunnel.connection()? {
-                        Connection::Ssh(connection) => Tunnel::Ssh(SshTunnel {
+                        Connection::Ssh(_connection) => Tunnel::Ssh(SshTunnel {
                             connection_id: *id,
-                            connection: connection.clone(),
+                            connection: *id,
                         }),
                         _ => {
                             sql_bail!("{} is not an SSH connection", ssh_tunnel.name().item)
@@ -3338,7 +3341,10 @@ impl KafkaConnectionOptionExtracted {
     fn to_connection(
         self,
         scx: &StatementContext,
-    ) -> Result<mz_storage_client::types::connections::KafkaConnection, PlanError> {
+    ) -> Result<
+        mz_storage_client::types::connections::KafkaConnection<ReferencedConnection>,
+        PlanError,
+    > {
         Ok(KafkaConnection {
             brokers: self.get_brokers(scx)?,
             security: Option::<KafkaSecurity>::try_from(&self)?,
@@ -3371,7 +3377,8 @@ impl CsrConnectionOptionExtracted {
     fn to_connection(
         self,
         scx: &StatementContext,
-    ) -> Result<mz_storage_client::types::connections::CsrConnection, PlanError> {
+    ) -> Result<mz_storage_client::types::connections::CsrConnection<ReferencedConnection>, PlanError>
+    {
         let url: reqwest::Url = match self.url {
             Some(url) => url
                 .parse()
@@ -3429,7 +3436,10 @@ impl PostgresConnectionOptionExtracted {
     fn to_connection(
         self,
         scx: &StatementContext,
-    ) -> Result<mz_storage_client::types::connections::PostgresConnection, PlanError> {
+    ) -> Result<
+        mz_storage_client::types::connections::PostgresConnection<ReferencedConnection>,
+        PlanError,
+    > {
         let cert = self.ssl_certificate;
         let key = self.ssl_key.map(|secret| secret.into());
         let tls_identity = match (cert, key) {

@@ -40,6 +40,8 @@ use tokio::net;
 use tokio_postgres::config::SslMode;
 use url::Url;
 
+use super::sources::{ConnectionAccess, InlinedConnection, ReferencedConnection};
+
 use crate::ssh_tunnels::{ManagedSshTunnelHandle, SshTunnelManager};
 use crate::types::connections::aws::AwsConfig;
 
@@ -171,14 +173,58 @@ impl ConnectionContext {
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Connection<C: ConnectionAccess = InlinedConnection> {
     Kafka(KafkaConnection<C>),
-    Csr(CsrConnection),
+    Csr(CsrConnection<C>),
     Postgres(PostgresConnection<C>),
     Ssh(SshConnection),
     Aws(AwsConfig),
     AwsPrivatelink(AwsPrivatelinkConnection),
 }
 
-impl Connection {
+impl Connection<ReferencedConnection> {
+    pub fn get_ssh_connections(
+        &self,
+    ) -> Vec<Option<<ReferencedConnection as ConnectionAccess>::Ssh>> {
+        match self {
+            Connection::Kafka(kafka) => kafka.get_ssh_connections(),
+            Connection::Csr(csr) => vec![csr.get_ssh_connection()],
+            Connection::Postgres(pg) => vec![pg.get_ssh_connection()],
+            Connection::Ssh(_) | Connection::Aws(_) | Connection::AwsPrivatelink(_) => vec![],
+        }
+    }
+
+    pub fn inline_connections(
+        self,
+        mut sshs: Vec<Option<<InlinedConnection as ConnectionAccess>::Ssh>>,
+    ) -> Connection<InlinedConnection> {
+        match self {
+            Connection::Kafka(kafka) => Connection::Kafka(kafka.inline_connection(sshs)),
+            Connection::Csr(csr) => {
+                let ssh = sshs.remove(0);
+                assert!(sshs.is_empty());
+                Connection::Csr(csr.inline_connection(ssh))
+            }
+            Connection::Postgres(pg) => {
+                let ssh = sshs.remove(0);
+                assert!(sshs.is_empty());
+                Connection::Postgres(pg.inline_connection(ssh))
+            }
+            Connection::Ssh(ssh) => {
+                assert!(sshs.is_empty());
+                Connection::Ssh(ssh)
+            }
+            Connection::Aws(aws) => {
+                assert!(sshs.is_empty());
+                Connection::Aws(aws)
+            }
+            Connection::AwsPrivatelink(awspl) => {
+                assert!(sshs.is_empty());
+                Connection::AwsPrivatelink(awspl)
+            }
+        }
+    }
+}
+
+impl<C: ConnectionAccess> Connection<C> {
     /// Whether this connection should be validated by default on creation.
     pub fn validate_by_default(&self) -> bool {
         match self {
@@ -190,7 +236,9 @@ impl Connection {
             Connection::AwsPrivatelink(conn) => conn.validate_by_default(),
         }
     }
+}
 
+impl Connection<InlinedConnection> {
     /// Validates this connection by attempting to connect to the upstream system.
     pub async fn validate(
         &self,
@@ -278,6 +326,23 @@ pub struct KafkaBroker<C: ConnectionAccess = InlinedConnection> {
     pub tunnel: Tunnel<C>,
 }
 
+impl KafkaBroker<ReferencedConnection> {
+    fn get_ssh_connection(&self) -> Option<<ReferencedConnection as ConnectionAccess>::Ssh> {
+        self.tunnel.get_ssh_connection()
+    }
+
+    fn inline_connection(
+        self,
+        ssh: Option<<InlinedConnection as ConnectionAccess>::Ssh>,
+    ) -> KafkaBroker<InlinedConnection> {
+        let KafkaBroker { address, tunnel } = self;
+        KafkaBroker {
+            address,
+            tunnel: tunnel.inline_connection(ssh),
+        }
+    }
+}
+
 impl RustType<ProtoKafkaBroker> for KafkaBroker {
     fn into_proto(&self) -> ProtoKafkaBroker {
         ProtoKafkaBroker {
@@ -302,6 +367,46 @@ pub struct KafkaConnection<C: ConnectionAccess = InlinedConnection> {
     pub progress_topic: Option<String>,
     pub security: Option<KafkaSecurity>,
     pub options: BTreeMap<String, StringOrSecret>,
+}
+
+impl KafkaConnection<ReferencedConnection> {
+    fn get_ssh_connections(&self) -> Vec<Option<<ReferencedConnection as ConnectionAccess>::Ssh>> {
+        self.brokers
+            .iter()
+            .map(|broker| broker.get_ssh_connection())
+            .collect()
+    }
+
+    fn inline_connection(
+        self,
+        sshs: Vec<Option<<InlinedConnection as ConnectionAccess>::Ssh>>,
+    ) -> KafkaConnection<InlinedConnection> {
+        let KafkaConnection {
+            brokers,
+            progress_topic,
+            security,
+            options,
+        } = self;
+
+        let brokers = brokers
+            .into_iter()
+            .zip_eq(sshs.into_iter())
+            .map(|(broker, ssh)| broker.inline_connection(ssh))
+            .collect();
+
+        KafkaConnection {
+            brokers,
+            progress_topic,
+            security,
+            options,
+        }
+    }
+}
+
+impl<C: ConnectionAccess> KafkaConnection<C> {
+    fn validate_by_default(&self) -> bool {
+        true
+    }
 }
 
 impl KafkaConnection {
@@ -445,10 +550,6 @@ impl KafkaConnection {
         .await??;
         Ok(())
     }
-
-    fn validate_by_default(&self) -> bool {
-        true
-    }
 }
 
 impl RustType<ProtoKafkaConnectionTlsConfig> for KafkaTlsConfig {
@@ -556,6 +657,38 @@ pub struct CsrConnection<C: ConnectionAccess = InlinedConnection> {
     pub http_auth: Option<CsrConnectionHttpAuth>,
     /// A tunnel through which to route traffic.
     pub tunnel: Tunnel<C>,
+}
+
+impl CsrConnection<ReferencedConnection> {
+    fn get_ssh_connection(&self) -> Option<<ReferencedConnection as ConnectionAccess>::Ssh> {
+        self.tunnel.get_ssh_connection()
+    }
+
+    fn inline_connection(
+        self,
+        ssh: Option<<InlinedConnection as ConnectionAccess>::Ssh>,
+    ) -> CsrConnection<InlinedConnection> {
+        let CsrConnection {
+            url,
+            tls_root_cert,
+            tls_identity,
+            http_auth,
+            tunnel,
+        } = self;
+        CsrConnection {
+            url,
+            tls_root_cert,
+            tls_identity,
+            http_auth,
+            tunnel: tunnel.inline_connection(ssh),
+        }
+    }
+}
+
+impl<C: ConnectionAccess> CsrConnection<C> {
+    fn validate_by_default(&self) -> bool {
+        true
+    }
 }
 
 impl CsrConnection {
@@ -700,10 +833,6 @@ impl CsrConnection {
         self.connect(connection_context).await?;
         Ok(())
     }
-
-    fn validate_by_default(&self) -> bool {
-        true
-    }
 }
 
 impl RustType<ProtoCsrConnection> for CsrConnection {
@@ -832,6 +961,47 @@ pub struct PostgresConnection<C: ConnectionAccess = InlinedConnection> {
     pub tls_identity: Option<TlsIdentity>,
 }
 
+impl PostgresConnection<ReferencedConnection> {
+    fn get_ssh_connection(&self) -> Option<<ReferencedConnection as ConnectionAccess>::Ssh> {
+        self.tunnel.get_ssh_connection()
+    }
+
+    fn inline_connection(
+        self,
+        ssh: Option<<InlinedConnection as ConnectionAccess>::Ssh>,
+    ) -> PostgresConnection<InlinedConnection> {
+        let PostgresConnection {
+            host,
+            port,
+            database,
+            user,
+            password,
+            tunnel,
+            tls_mode,
+            tls_root_cert,
+            tls_identity,
+        } = self;
+
+        PostgresConnection {
+            host,
+            port,
+            database,
+            user,
+            password,
+            tunnel: tunnel.inline_connection(ssh),
+            tls_mode,
+            tls_root_cert,
+            tls_identity,
+        }
+    }
+}
+
+impl<C: ConnectionAccess> PostgresConnection<C> {
+    fn validate_by_default(&self) -> bool {
+        true
+    }
+}
+
 impl PostgresConnection<InlinedConnection> {
     pub async fn config(
         &self,
@@ -893,10 +1063,6 @@ impl PostgresConnection<InlinedConnection> {
         let config = self.config(&*connection_context.secrets_reader).await?;
         config.connect("connection validation").await?;
         Ok(())
-    }
-
-    fn validate_by_default(&self) -> bool {
-        true
     }
 }
 
@@ -992,6 +1158,27 @@ pub enum Tunnel<C: ConnectionAccess = InlinedConnection> {
     AwsPrivatelink(AwsPrivatelink),
 }
 
+impl Tunnel<ReferencedConnection> {
+    fn get_ssh_connection(&self) -> Option<<ReferencedConnection as ConnectionAccess>::Ssh> {
+        match self {
+            Tunnel::Ssh(ssh) => Some(ssh.connection.clone()),
+            _ => None,
+        }
+    }
+
+    fn inline_connection(
+        self,
+        ssh: Option<<InlinedConnection as ConnectionAccess>::Ssh>,
+    ) -> Tunnel<InlinedConnection> {
+        match (self, ssh) {
+            (Tunnel::Direct, None) => Tunnel::Direct,
+            (Tunnel::Ssh(ssh), Some(connection)) => Tunnel::Ssh(ssh.inline_connection(connection)),
+            (Tunnel::AwsPrivatelink(conn), None) => Tunnel::AwsPrivatelink(conn),
+            (t, s) => unreachable!("wrong connection for inlining, have {t:?}, got {s:?}"),
+        }
+    }
+}
+
 impl RustType<ProtoTunnel> for Tunnel<InlinedConnection> {
     fn into_proto(&self) -> ProtoTunnel {
         use proto_tunnel::Tunnel as ProtoTunnelField;
@@ -1025,8 +1212,6 @@ pub struct SshConnection {
 }
 
 use proto_ssh_connection::ProtoPublicKeys;
-
-use super::sources::{ConnectionAccess, InlinedConnection};
 
 impl RustType<ProtoPublicKeys> for (String, String) {
     fn into_proto(&self) -> ProtoPublicKeys {
@@ -1100,6 +1285,23 @@ pub struct SshTunnel<C: ConnectionAccess = InlinedConnection> {
     pub connection_id: GlobalId,
     /// ssh connection object
     pub connection: C::Ssh,
+}
+
+impl SshTunnel<ReferencedConnection> {
+    fn inline_connection(
+        self,
+        connection: <InlinedConnection as ConnectionAccess>::Ssh,
+    ) -> SshTunnel<InlinedConnection> {
+        let SshTunnel {
+            connection: _,
+            connection_id,
+        } = self;
+
+        SshTunnel {
+            connection,
+            connection_id,
+        }
+    }
 }
 
 impl RustType<ProtoSshTunnel> for SshTunnel<InlinedConnection> {

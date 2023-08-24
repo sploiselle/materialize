@@ -327,8 +327,13 @@ impl Coordinator {
             let conn_id = ctx.session().conn_id().clone();
             let connection_context = self.connection_context.clone();
             let otel_ctx = OpenTelemetryContext::obtain();
+
+            let connection = self
+                .catalog()
+                .state()
+                .inline_connections(plan.connection.connection.clone());
+
             task::spawn(|| format!("validate_connection:{conn_id}"), async move {
-                let connection = &plan.connection.connection;
                 let result = match connection
                     .validate(connection_gid, &connection_context)
                     .await
@@ -379,6 +384,7 @@ impl Coordinator {
     ) -> Result<ExecuteResponse, AdapterError> {
         let connection_oid = self.catalog_mut().allocate_oid()?;
         let connection = plan.connection.connection;
+        let connection = self.catalog().state().inline_connections(connection);
 
         let ops = vec![catalog::Op::CreateItem {
             id: connection_gid,
