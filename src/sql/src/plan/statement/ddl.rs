@@ -54,8 +54,8 @@ use mz_storage_client::types::sources::encoding::{
 use mz_storage_client::types::sources::{
     GenericSourceConnection, IncludedColumnPos, KafkaSourceConnection, KeyEnvelope, LoadGenerator,
     LoadGeneratorSourceConnection, PostgresSourceConnection, PostgresSourcePublicationDetails,
-    ProtoPostgresSourcePublicationDetails, SourceConnection, SourceDesc, SourceEnvelope,
-    TestScriptSourceConnection, Timeline, Unloaded, UnplannedSourceEnvelope, UpsertStyle,
+    ProtoPostgresSourcePublicationDetails, ReferencedConnection, SourceConnection, SourceDesc,
+    SourceEnvelope, TestScriptSourceConnection, Timeline, UnplannedSourceEnvelope, UpsertStyle,
 };
 use prost::Message;
 
@@ -610,7 +610,7 @@ pub fn plan_create_source(
 
             let encoding = get_encoding(scx, format, &envelope, Some(connection))?;
 
-            let mut connection = KafkaSourceConnection::<Unloaded> {
+            let mut connection = KafkaSourceConnection::<ReferencedConnection> {
                 connection: connection_item.id(),
                 connection_id: connection_item.id(),
                 topic,
@@ -889,13 +889,14 @@ pub fn plan_create_source(
             let publication_details = PostgresSourcePublicationDetails::from_proto(details)
                 .map_err(|e| sql_err!("{}", e))?;
 
-            let connection = GenericSourceConnection::<Unloaded>::from(PostgresSourceConnection {
-                connection,
-                connection_id: connection_item.id(),
-                table_casts,
-                publication: publication.expect("validated exists during purification"),
-                publication_details,
-            });
+            let connection =
+                GenericSourceConnection::<ReferencedConnection>::from(PostgresSourceConnection {
+                    connection,
+                    connection_id: connection_item.id(),
+                    table_casts,
+                    publication: publication.expect("validated exists during purification"),
+                    publication_details,
+                });
             // The postgres source only outputs data to its subsources. The catalog object
             // representing the source itself is just an empty relation with no columns
             let encoding = SourceDataEncoding::Single(DataEncoding::new(
@@ -1135,7 +1136,7 @@ pub fn plan_create_source(
         None => scx.catalog.config().timestamp_interval,
     };
 
-    let source_desc = SourceDesc::<GenericSourceConnection<Unloaded>> {
+    let source_desc = SourceDesc::<ReferencedConnection> {
         connection: external_connection,
         encoding,
         envelope: envelope.clone(),

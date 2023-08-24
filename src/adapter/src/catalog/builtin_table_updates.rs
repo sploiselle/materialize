@@ -38,7 +38,7 @@ use mz_sql_parser::ast::display::AstDisplay;
 use mz_storage_client::types::connections::KafkaConnection;
 use mz_storage_client::types::sinks::{KafkaSinkConnection, StorageSinkConnection};
 use mz_storage_client::types::sources::{
-    GenericSourceConnection, KafkaSourceConnection, PostgresSourceConnection,
+    GenericSourceConnection, KafkaSourceConnection, PostgresSourceConnection, ReferencedConnection,
 };
 
 use crate::catalog::builtin::{
@@ -517,7 +517,7 @@ impl CatalogState {
     fn pack_kafka_source_update(
         &self,
         id: GlobalId,
-        kafka: &KafkaSourceConnection,
+        kafka: &KafkaSourceConnection<ReferencedConnection>,
         diff: Diff,
     ) -> Vec<BuiltinTableUpdate> {
         vec![BuiltinTableUpdate {

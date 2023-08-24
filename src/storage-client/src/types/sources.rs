@@ -62,9 +62,9 @@ include!(concat!(
 
 /// A description of a source ingestion
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct IngestionDescription<S = ()> {
+pub struct IngestionDescription<S = (), C: ConnectionAccess = InlinedConnection> {
     /// The source description
-    pub desc: SourceDesc,
+    pub desc: SourceDesc<C>,
     /// Source collections made available to this ingestion.
     pub source_imports: BTreeMap<GlobalId, S>,
     /// Additional storage controller metadata needed to ingest this source
@@ -175,6 +175,33 @@ impl<S: Debug + Eq + PartialEq> IngestionDescription<S> {
         }
 
         Ok(())
+    }
+}
+
+impl IngestionDescription<(), ReferencedConnection> {
+    pub fn inline_connection(
+        self,
+        connection: GenericSourceConnection<InlinedConnection>,
+    ) -> IngestionDescription<(), InlinedConnection> {
+        let IngestionDescription {
+            desc,
+            source_imports,
+            ingestion_metadata,
+            source_exports,
+            instance_id,
+            remap_collection_id,
+        } = self;
+
+        let desc = desc.inline_connection(connection);
+
+        IngestionDescription {
+            desc,
+            source_imports,
+            ingestion_metadata,
+            source_exports,
+            instance_id,
+            remap_collection_id,
+        }
     }
 }
 
@@ -1398,7 +1425,7 @@ pub trait SourceConnection: Debug + Clone + PartialEq {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct KafkaSourceConnection<C: ConnectionReference = Loaded> {
+pub struct KafkaSourceConnection<C: ConnectionAccess = InlinedConnection> {
     pub connection: C::Kafka,
     pub connection_id: GlobalId,
     pub topic: String,
@@ -1429,7 +1456,42 @@ pub static KAFKA_PROGRESS_DESC: Lazy<RelationDesc> = Lazy::new(|| {
         .with_column("offset", ScalarType::UInt64.nullable(true))
 });
 
-impl<C: ConnectionReference> KafkaSourceConnection<C> {
+impl KafkaSourceConnection<ReferencedConnection> {
+    pub fn inline_connection(
+        self,
+        kafka_connection: <InlinedConnection as ConnectionAccess>::Kafka,
+    ) -> KafkaSourceConnection<InlinedConnection> {
+        let KafkaSourceConnection {
+            connection: _,
+            connection_id,
+            topic,
+            start_offsets,
+            group_id_prefix,
+            environment_id,
+            include_timestamp,
+            include_partition,
+            include_topic,
+            include_offset,
+            include_headers,
+        } = self;
+
+        KafkaSourceConnection {
+            connection: kafka_connection,
+            connection_id,
+            topic,
+            start_offsets,
+            group_id_prefix,
+            environment_id,
+            include_timestamp,
+            include_partition,
+            include_topic,
+            include_offset,
+            include_headers,
+        }
+    }
+}
+
+impl<C: ConnectionAccess> KafkaSourceConnection<C> {
     /// Returns the id for the consumer group the configured source will use.
     ///
     /// This has a weird API because `KafkaSourceConnection`'s are created
@@ -1445,7 +1507,7 @@ impl<C: ConnectionReference> KafkaSourceConnection<C> {
     }
 }
 
-impl<C: ConnectionReference> SourceConnection for KafkaSourceConnection<C> {
+impl<C: ConnectionAccess> SourceConnection for KafkaSourceConnection<C> {
     fn name(&self) -> &'static str {
         "kafka"
     }
@@ -1525,9 +1587,9 @@ impl<C: ConnectionReference> SourceConnection for KafkaSourceConnection<C> {
     }
 }
 
-impl<C: ConnectionReference> Arbitrary for KafkaSourceConnection<C>
+impl<C: ConnectionAccess> Arbitrary for KafkaSourceConnection<C>
 where
-    <<C as ConnectionReference>::Kafka as Arbitrary>::Strategy: 'static,
+    <<C as ConnectionAccess>::Kafka as Arbitrary>::Strategy: 'static,
 {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
@@ -1577,7 +1639,7 @@ where
     }
 }
 
-impl RustType<ProtoKafkaSourceConnection> for KafkaSourceConnection<Loaded> {
+impl RustType<ProtoKafkaSourceConnection> for KafkaSourceConnection<InlinedConnection> {
     fn into_proto(&self) -> ProtoKafkaSourceConnection {
         ProtoKafkaSourceConnection {
             connection: Some(self.connection.into_proto()),
@@ -1656,12 +1718,35 @@ impl RustType<ProtoCompression> for Compression {
 
 /// An external source of updates for a relational collection.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct SourceDesc {
-    pub connection: GenericSourceConnection,
+pub struct SourceDesc<C: ConnectionAccess = InlinedConnection> {
+    pub connection: GenericSourceConnection<C>,
     pub encoding: encoding::SourceDataEncoding,
     pub envelope: SourceEnvelope,
     pub metadata_columns: Vec<IncludedColumnSource>,
     pub timestamp_interval: Duration,
+}
+
+impl SourceDesc<ReferencedConnection> {
+    pub fn inline_connection(
+        self,
+        connection: GenericSourceConnection<InlinedConnection>,
+    ) -> SourceDesc<InlinedConnection> {
+        let SourceDesc {
+            connection: _,
+            encoding,
+            envelope,
+            metadata_columns,
+            timestamp_interval,
+        } = self;
+
+        SourceDesc {
+            connection,
+            encoding,
+            envelope,
+            metadata_columns,
+            timestamp_interval,
+        }
+    }
 }
 
 impl Arbitrary for SourceDesc {
@@ -1719,7 +1804,7 @@ impl RustType<ProtoSourceDesc> for SourceDesc {
     }
 }
 
-impl SourceDesc {
+impl<C: ConnectionAccess> SourceDesc<C> {
     /// Returns `true` if this connection yields data that is
     /// append-only/monotonic. Append-monly means the source
     /// never produces retractions.
@@ -1798,35 +1883,37 @@ impl SourceDesc {
     }
 }
 
-pub trait ConnectionReference: Arbitrary + Clone + Debug + Eq + PartialEq + Serialize {
+/// Connection details might change over time, so offer a means of understanding
+/// how different structs access those details.
+pub trait ConnectionAccess: Arbitrary + Clone + Debug + Eq + PartialEq + Serialize {
     type Kafka: Arbitrary + Clone + Debug + Eq + PartialEq + Serialize + for<'a> Deserialize<'a>;
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Unloaded;
+pub struct ReferencedConnection;
 
-impl ConnectionReference for Unloaded {
+impl ConnectionAccess for ReferencedConnection {
     type Kafka = GlobalId;
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Loaded;
+pub struct InlinedConnection;
 
-impl ConnectionReference for Loaded {
+impl ConnectionAccess for InlinedConnection {
     type Kafka = KafkaConnection;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum GenericSourceConnection<C: ConnectionReference = Loaded> {
+pub enum GenericSourceConnection<C: ConnectionAccess = InlinedConnection> {
     Kafka(KafkaSourceConnection<C>),
     Postgres(PostgresSourceConnection),
     LoadGenerator(LoadGeneratorSourceConnection),
     TestScript(TestScriptSourceConnection),
 }
 
-impl<C: ConnectionReference + 'static> Arbitrary for GenericSourceConnection<C>
+impl<C: ConnectionAccess + 'static> Arbitrary for GenericSourceConnection<C>
 where
-    <<C as ConnectionReference>::Kafka as Arbitrary>::Strategy: 'static,
+    <<C as ConnectionAccess>::Kafka as Arbitrary>::Strategy: 'static,
 {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
@@ -1842,31 +1929,31 @@ where
     }
 }
 
-impl<C: ConnectionReference> From<KafkaSourceConnection<C>> for GenericSourceConnection<C> {
+impl<C: ConnectionAccess> From<KafkaSourceConnection<C>> for GenericSourceConnection<C> {
     fn from(conn: KafkaSourceConnection<C>) -> Self {
         Self::Kafka(conn)
     }
 }
 
-impl<C: ConnectionReference> From<PostgresSourceConnection> for GenericSourceConnection<C> {
+impl<C: ConnectionAccess> From<PostgresSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: PostgresSourceConnection) -> Self {
         Self::Postgres(conn)
     }
 }
 
-impl<C: ConnectionReference> From<LoadGeneratorSourceConnection> for GenericSourceConnection<C> {
+impl<C: ConnectionAccess> From<LoadGeneratorSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: LoadGeneratorSourceConnection) -> Self {
         Self::LoadGenerator(conn)
     }
 }
 
-impl<C: ConnectionReference> From<TestScriptSourceConnection> for GenericSourceConnection<C> {
+impl<C: ConnectionAccess> From<TestScriptSourceConnection> for GenericSourceConnection<C> {
     fn from(conn: TestScriptSourceConnection) -> Self {
         Self::TestScript(conn)
     }
 }
 
-impl<C: ConnectionReference> SourceConnection for GenericSourceConnection<C> {
+impl<C: ConnectionAccess> SourceConnection for GenericSourceConnection<C> {
     fn name(&self) -> &'static str {
         match self {
             Self::Kafka(conn) => conn.name(),
@@ -1937,7 +2024,7 @@ impl<C: ConnectionReference> SourceConnection for GenericSourceConnection<C> {
     }
 }
 
-impl RustType<ProtoSourceConnection> for GenericSourceConnection<Loaded> {
+impl RustType<ProtoSourceConnection> for GenericSourceConnection<InlinedConnection> {
     fn into_proto(&self) -> ProtoSourceConnection {
         use proto_source_connection::Kind;
         ProtoSourceConnection {

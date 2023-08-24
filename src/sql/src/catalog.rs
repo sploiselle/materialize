@@ -33,7 +33,7 @@ use mz_repr::{ColumnName, GlobalId, RelationDesc};
 use mz_sql_parser::ast::{Expr, QualifiedReplica, UnresolvedItemName};
 use mz_stash::objects::{proto, RustType, TryFromProtoError};
 use mz_storage_client::types::connections::Connection;
-use mz_storage_client::types::sources::SourceDesc;
+use mz_storage_client::types::sources::{ReferencedConnection, SourceDesc};
 use once_cell::sync::Lazy;
 use proptest_derive::Arbitrary;
 use regex::Regex;
@@ -572,7 +572,7 @@ pub trait CatalogItem {
     ///
     /// If the catalog item is not of a type that contains a `SourceDesc`
     /// (i.e., anything other than sources), it returns an error.
-    fn source_desc(&self) -> Result<Option<&SourceDesc>, CatalogError>;
+    fn source_desc(&self) -> Result<Option<&SourceDesc<ReferencedConnection>>, CatalogError>;
 
     /// Returns the resolved connection.
     ///

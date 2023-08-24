@@ -28,7 +28,7 @@ use mz_ore::thread::{JoinHandleExt, UnparkOnDropHandle};
 use mz_repr::adt::jsonb::Jsonb;
 use mz_repr::{Diff, GlobalId};
 use mz_storage_client::types::connections::{ConnectionContext, StringOrSecret};
-use mz_storage_client::types::sources::{KafkaSourceConnection, Loaded, MzOffset, SourceTimestamp};
+use mz_storage_client::types::sources::{KafkaSourceConnection, MzOffset, SourceTimestamp};
 use mz_timely_util::antichain::AntichainExt;
 use mz_timely_util::builder_async::OperatorBuilder as AsyncOperatorBuilder;
 use mz_timely_util::order::Partitioned;

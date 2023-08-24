@@ -225,12 +225,17 @@ impl Coordinator {
                         ));
 
                     let (data_source, status_collection_id) = match source.data_source {
-                        DataSourceDesc::Ingestion(ingestion) => (
-                            // TODO: take this ingestiondescription into the one
-                            // we want in storage.
-                            DataSource::Ingestion(ingestion),
-                            source_status_collection_id,
-                        ),
+                        DataSourceDesc::Ingestion(ingestion) => {
+                            let ingestion = self
+                                .catalog()
+                                .state()
+                                .inline_connections_for_ingestion(ingestion);
+
+                            (
+                                DataSource::Ingestion(ingestion),
+                                source_status_collection_id,
+                            )
+                        }
                         // Subsources use source statuses.
                         DataSourceDesc::Source => (
                             DataSource::Other(DataSourceOther::Source),
@@ -4110,7 +4115,10 @@ impl Coordinator {
 
                 // Get new ingestion description for storage.
                 let ingestion = match &source.data_source {
-                    DataSourceDesc::Ingestion(ingestion) => ingestion.clone(),
+                    DataSourceDesc::Ingestion(ingestion) => self
+                        .catalog()
+                        .state()
+                        .inline_connections_for_ingestion(ingestion.clone()),
                     _ => unreachable!("already verified of type ingestion"),
                 };
 
@@ -4313,7 +4321,10 @@ impl Coordinator {
 
                 // Get new ingestion description for storage.
                 let ingestion = match &source.data_source {
-                    DataSourceDesc::Ingestion(ingestion) => ingestion.clone(),
+                    DataSourceDesc::Ingestion(ingestion) => self
+                        .catalog()
+                        .state()
+                        .inline_connections_for_ingestion(ingestion.clone()),
                     _ => unreachable!("already verified of type ingestion"),
                 };
 

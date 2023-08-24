@@ -85,8 +85,8 @@ use mz_storage_client::types::sinks::{
     SinkEnvelope, StorageSinkConnection, StorageSinkConnectionBuilder,
 };
 use mz_storage_client::types::sources::{
-    GenericSourceConnection, IngestionDescription, SourceConnection, SourceDesc, SourceEnvelope,
-    SourceExport, Timeline, Unloaded,
+    GenericSourceConnection, IngestionDescription, InlinedConnection, ReferencedConnection,
+    SourceConnection, SourceDesc, SourceEnvelope, SourceExport, Timeline,
 };
 use mz_transform::Optimizer;
 use once_cell::sync::Lazy;
@@ -1712,6 +1712,42 @@ impl CatalogState {
             SystemObjectId::System => SystemObjectType::System,
         }
     }
+
+    pub fn inline_connections_for_ingestion(
+        &self,
+        ingestion: IngestionDescription<(), ReferencedConnection>,
+    ) -> IngestionDescription<(), InlinedConnection> {
+        let connection = self.inline_connections(ingestion.desc.connection.clone());
+        ingestion.inline_connection(connection)
+    }
+
+    fn inline_connections(
+        &self,
+        connection: GenericSourceConnection<ReferencedConnection>,
+    ) -> GenericSourceConnection<InlinedConnection> {
+        match connection {
+            GenericSourceConnection::Kafka(kafka) => {
+                let connection = self
+                    .get_entry(&kafka.connection)
+                    .connection()
+                    .expect("connection ID refers to connection");
+                let connection = match &connection.connection {
+                    mz_storage_client::types::connections::Connection::Kafka(kafka_connection) => {
+                        kafka_connection.clone()
+                    }
+                    _ => unreachable!(),
+                };
+                GenericSourceConnection::Kafka(kafka.inline_connection(connection))
+            }
+            GenericSourceConnection::Postgres(pg) => GenericSourceConnection::Postgres(pg),
+            GenericSourceConnection::LoadGenerator(lg) => {
+                GenericSourceConnection::LoadGenerator(lg)
+            }
+            GenericSourceConnection::TestScript(test_script) => {
+                GenericSourceConnection::TestScript(test_script)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2017,7 +2053,7 @@ impl Table {
 #[derive(Debug, Clone, Serialize)]
 pub enum DataSourceDesc {
     /// Receives data from an external system
-    Ingestion(IngestionDescription<(), GenericSourceConnection<Unloaded>>),
+    Ingestion(IngestionDescription<(), ReferencedConnection>),
     /// Receives data from some other source
     Source,
     /// Receives introspection data from an internal system
@@ -2420,7 +2456,7 @@ impl CatalogItem {
     pub fn source_desc(
         &self,
         entry: &CatalogEntry,
-    ) -> Result<Option<&SourceDesc>, SqlCatalogError> {
+    ) -> Result<Option<&SourceDesc<ReferencedConnection>>, SqlCatalogError> {
         match &self {
             CatalogItem::Source(source) => match &source.data_source {
                 DataSourceDesc::Ingestion(ingestion) => Ok(Some(&ingestion.desc)),
@@ -2743,7 +2779,9 @@ impl CatalogEntry {
 
     /// Returns the [`mz_storage_client::types::sources::SourceDesc`] associated with
     /// this `CatalogEntry`, if any.
-    pub fn source_desc(&self) -> Result<Option<&SourceDesc>, SqlCatalogError> {
+    pub fn source_desc(
+        &self,
+    ) -> Result<Option<&SourceDesc<ReferencedConnection>>, SqlCatalogError> {
         self.item.source_desc(self)
     }
 
@@ -8791,7 +8829,7 @@ impl mz_sql::catalog::CatalogItem for CatalogEntry {
         self.func()
     }
 
-    fn source_desc(&self) -> Result<Option<&SourceDesc>, SqlCatalogError> {
+    fn source_desc(&self) -> Result<Option<&SourceDesc<ReferencedConnection>>, SqlCatalogError> {
         self.source_desc()
     }
 

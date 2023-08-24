@@ -49,7 +49,7 @@ use mz_sql_parser::ast::{
     TransactionIsolationLevel, TransactionMode, WithOptionValue,
 };
 use mz_storage_client::types::sinks::{SinkEnvelope, StorageSinkConnectionBuilder};
-use mz_storage_client::types::sources::{GenericSourceConnection, SourceDesc, Timeline, Unloaded};
+use mz_storage_client::types::sources::{ReferencedConnection, SourceDesc, Timeline};
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
@@ -1098,7 +1098,7 @@ pub enum DataSourceDesc {
 
 #[derive(Clone, Debug)]
 pub struct Ingestion {
-    pub desc: SourceDesc<GenericSourceConnection<Unloaded>>,
+    pub desc: SourceDesc<ReferencedConnection>,
     pub source_imports: BTreeSet<GlobalId>,
     pub subsource_exports: BTreeMap<GlobalId, usize>,
     pub progress_subsource: GlobalId,
