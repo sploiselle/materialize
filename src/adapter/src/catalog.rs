@@ -1743,11 +1743,11 @@ impl CatalogState {
         &self,
         ingestion: IngestionDescription<(), ReferencedConnection>,
     ) -> IngestionDescription<(), InlinedConnection> {
-        let connection = self.inline_source_connections(ingestion.desc.connection.clone());
+        let connection = self.inline_source_connection(ingestion.desc.connection.clone());
         ingestion.inline_connection(connection)
     }
 
-    pub fn inline_source_connections(
+    pub fn inline_source_connection(
         &self,
         connection: GenericSourceConnection<ReferencedConnection>,
     ) -> GenericSourceConnection<InlinedConnection> {
@@ -1757,9 +1757,11 @@ impl CatalogState {
                     .get_entry(&kafka.connection)
                     .connection()
                     .expect("connection ID refers to connection");
-                let connection = match &connection.connection {
+                let connection = self.inline_connections(connection.connection.clone());
+
+                let connection = match connection {
                     mz_storage_client::types::connections::Connection::Kafka(kafka_connection) => {
-                        kafka_connection.clone()
+                        kafka_connection
                     }
                     _ => unreachable!(),
                 };
@@ -2362,7 +2364,7 @@ impl Sink {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum StorageSinkConnectionState {
-    Pending(StorageSinkConnectionBuilder),
+    Pending(StorageSinkConnectionBuilder<ReferencedConnection>),
     Ready(StorageSinkConnection),
 }
 
@@ -2418,7 +2420,9 @@ pub struct Secret {
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
     pub create_sql: String,
-    pub connection: mz_storage_client::types::connections::Connection,
+    // This can be taken into the type of connection appropriate for storage
+    // through `inline_connection`.
+    pub connection: mz_storage_client::types::connections::Connection<ReferencedConnection>,
     pub resolved_ids: ResolvedIds,
 }
 
@@ -8685,6 +8689,20 @@ impl SessionCatalog for ConnCatalog<'_> {
 
     fn add_notice(&self, notice: PlanNotice) {
         let _ = self.notices_tx.send(notice.into());
+    }
+
+    fn inline_connection(
+        &self,
+        connection: mz_storage_client::types::connections::Connection<ReferencedConnection>,
+    ) -> mz_storage_client::types::connections::Connection<InlinedConnection> {
+        self.state().inline_connections(connection)
+    }
+
+    fn inline_source_connection(
+        &self,
+        connection: GenericSourceConnection<ReferencedConnection>,
+    ) -> GenericSourceConnection<InlinedConnection> {
+        self.state().inline_connectionss(connection)
     }
 }
 

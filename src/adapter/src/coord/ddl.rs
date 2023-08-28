@@ -122,7 +122,11 @@ impl Coordinator {
                         CatalogItem::Source(source) => {
                             sources_to_drop.push(*id);
                             if let DataSourceDesc::Ingestion(ingestion) = &source.data_source {
-                                match &ingestion.desc.connection {
+                                let conn = self
+                                    .catalog()
+                                    .state()
+                                    .inline_source_connection(ingestion.desc.connection.clone());
+                                match conn {
                                     GenericSourceConnection::Postgres(conn) => {
                                         let config = conn
                                             .connection

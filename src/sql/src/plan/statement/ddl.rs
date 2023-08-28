@@ -891,7 +891,7 @@ pub fn plan_create_source(
 
             let connection =
                 GenericSourceConnection::<ReferencedConnection>::from(PostgresSourceConnection {
-                    connection,
+                    connection: connection_item.id(),
                     connection_id: connection_item.id(),
                     table_casts,
                     publication: publication.expect("validated exists during purification"),
@@ -1494,7 +1494,7 @@ fn get_encoding(
     format: &CreateSourceFormat<Aug>,
     envelope: &Envelope,
     connection: Option<&CreateSourceConnection<Aug>>,
-) -> Result<SourceDataEncoding, PlanError> {
+) -> Result<SourceDataEncoding<ReferencedConnection>, PlanError> {
     let encoding = match format {
         CreateSourceFormat::None => sql_bail!("Source format must be specified"),
         CreateSourceFormat::Bare(format) => get_encoding_inner(scx, format)?,
@@ -1561,14 +1561,15 @@ generate_extracted_config!(AvroSchemaOption, (ConfluentWireFormat, bool, Default
 pub struct Schema {
     pub key_schema: Option<String>,
     pub value_schema: String,
-    pub csr_connection: Option<mz_storage_client::types::connections::CsrConnection>,
+    pub csr_connection:
+        Option<mz_storage_client::types::connections::CsrConnection<ReferencedConnection>>,
     pub confluent_wire_format: bool,
 }
 
 fn get_encoding_inner(
     scx: &StatementContext,
     format: &Format<Aug>,
-) -> Result<SourceDataEncodingInner, PlanError> {
+) -> Result<SourceDataEncodingInner<ReferencedConnection>, PlanError> {
     // Avro/CSR can return a `SourceDataEncoding::KeyValue`
     Ok(SourceDataEncodingInner::Single(match format {
         Format::Bytes => DataEncodingInner::Bytes,
@@ -1749,7 +1750,7 @@ fn get_encoding_inner(
 fn get_key_envelope(
     included_items: &[SourceIncludeMetadata],
     envelope: &Envelope,
-    encoding: &SourceDataEncoding,
+    encoding: &SourceDataEncoding<ReferencedConnection>,
 ) -> Result<KeyEnvelope, PlanError> {
     let key_definition = included_items
         .iter()
@@ -1782,7 +1783,9 @@ fn get_key_envelope(
 
 /// Gets the key envelope for a given key encoding when no name for the key has
 /// been requested by the user.
-fn get_unnamed_key_envelope(key: &DataEncoding) -> Result<KeyEnvelope, PlanError> {
+fn get_unnamed_key_envelope(
+    key: &DataEncoding<ReferencedConnection>,
+) -> Result<KeyEnvelope, PlanError> {
     // If the key is requested but comes from an unnamed type then it gets the name "key"
     //
     // Otherwise it gets the names of the columns in the type
@@ -2281,7 +2284,7 @@ fn kafka_sink_builder(
     key_desc_and_indices: Option<(RelationDesc, Vec<usize>)>,
     value_desc: RelationDesc,
     envelope: SinkEnvelope,
-) -> Result<StorageSinkConnectionBuilder, PlanError> {
+) -> Result<StorageSinkConnectionBuilder<ReferencedConnection>, PlanError> {
     let item = scx.get_item_by_resolved_name(&connection)?;
     // Get Kafka connection
     let mut connection = match item.connection()? {

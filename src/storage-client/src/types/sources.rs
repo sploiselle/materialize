@@ -185,6 +185,7 @@ impl IngestionDescription<(), ReferencedConnection> {
     pub fn inline_connection(
         self,
         connection: GenericSourceConnection<InlinedConnection>,
+        encoding: encoding::SourceDataEncoding<InlinedConnection>,
     ) -> IngestionDescription<(), InlinedConnection> {
         let IngestionDescription {
             desc,
@@ -195,7 +196,7 @@ impl IngestionDescription<(), ReferencedConnection> {
             remap_collection_id,
         } = self;
 
-        let desc = desc.inline_connection(connection);
+        let desc = desc.inline_connection(connection, encoding);
 
         IngestionDescription {
             desc,
@@ -1723,7 +1724,7 @@ impl RustType<ProtoCompression> for Compression {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SourceDesc<C: ConnectionAccess = InlinedConnection> {
     pub connection: GenericSourceConnection<C>,
-    pub encoding: encoding::SourceDataEncoding,
+    pub encoding: encoding::SourceDataEncoding<C>,
     pub envelope: SourceEnvelope,
     pub metadata_columns: Vec<IncludedColumnSource>,
     pub timestamp_interval: Duration,
@@ -1733,10 +1734,11 @@ impl SourceDesc<ReferencedConnection> {
     pub fn inline_connection(
         self,
         connection: GenericSourceConnection<InlinedConnection>,
+        encoding: encoding::SourceDataEncoding<InlinedConnection>,
     ) -> SourceDesc<InlinedConnection> {
         let SourceDesc {
             connection: _,
-            encoding,
+            encoding: _,
             envelope,
             metadata_columns,
             timestamp_interval,
@@ -1907,6 +1909,7 @@ pub trait ConnectionAccess:
         + Hash
         + Serialize
         + for<'a> Deserialize<'a>;
+    type Pg: Arbitrary + Clone + Debug + Eq + PartialEq + Hash + Serialize + for<'a> Deserialize<'a>;
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -1915,6 +1918,7 @@ pub struct ReferencedConnection;
 impl ConnectionAccess for ReferencedConnection {
     type Kafka = GlobalId;
     type Ssh = GlobalId;
+    type Pg = GlobalId;
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -1923,12 +1927,13 @@ pub struct InlinedConnection;
 impl ConnectionAccess for InlinedConnection {
     type Kafka = KafkaConnection;
     type Ssh = SshConnection;
+    type Pg = PostgresConnection;
 }
 
 #[derive(Arbitrary, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GenericSourceConnection<C: ConnectionAccess = InlinedConnection> {
     Kafka(KafkaSourceConnection<C>),
-    Postgres(PostgresSourceConnection),
+    Postgres(PostgresSourceConnection<C>),
     LoadGenerator(LoadGeneratorSourceConnection),
     TestScript(TestScriptSourceConnection),
 }
@@ -1939,8 +1944,8 @@ impl<C: ConnectionAccess> From<KafkaSourceConnection<C>> for GenericSourceConnec
     }
 }
 
-impl<C: ConnectionAccess> From<PostgresSourceConnection> for GenericSourceConnection<C> {
-    fn from(conn: PostgresSourceConnection) -> Self {
+impl<C: ConnectionAccess> From<PostgresSourceConnection<C>> for GenericSourceConnection<C> {
+    fn from(conn: PostgresSourceConnection<C>) -> Self {
         Self::Postgres(conn)
     }
 }
@@ -2064,9 +2069,9 @@ impl RustType<ProtoSourceConnection> for GenericSourceConnection<InlinedConnecti
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PostgresSourceConnection {
+pub struct PostgresSourceConnection<C: ConnectionAccess = InlinedConnection> {
     pub connection_id: GlobalId,
-    pub connection: PostgresConnection,
+    pub connection: C::Pg,
     /// The cast expressions to convert the incoming string encoded rows to
     /// their target types, keyed by their position in the source.
     pub table_casts: BTreeMap<usize, Vec<MirScalarExpr>>,
@@ -2074,13 +2079,36 @@ pub struct PostgresSourceConnection {
     pub publication_details: PostgresSourcePublicationDetails,
 }
 
-impl Arbitrary for PostgresSourceConnection {
+impl PostgresSourceConnection<ReferencedConnection> {
+    fn inline_connection(
+        self,
+        connection: <InlinedConnection as ConnectionAccess>::Pg,
+    ) -> PostgresSourceConnection<InlinedConnection> {
+        let PostgresSourceConnection {
+            connection_id,
+            connection: _,
+            table_casts,
+            publication,
+            publication_details,
+        } = self;
+
+        PostgresSourceConnection {
+            connection_id,
+            connection,
+            table_casts,
+            publication,
+            publication_details,
+        }
+    }
+}
+
+impl<C: ConnectionAccess> Arbitrary for PostgresSourceConnection<C> {
     type Strategy = BoxedStrategy<Self>;
     type Parameters = ();
 
     fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
         (
-            any::<PostgresConnection>(),
+            any::<C::Pg>(),
             any::<GlobalId>(),
             proptest::collection::btree_map(
                 any::<usize>(),
@@ -2106,7 +2134,7 @@ impl Arbitrary for PostgresSourceConnection {
 pub static PG_PROGRESS_DESC: Lazy<RelationDesc> =
     Lazy::new(|| RelationDesc::empty().with_column("lsn", ScalarType::UInt64.nullable(true)));
 
-impl SourceConnection for PostgresSourceConnection {
+impl<C: ConnectionAccess> SourceConnection for PostgresSourceConnection<C> {
     fn name(&self) -> &'static str {
         "postgres"
     }
@@ -2176,7 +2204,7 @@ impl SourceConnection for PostgresSourceConnection {
     }
 }
 
-impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection {
+impl RustType<ProtoPostgresSourceConnection> for PostgresSourceConnection<InlinedConnection> {
     fn into_proto(&self) -> ProtoPostgresSourceConnection {
         use proto_postgres_source_connection::ProtoPostgresTableCast;
         let mut table_casts = Vec::with_capacity(self.table_casts.len());
@@ -2329,7 +2357,7 @@ pub enum LoadGenerator {
 }
 
 impl LoadGenerator {
-    fn data_encoding_inner(&self) -> DataEncodingInner {
+    fn data_encoding_inner<C: ConnectionAccess>(&self) -> DataEncodingInner<C> {
         match self {
             LoadGenerator::Auction => DataEncodingInner::RowCodec(RelationDesc::empty()),
             LoadGenerator::Datums => {
@@ -2362,7 +2390,7 @@ impl LoadGenerator {
         }
     }
 
-    pub fn data_encoding(&self) -> SourceDataEncoding {
+    pub fn data_encoding<C: ConnectionAccess>(&self) -> SourceDataEncoding<C> {
         SourceDataEncoding::Single(DataEncoding::new(self.data_encoding_inner()))
     }
 

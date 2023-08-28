@@ -230,8 +230,8 @@ async fn purify_create_source(
             let mut connection = {
                 let item = scx.get_item_by_resolved_name(connection)?;
                 // Get Kafka connection
-                match item.connection()? {
-                    Connection::Kafka(connection) => connection.clone(),
+                match scx.catalog.inline_connection(item.connection()?.clone()) {
+                    Connection::Kafka(connection) => connection,
                     _ => sql_bail!(
                         "{} is not a kafka connection",
                         scx.catalog.resolve_full_name(item.name())
@@ -310,14 +310,15 @@ async fn purify_create_source(
             let scx = StatementContext::new(None, &catalog);
             let connection = {
                 let item = scx.get_item_by_resolved_name(connection)?;
-                match item.connection()? {
-                    Connection::Postgres(connection) => connection.clone(),
+                match scx.catalog.inline_connection(item.connection()?.clone()) {
+                    Connection::Postgres(conn) => conn,
                     _ => sql_bail!(
                         "{} is not a postgres connection",
                         scx.catalog.resolve_full_name(item.name())
                     ),
                 }
             };
+
             let crate::plan::statement::PgConfigOptionExtracted {
                 publication,
                 mut text_columns,
@@ -682,8 +683,12 @@ async fn purify_alter_source(
             return Ok((vec![], Statement::AlterSource(stmt)));
         }
 
-        match &desc.connection {
-            GenericSourceConnection::Postgres(pg_connection) => pg_connection.clone(),
+        let conn = scx
+            .catalog
+            .inline_source_connection(desc.connection.clone());
+
+        match conn {
+            GenericSourceConnection::Postgres(pg_connection) => pg_connection,
             _ => sql_bail!(
                 "{} is a {} source, which does not support ALTER TABLE...ADD SUBSOURCES",
                 scx.catalog.minimal_qualification(item.name()),
@@ -961,9 +966,13 @@ async fn purify_csr_connection_proto(
     match seed {
         None => {
             let scx = StatementContext::new(None, &*catalog);
+            let conn = scx
+                .get_item_by_resolved_name(connection)?
+                .connection()?
+                .clone();
 
-            let ccsr_connection = match scx.get_item_by_resolved_name(connection)?.connection()? {
-                Connection::Csr(connection) => connection.clone(),
+            let ccsr_connection = match scx.catalog.inline_connection(conn) {
+                Connection::Csr(connection) => connection,
                 _ => sql_bail!("{} is not a schema registry connection", connection),
             };
 
@@ -1015,8 +1024,12 @@ async fn purify_csr_connection_avro(
     } = csr_connection;
     if seed.is_none() {
         let scx = StatementContext::new(None, &*catalog);
-        let csr_connection = match scx.get_item_by_resolved_name(connection)?.connection()? {
-            Connection::Csr(connection) => connection.clone(),
+        let conn = scx
+            .get_item_by_resolved_name(connection)?
+            .connection()?
+            .clone();
+        let csr_connection = match scx.catalog.inline_connection(conn) {
+            Connection::Csr(connection) => connection,
             _ => sql_bail!("{} is not a schema registry connection", connection),
         };
         let ccsr_client = csr_connection.connect(connection_context).await?;

@@ -1449,7 +1449,19 @@ impl Coordinator {
                 CatalogItem::Sink(sink) => {
                     // Re-create the sink.
                     let builder = match &sink.connection {
-                        StorageSinkConnectionState::Pending(builder) => builder.clone(),
+                        StorageSinkConnectionState::Pending(builder) => {
+                            let StorageSinkConnectionBuilder::Kafka(connection_builder) =
+                                sink.connection_builder.clone();
+
+                            let connection = self.catalog().state().inline_connections(
+                                self.catalog()
+                                    .get_entry(connection_builder.connection)
+                                    .connection()?
+                                    .clone(),
+                            );
+
+                            builder.clone()
+                        }
                         StorageSinkConnectionState::Ready(_) => {
                             panic!("sink already initialized during catalog boot")
                         }

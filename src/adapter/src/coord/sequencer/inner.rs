@@ -383,8 +383,6 @@ impl Coordinator {
         resolved_ids: ResolvedIds,
     ) -> Result<ExecuteResponse, AdapterError> {
         let connection_oid = self.catalog_mut().allocate_oid()?;
-        let connection = plan.connection.connection;
-        let connection = self.catalog().state().inline_connections(connection);
 
         let ops = vec![catalog::Op::CreateItem {
             id: connection_gid,
@@ -392,7 +390,7 @@ impl Coordinator {
             name: plan.name.clone(),
             item: CatalogItem::Connection(Connection {
                 create_sql: plan.connection.create_sql,
-                connection: connection.clone(),
+                connection: plan.connection.connection,
                 resolved_ids,
             }),
             owner_id: *session.current_role_id(),

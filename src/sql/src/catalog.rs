@@ -33,7 +33,9 @@ use mz_repr::{ColumnName, GlobalId, RelationDesc};
 use mz_sql_parser::ast::{Expr, QualifiedReplica, UnresolvedItemName};
 use mz_stash::objects::{proto, RustType, TryFromProtoError};
 use mz_storage_client::types::connections::Connection;
-use mz_storage_client::types::sources::{ReferencedConnection, SourceDesc};
+use mz_storage_client::types::sources::{
+    GenericSourceConnection, InlinedConnection, ReferencedConnection, SourceDesc,
+};
 use once_cell::sync::Lazy;
 use proptest_derive::Arbitrary;
 use regex::Regex;
@@ -322,6 +324,16 @@ pub trait SessionCatalog: fmt::Debug + ExprHumanizer + Send + Sync {
     /// Adds a [`PlanNotice`] that will be displayed to the user if the plan
     /// successfully executes.
     fn add_notice(&self, notice: PlanNotice);
+
+    fn inline_connection(
+        &self,
+        connection: Connection<ReferencedConnection>,
+    ) -> Connection<InlinedConnection>;
+
+    fn inline_source_connection(
+        &self,
+        connection: GenericSourceConnection<ReferencedConnection>,
+    ) -> GenericSourceConnection<InlinedConnection>;
 }
 
 /// Configuration associated with a catalog.
@@ -577,7 +589,7 @@ pub trait CatalogItem {
     /// Returns the resolved connection.
     ///
     /// If the catalog item is not a connection, it returns an error.
-    fn connection(&self) -> Result<&Connection, CatalogError>;
+    fn connection(&self) -> Result<&Connection<ReferencedConnection>, CatalogError>;
 
     /// Returns the type of the catalog item.
     fn item_type(&self) -> CatalogItemType;
