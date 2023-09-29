@@ -4691,7 +4691,7 @@ impl Coordinator {
         connections.push_front(entry.id());
 
         let mut sources = BTreeMap::new();
-        // let mut sinks = BTreeMap::new();
+        let mut sinks = BTreeMap::new();
 
         while let Some(id) = connections.pop_front() {
             for id in self.catalog.get_entry(&id).used_by() {
@@ -4710,10 +4710,16 @@ impl Coordinator {
                         sources.insert(*id, ingestion);
                     }
                     CatalogItemType::Sink => {
-                        let _export = entry.sink().expect("known to be sink");
-                        todo!()
+                        let export = entry.sink().expect("known to be sink");
+                        sinks.insert(
+                            *id,
+                            export
+                                .connection
+                                .clone()
+                                .into_inline_connection(&self.catalog().state()),
+                        );
                     }
-                    _ => todo!(),
+                    t => unreachable!("connection dependency not expected on {}", t),
                 }
             }
         }
@@ -4724,6 +4730,14 @@ impl Coordinator {
                 .alter_collection(sources)
                 .await
                 .expect("altering collection after txn must succeed");
+        }
+
+        if !sinks.is_empty() {
+            self.controller
+                .storage
+                .update_export_connection(sinks)
+                .await
+                .expect("altering exports after txn must succeed")
         }
 
         Ok(ExecuteResponse::AlteredObject(ObjectType::Connection))
