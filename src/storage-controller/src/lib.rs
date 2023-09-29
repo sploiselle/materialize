@@ -1230,6 +1230,9 @@ where
             let mut new_read_capability = policy.frontier(collection.write_frontier.borrow());
 
             if PartialOrder::less_equal(&collection.implied_capability, &new_read_capability) {
+                if id.is_user() {
+                    tracing::info!("set_read_policy id {id} collection.implied_capability {:?}, new_read_capability {:?}", collection.implied_capability,new_read_capability);
+                }
                 let mut update = ChangeBatch::new();
                 update.extend(new_read_capability.iter().map(|time| (time.clone(), 1)));
                 std::mem::swap(&mut collection.implied_capability, &mut new_read_capability);
@@ -1262,6 +1265,10 @@ where
                     .frontier(collection.write_frontier.borrow());
 
                 if PartialOrder::less_equal(&collection.implied_capability, &new_read_capability) {
+                    if id.is_user() {
+                        tracing::info!("update_write_frontiers {id} collection.implied_capability {:?}, new_read_capability {:?}", collection.implied_capability,new_read_capability);
+                    }
+
                     let mut update = ChangeBatch::new();
                     update.extend(new_read_capability.iter().map(|time| (time.clone(), 1)));
                     std::mem::swap(&mut collection.implied_capability, &mut new_read_capability);
@@ -2813,6 +2820,12 @@ where
     ) -> Result<(), StorageError> {
         let dependency_since = self.determine_collection_since_joins(storage_dependencies)?;
 
+        tracing::info!(
+            "\n\ndependency_since {:?}, dependency_since {:?}",
+            storage_dependencies,
+            dependency_since
+        );
+
         for id in collections {
             let collection = self.collection(id).expect("known to exist");
             assert!(
@@ -2834,6 +2847,11 @@ where
             // TODO: remove this if statement once we fix the inverse dependency
             // of subsources
             if PartialOrder::less_than(&collection.implied_capability, &dependency_since) {
+                tracing::info!(
+                    "install_dependency_read_holds {id}, moving from {:?} to {:?}",
+                    &collection.implied_capability,
+                    &dependency_since
+                );
                 assert!(
                     match &collection.read_policy {
                         ReadPolicy::NoPolicy { initial_since } =>
@@ -2872,7 +2890,8 @@ where
                 PartialOrder::less_than(&collection.implied_capability, &collection.write_frontier)
                     // Whenever a collection is being initialized, this state is
                     // acceptable.
-                    || *collection.write_frontier == [T::minimum()]
+                    || *collection.write_frontier == [T::minimum()],
+                "install_dependency_read_holds id {id}, collection.implied_capability {:?}, collection.write_frontier {:?}",collection.implied_capability, collection.write_frontier
             );
 
             collection
