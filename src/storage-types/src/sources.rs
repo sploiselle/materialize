@@ -128,46 +128,54 @@ impl<S: Debug + Eq + PartialEq> IngestionDescription<S> {
             remap_collection_id,
         } = self;
 
-        self.desc.alter_compatible(id, desc)?;
-
         let compatibility_checks = [
-            source_imports == &other.source_imports,
-            ingestion_metadata == &other.ingestion_metadata,
-            source_exports
-                .iter()
-                .merge_join_by(&other.source_exports, |(l_key, _), (r_key, _)| {
-                    l_key.cmp(r_key)
-                })
-                .all(|r| match r {
-                    Both(
-                        (
-                            _,
-                            SourceExport {
-                                output_index: _,
-                                storage_metadata: l_metadata,
-                            },
-                        ),
-                        (
-                            _,
-                            SourceExport {
-                                output_index: _,
-                                storage_metadata: r_metadata,
-                            },
-                        ),
-                    ) => {
-                        // the output index may change, but the table's metadata
-                        // may not
-                        l_metadata == r_metadata
-                    }
-                    _ => true,
-                }),
-            instance_id == &other.instance_id,
-            remap_collection_id == &other.remap_collection_id,
+            (self.desc.alter_compatible(id, desc).is_ok(), "desc"),
+            (source_imports == &other.source_imports, "source_imports"),
+            (
+                ingestion_metadata == &other.ingestion_metadata,
+                "ingestion_metadata",
+            ),
+            (
+                source_exports
+                    .iter()
+                    .merge_join_by(&other.source_exports, |(l_key, _), (r_key, _)| {
+                        l_key.cmp(r_key)
+                    })
+                    .all(|r| match r {
+                        Both(
+                            (
+                                _,
+                                SourceExport {
+                                    output_index: _,
+                                    storage_metadata: l_metadata,
+                                },
+                            ),
+                            (
+                                _,
+                                SourceExport {
+                                    output_index: _,
+                                    storage_metadata: r_metadata,
+                                },
+                            ),
+                        ) => {
+                            // the output index may change, but the table's metadata
+                            // may not
+                            l_metadata == r_metadata
+                        }
+                        _ => true,
+                    }),
+                "source_exports",
+            ),
+            (instance_id == &other.instance_id, "instance_id"),
+            (
+                remap_collection_id == &other.remap_collection_id,
+                "remap_collection_id",
+            ),
         ];
-        for compatible in compatibility_checks {
+        for (compatible, field) in compatibility_checks {
             if !compatible {
                 tracing::warn!(
-                    "IngestionDescription incompatible:\nself:\n{:#?}\n\nother\n{:#?}",
+                    "IngestionDescription incompatible at field {field}:\nself:\n{:#?}\n\nother\n{:#?}",
                     self,
                     other
                 );
@@ -1512,6 +1520,49 @@ impl<C: ConnectionAccess> SourceConnection for KafkaSourceConnection<C> {
             })
             .collect()
     }
+
+    fn alter_compatible(&self, id: GlobalId, other: &Self) -> Result<(), StorageError> {
+        if self == other {
+            return Ok(());
+        }
+
+        let KafkaSourceConnection {
+            // Connection details may change
+            connection: _,
+            connection_id,
+            topic,
+            start_offsets,
+            group_id_prefix,
+            environment_id,
+            metadata_columns,
+        } = self;
+
+        let compatibility_checks = [
+            (connection_id == &other.connection_id, "connection_id"),
+            (topic == &other.topic, "topic"),
+            (start_offsets == &other.start_offsets, "start_offsets"),
+            (group_id_prefix == &other.group_id_prefix, "group_id_prefix"),
+            (environment_id == &other.environment_id, "environment_id"),
+            (
+                metadata_columns == &other.metadata_columns,
+                "metadata_columns",
+            ),
+        ];
+
+        for (compatible, field) in compatibility_checks {
+            if !compatible {
+                tracing::warn!(
+                    "KafkaSourceConnection incompatible at {field}:\nself:\n{:#?}\n\nother\n{:#?}",
+                    self,
+                    other
+                );
+
+                return Err(StorageError::InvalidAlterSource { id });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl<C: ConnectionAccess> Arbitrary for KafkaSourceConnection<C>
@@ -1768,19 +1819,24 @@ impl<C: ConnectionAccess> SourceDesc<C> {
             envelope,
             timestamp_interval,
         } = &self;
-        connection.alter_compatible(id, &other.connection)?;
 
         let compatibility_checks = [
-            connection == &other.connection,
-            encoding == &other.encoding,
-            envelope == &other.envelope,
-            timestamp_interval == &other.timestamp_interval,
+            (
+                connection.alter_compatible(id, &other.connection).is_ok(),
+                "connection",
+            ),
+            (encoding == &other.encoding, "encoding"),
+            (envelope == &other.envelope, "envelope"),
+            (
+                timestamp_interval == &other.timestamp_interval,
+                "timestamp_interval",
+            ),
         ];
 
-        for compatible in compatibility_checks {
+        for (compatible, field) in compatibility_checks {
             if !compatible {
                 tracing::warn!(
-                    "SourceDesc incompatible:\nself:\n{:#?}\n\nother\n{:#?}",
+                    "SourceDesc incompatible at {field}:\nself:\n{:#?}\n\nother\n{:#?}",
                     self,
                     other
                 );
@@ -2034,32 +2090,38 @@ impl<C: ConnectionAccess> SourceConnection for PostgresSourceConnection<C> {
 
         let PostgresSourceConnection {
             connection_id,
-            connection,
+            // Connection details may change
+            connection: _,
             table_casts,
             publication,
             publication_details,
         } = self;
 
         let compatibility_checks = [
-            connection_id == &other.connection_id,
-            connection == &other.connection,
-            table_casts
-                .iter()
-                .merge_join_by(&other.table_casts, |(l_key, _), (r_key, _)| {
-                    l_key.cmp(r_key)
-                })
-                .all(|r| match r {
-                    Both((_, l_val), (_, r_val)) => l_val == r_val,
-                    _ => true,
-                }),
-            publication == &other.publication,
-            publication_details == &other.publication_details,
+            (connection_id == &other.connection_id, "connection_id"),
+            (
+                table_casts
+                    .iter()
+                    .merge_join_by(&other.table_casts, |(l_key, _), (r_key, _)| {
+                        l_key.cmp(r_key)
+                    })
+                    .all(|r| match r {
+                        Both((_, l_val), (_, r_val)) => l_val == r_val,
+                        _ => true,
+                    }),
+                "table_casts",
+            ),
+            (publication == &other.publication, "publication"),
+            (
+                publication_details == &other.publication_details,
+                "publication_details",
+            ),
         ];
 
-        for compatible in compatibility_checks {
+        for (compatible, field) in compatibility_checks {
             if !compatible {
                 tracing::warn!(
-                    "PostgresSourceConnection incompatible:\nself:\n{:#?}\n\nother\n{:#?}",
+                    "PostgresSourceConnection incompatible at {field}:\nself:\n{:#?}\n\nother\n{:#?}",
                     self,
                     other
                 );

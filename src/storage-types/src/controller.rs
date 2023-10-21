@@ -160,6 +160,12 @@ pub enum StorageError {
     /// Response if we try to change a sink's description to a state
     /// incompatible with its current state.
     IncompatibleSinkDescriptions { id: GlobalId },
+    /// Response if we try to change a connection's description to a state
+    /// incompatible with its current state.
+    ///
+    /// n.b. the embedded GlobalId may refer to either the connection itself or
+    /// to the object that references the connection.
+    IncompatibleConnectionDescriptions { id: GlobalId },
     /// A generic error that happens during operations of the storage controller.
     // TODO(aljoscha): Get rid of this!
     Generic(anyhow::Error),
@@ -184,6 +190,7 @@ impl Error for StorageError {
             Self::ResourceExhausted(_) => None,
             Self::ShuttingDown(_) => None,
             Self::IncompatibleSinkDescriptions { .. } => None,
+            Self::IncompatibleConnectionDescriptions { .. } => None,
             Self::Generic(err) => err.source(),
         }
     }
@@ -248,12 +255,15 @@ impl fmt::Display for StorageError {
             Self::ResourceExhausted(rsc) => write!(f, "{rsc} is exhausted"),
             Self::ShuttingDown(cmp) => write!(f, "{cmp} is shutting down"),
             Self::IncompatibleSinkDescriptions { id } => {
-                // n.b. this error is only used in assertions currently, so
-                // doesn't need to contain more detail until we support `ALTER
-                // SINK`.
                 write!(
                     f,
-                    "{id} cannot be have its description changed in the requested way"
+                    "{id} cannot have its description changed in the requested way"
+                )
+            }
+            Self::IncompatibleConnectionDescriptions { id } => {
+                write!(
+                    f,
+                    "{id} cannot have its connection changed in the requested way"
                 )
             }
             Self::Generic(err) => std::fmt::Display::fmt(err, f),

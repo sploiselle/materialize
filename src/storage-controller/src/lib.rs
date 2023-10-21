@@ -1099,7 +1099,11 @@ where
     ) -> Result<(), StorageError> {
         for (id, connection) in exports {
             let export = self.export_mut(id).expect("export exists");
+            let current_sink = export.description.sink.clone();
+
             export.description.sink.connection = connection;
+
+            current_sink.alter_compatible(id, &export.description.sink)?;
 
             let export = self.export(id).expect("export exists").clone();
 

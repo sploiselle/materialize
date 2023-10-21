@@ -333,6 +333,7 @@ impl ShouldHalt for StorageError {
             | StorageError::DataflowError(_)
             | StorageError::InvalidAlterSource { .. }
             | StorageError::IncompatibleSinkDescriptions { .. }
+            | StorageError::IncompatibleConnectionDescriptions { .. }
             | StorageError::ShuttingDown(_) => false,
             StorageError::IOError(e) => e.is_unrecoverable(),
         }

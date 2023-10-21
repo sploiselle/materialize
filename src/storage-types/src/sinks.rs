@@ -76,7 +76,10 @@ impl<S: Debug + StorageSinkDescFillState + PartialEq, T: Debug + PartialEq + Par
         let compatibility_checks = [
             (from == &other.from, "from"),
             (from_desc == &other.from_desc, "from_desc"),
-            (connection == &other.connection, "connection"),
+            (
+                connection.alter_compatible(id, &other.connection).is_ok(),
+                "connection",
+            ),
             (envelope == &other.envelope, "envelope"),
             (status_id == &other.status_id, "status_id"),
             (
@@ -300,6 +303,29 @@ pub enum StorageSinkConnection<C: ConnectionAccess = InlinedConnection> {
     Kafka(KafkaSinkConnection<C>),
 }
 
+impl<C: ConnectionAccess> StorageSinkConnection<C> {
+    /// Determines if `self` is compatible with another `StorageSinkConnection`,
+    /// in such a way that it is possible to turn `self` into `other` through a
+    /// valid series of transformations (e.g. no transformation or `ALTER
+    /// CONNECTION`).
+    pub fn alter_compatible(
+        &self,
+        id: GlobalId,
+        other: &StorageSinkConnection<C>,
+    ) -> Result<(), StorageError> {
+        if self == other {
+            return Ok(());
+        }
+        match (self, other) {
+            (StorageSinkConnection::Kafka(s), StorageSinkConnection::Kafka(o)) => {
+                s.alter_compatible(id, o)?
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl<R: ConnectionResolver> IntoInlineConnection<StorageSinkConnection, R>
     for StorageSinkConnection<ReferencedConnection>
 {
@@ -434,6 +460,76 @@ pub struct KafkaSinkConnection<C: ConnectionAccess = InlinedConnection> {
     pub replication_factor: i32,
     pub fuel: usize,
     pub retention: KafkaSinkConnectionRetention,
+}
+
+impl<C: ConnectionAccess> KafkaSinkConnection<C> {
+    /// Determines if `self` is compatible with another `StorageSinkConnection`,
+    /// in such a way that it is possible to turn `self` into `other` through a
+    /// valid series of transformations (e.g. no transformation or `ALTER
+    /// CONNECTION`).
+    pub fn alter_compatible(
+        &self,
+        id: GlobalId,
+        other: &KafkaSinkConnection<C>,
+    ) -> Result<(), StorageError> {
+        if self == other {
+            return Ok(());
+        }
+        let KafkaSinkConnection {
+            connection_id,
+            // The details of the Kafka connection itself may change
+            connection: _,
+            format,
+            relation_key_indices,
+            key_desc_and_indices,
+            value_desc,
+            topic,
+            consistency_config,
+            partition_count,
+            replication_factor,
+            fuel,
+            retention,
+        } = self;
+
+        let compatibility_checks = [
+            (connection_id == &other.connection_id, "connection_id"),
+            (format == &other.format, "format"),
+            (
+                relation_key_indices == &other.relation_key_indices,
+                "relation_key_indices",
+            ),
+            (
+                key_desc_and_indices == &other.key_desc_and_indices,
+                "key_desc_and_indices",
+            ),
+            (value_desc == &other.value_desc, "value_desc"),
+            (topic == &other.topic, "topic"),
+            (
+                consistency_config == &other.consistency_config,
+                "consistency_config",
+            ),
+            (partition_count == &other.partition_count, "partition_count"),
+            (
+                replication_factor == &other.replication_factor,
+                "replication_factor",
+            ),
+            (fuel == &other.fuel, "fuel"),
+            (retention == &other.retention, "retention"),
+        ];
+        for (compatible, field) in compatibility_checks {
+            if !compatible {
+                tracing::warn!(
+                    "KafkaSinkConnection incompatible at {field}:\nself:\n{:#?}\n\nother\n{:#?}",
+                    self,
+                    other
+                );
+
+                return Err(StorageError::IncompatibleConnectionDescriptions { id });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl<R: ConnectionResolver> IntoInlineConnection<KafkaSinkConnection, R>
