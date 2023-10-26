@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use itertools::Itertools;
 use mz_ore::str::StrExt;
 use mz_sql_parser::ast::display::AstDisplay;
+use mz_sql_parser::ast::ConnectionOptionName::*;
 use mz_sql_parser::ast::{
     ConnectionOption, ConnectionOptionName, CreateConnectionType, KafkaBroker,
     KafkaBrokerAwsPrivatelinkOption, KafkaBrokerAwsPrivatelinkOptionName, KafkaBrokerTunnel,
@@ -77,6 +78,9 @@ generate_extracted_config!(
     (AvailabilityZone, String),
     (Port, u16)
 );
+
+/// Options which cannot be changed using ALTER CONNECTION.
+pub(crate) const INALTERABLE_OPTIONS: &'static [ConnectionOptionName] = &[ProgressTopic];
 
 pub(super) fn validate_options_per_connection_type(
     t: CreateConnectionType,

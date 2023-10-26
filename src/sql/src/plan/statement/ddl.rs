@@ -95,6 +95,7 @@ use crate::plan::error::PlanError;
 use crate::plan::expr::ColumnRef;
 use crate::plan::query::{scalar_type_from_catalog, ExprContext, QueryLifetime};
 use crate::plan::scope::Scope;
+use crate::plan::statement::ddl::connection::INALTERABLE_OPTIONS;
 use crate::plan::statement::{scl, StatementContext, StatementDesc};
 use crate::plan::typeconv::{plan_cast, CastContext};
 use crate::plan::with_options::{OptionalInterval, TryFromValue};
@@ -4695,7 +4696,7 @@ pub fn plan_alter_connection(
         Connection::Ssh(_) => CreateConnectionType::Ssh,
     };
 
-    let specified_options = actions
+    let specified_options: BTreeSet<_> = actions
         .iter()
         .map(|action: &AlterConnectionAction<Aug>| match action {
             AlterConnectionAction::SetOption(option) => option.name.clone(),
@@ -4703,6 +4704,12 @@ pub fn plan_alter_connection(
             AlterConnectionAction::RotateKeys => unreachable!(),
         })
         .collect();
+
+    for invalid in INALTERABLE_OPTIONS {
+        if specified_options.contains(invalid) {
+            sql_bail!("cannot ALTER {} option {}", connection_type, invalid);
+        }
+    }
 
     connection::validate_options_per_connection_type(connection_type, specified_options)?;
 
