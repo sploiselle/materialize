@@ -76,6 +76,7 @@ SERVICES = [
     ),
     Materialized(
         volumes_extra=["secrets:/share/secrets"],
+        sanity_restart=False,
     ),
     Testdrive(
         entrypoint=[

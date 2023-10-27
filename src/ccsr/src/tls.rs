@@ -31,6 +31,7 @@ impl Identity {
     pub fn from_pem(pem: &[u8]) -> Result<Self, openssl::error::ErrorStack> {
         let pkey = PKey::private_key_from_pem(pem)?;
         let mut certs = Stack::new()?;
+        // This errors.
         let mut cert_iter = X509::stack_from_pem(pem)?.into_iter();
         let cert = cert_iter
             .next()

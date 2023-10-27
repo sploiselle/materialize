@@ -7,6 +7,10 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
+$ postgres-execute connection=postgres://mz_system:materialize@${testdrive.materialize-internal-sql-addr}
+ALTER SYSTEM SET enable_default_connection_validation = true
+ALTER SYSTEM SET enable_connection_validation_syntax = true
+
 
 
 $ set schema={
@@ -158,3 +162,91 @@ a
     SSL CERTIFICATE = '${arg.materialized-kafka-crt}'
   );
 contains:Invalid CA certificate
+
+# ALTER CONNECTION
+
+## CSR connection
+
+# > CREATE CONNECTION csr_ssl
+#   FOR CONFLUENT SCHEMA REGISTRY
+#     URL '${testdrive.schema-registry-url}',
+#     SSL KEY = SECRET ssl_key_csr,
+#     SSL CERTIFICATE = '${arg.materialized-schema-registry-crt}',
+#     SSL CERTIFICATE AUTHORITY = '${arg.ca-crt}',
+#     USERNAME = 'materialize',
+#     PASSWORD = SECRET password_csr;
+# 
+# 
+# ! ALTER CONNECTION csr_ssl SET URL = 'abc' WITH (VALIDATE = true);
+# contains:invalid ALTER CONNECTION: parsing schema registry url: relative URL without a base
+# 
+# ! ALTER CONNECTION csr_ssl RESET URL;
+# contains:invalid ALTER CONNECTION: invalid CONNECTION: must specify URL
+# 
+# ! ALTER CONNECTION csr_ssl SET SSL KEY = 'x' WITH (VALIDATE = true);
+# contains:invalid SSL KEY: must provide a secret value
+# 
+# ! ALTER CONNECTION csr_ssl SET SSL KEY = SECRET invalid_secret WITH (VALIDATE = true);
+# 
+# ! ALTER CONNECTION csr_ssl SET SSL CERTIFICATE = 'x' WITH (VALIDATE = true);
+# contains:Client creation error
+# 
+# ! ALTER CONNECTION csr_ssl SET SSL CERTIFICATE AUTHORITY = 'x' WITH (VALIDATE = true);
+# contains:Client creation error
+# 
+# ! ALTER CONNECTION csr_ssl RESET SSL KEY;
+# contains:invalid ALTER CONNECTION: invalid CONNECTION: under-specified security configuration
+# 
+# ! ALTER CONNECTION csr_ssl RESET SSL CERTIFICATE;
+# contains:invalid ALTER CONNECTION: invalid CONNECTION: under-specified security configuration
+# 
+# ! ALTER CONNECTION csr_ssl RESET SSL CERTIFICATE AUTHORITY WITH (VALIDATE = true);
+# contains:Invalid CA certificate
+# 
+# ## Kafka connection
+# 
+# ! ALTER CONNECTION kafka_ssl SET SSL KEY = 'x' WITH (VALIDATE = true);
+# contains:invalid SSL KEY: must provide a secret value
+# 
+# > CREATE SECRET invalid_secret AS 'x'
+# 
+# ! ALTER CONNECTION kafka_ssl SET SSL KEY = SECRET invalid_secret WITH (VALIDATE = true);
+# contains:Client creation error
+# 
+# ! ALTER CONNECTION kafka_ssl SET SSL CERTIFICATE = 'x' WITH (VALIDATE = true);
+# contains:Client creation error
+# 
+# ! ALTER CONNECTION kafka_ssl SET SSL CERTIFICATE AUTHORITY = 'x' WITH (VALIDATE = true);
+# contains:Client creation error
+# 
+# ! ALTER CONNECTION kafka_ssl RESET SSL KEY;
+# contains:invalid ALTER CONNECTION: invalid CONNECTION: under-specified security configuration
+# 
+# ! ALTER CONNECTION kafka_ssl RESET SSL CERTIFICATE;
+# contains:invalid ALTER CONNECTION: invalid CONNECTION: under-specified security configuration
+# 
+# ! ALTER CONNECTION kafka_ssl RESET SSL CERTIFICATE AUTHORITY WITH (VALIDATE = true);
+# contains:Invalid CA certificate
+# 
+# ! ALTER CONNECTION kafka_ssl RESET SSL KEY, RESET SSL CERTIFICATE, RESET SSL CERTIFICATE AUTHORITY WITH (VALIDATE = true);
+# contains:BrokerTransportFailure
+# 
+# > ALTER CONNECTION kafka_ssl RESET SSL KEY, RESET SSL CERTIFICATE, RESET SSL CERTIFICATE AUTHORITY WITH (VALIDATE = false);
+# 
+# > SELECT status = 'stalled' FROM mz_internal.mz_source_statuses WHERE name = data;
+# true
+# 
+# > SELECT status = 'stalled' FROM mz_internal.mz_source_statuses WHERE name = kafka_csr_connector_source;
+# true
+# 
+# > ALTER CONNECTION kafka_ssl 
+#     SET SSL KEY = SECRET ssl_key_kafka,
+#     SET SSL CERTIFICATE = '${arg.materialized-kafka-crt}',
+#     SET SSL CERTIFICATE AUTHORITY = '${arg.ca-alt-crt}';
+# 
+# > SELECT status = 'running' FROM mz_internal.mz_source_statuses WHERE name = data;
+# true
+# 
+# > SELECT status = 'running' FROM mz_internal.mz_source_statuses WHERE name = kafka_csr_connector_source;
+# true
+# 

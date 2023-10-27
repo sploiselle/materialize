@@ -1135,7 +1135,10 @@ where
                     from_desc: export.description.sink.from_desc.clone(),
                     connection: export.description.sink.connection.clone(),
                     envelope: export.description.sink.envelope,
-                    as_of: durable_export_data.initial_as_of,
+                    as_of: SinkAsOf {
+                        frontier: export.read_capability.clone(),
+                        strict: durable_export_data.initial_as_of.strict,
+                    },
                     status_id,
                     from_storage_metadata,
                 },
