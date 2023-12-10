@@ -58,8 +58,6 @@ where
 //
 //   * Rewrites the suite of standard deviation and variance functions in a
 //     manner similar to `avg`.
-//
-// TODO(sploiselle): rewrite these in terms of func::sql_op!
 struct FuncRewriter<'a> {
     scx: &'a StatementContext<'a>,
     status: Result<(), PlanError>,

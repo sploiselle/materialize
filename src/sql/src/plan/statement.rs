@@ -242,9 +242,6 @@ pub fn describe(
 /// external state must remove that state prior to calling this function via
 /// [`crate::pure::purify_statement`].
 ///
-/// TODO: sinks do not currently obey this rule, which is a bug
-/// <https://github.com/MaterializeInc/materialize/issues/20019>
-///
 /// The returned plan is tied to the state of the provided catalog. If the state
 /// of the catalog changes after planning, the validity of the plan is not
 /// guaranteed.

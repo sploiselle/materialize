@@ -131,7 +131,6 @@ impl<'a, 'ast> VisitMut<'ast, Raw> for CreateSqlRewriteSchema<'a> {
 /// rename operation, you must also call `create_stmt_rename_refs` on all dependent
 /// items.
 pub fn create_stmt_rename(create_stmt: &mut Statement<Raw>, to_item_name: String) {
-    // TODO(sploiselle): Support renaming schemas and databases.
     match create_stmt {
         Statement::CreateIndex(CreateIndexStatement { name, .. }) => {
             *name = Some(Ident::new_unchecked(to_item_name));
@@ -188,7 +187,6 @@ pub fn create_stmt_rename_refs(
         }
     };
 
-    // TODO(sploiselle): Support renaming schemas and databases.
     match create_stmt {
         Statement::CreateIndex(CreateIndexStatement { on_name, .. }) => {
             maybe_update_item_name(on_name.name_mut());

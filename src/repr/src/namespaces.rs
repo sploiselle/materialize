@@ -9,8 +9,6 @@
 
 //! Namespace constants to share between high- and low-levels of the system.
 
-// TODO: define default database, schema names
-
 pub const MZ_TEMP_SCHEMA: &str = "mz_temp";
 pub const MZ_CATALOG_SCHEMA: &str = "mz_catalog";
 pub const PG_CATALOG_SCHEMA: &str = "pg_catalog";

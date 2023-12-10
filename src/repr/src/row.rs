@@ -953,9 +953,6 @@ unsafe fn read_datum<'a>(data: &'a [u8], offset: &mut usize) -> Datum<'a> {
             let lsu_u8 = &data[*offset..(*offset + lsu_u8_len)];
             *offset += lsu_u8_len;
 
-            // TODO: if we refactor the decimal library to accept the owned
-            // array as a parameter to `from_raw_parts` below, we could likely
-            // avoid a copy because it is exactly the value we want
             let mut lsu = [0; numeric::NUMERIC_DATUM_WIDTH_USIZE];
             for (i, c) in lsu_u8.chunks(2).enumerate() {
                 lsu[i] = u16::from_le_bytes(c.try_into().unwrap());
