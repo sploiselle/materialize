@@ -166,6 +166,7 @@ $ kafka-create-topic topic=data-txdata
   TO KAFKA (BROKER '${testdrive.kafka-addr}', SECURITY PROTOCOL PLAINTEXT);
 
 > CREATE SOURCE data_txdata
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-data-txdata-${testdrive.seed}')
   FORMAT AVRO USING SCHEMA '${txschema}'
   ENVELOPE NONE
@@ -188,6 +189,7 @@ $ kafka-ingest format=avro topic=data schema=${schema} timestamp=1
 # Create a source using an inline schema.
 #
 > CREATE SOURCE data_schema_inline
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-data-${testdrive.seed}')
   FORMAT AVRO USING SCHEMA '${schema}'
   ENVELOPE DEBEZIUM (
@@ -195,6 +197,7 @@ $ kafka-ingest format=avro topic=data schema=${schema} timestamp=1
   )
 
 > CREATE SOURCE data2_schema_inline
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-data2-${testdrive.seed}')
   FORMAT AVRO USING SCHEMA '${schema}'
   ENVELOPE DEBEZIUM (
@@ -338,6 +341,7 @@ $ unset-regex
 
 # Reingest to verify that we keep transactionality
 > CREATE SOURCE data_sink_reingest
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-data-sink-${testdrive.seed}')
   FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY CONNECTION csr_conn
   ENVELOPE NONE
@@ -363,6 +367,7 @@ $ kafka-create-topic topic=data-txdata-bad-schema
 $ kafka-create-topic topic=data-bad-schema
 
 > CREATE SOURCE data_txdata_bad_schema
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-data-txdata-bad-schema-${testdrive.seed}')
   FORMAT AVRO USING SCHEMA '${txschema-bad-schema}'
   ENVELOPE NONE

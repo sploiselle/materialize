@@ -37,7 +37,9 @@ contains:LEGACY IDs option is not supported
 # Sink dependencies
 #
 
-> CREATE SINK s1 FROM v1
+> CREATE SINK s1
+  IN CLUSTER ${arg.single-replica-cluster}
+  FROM v1
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-kafka-sink-errors-${testdrive.seed}')
   FORMAT AVRO USING CONFLUENT SCHEMA REGISTRY CONNECTION csr_conn
   ENVELOPE DEBEZIUM

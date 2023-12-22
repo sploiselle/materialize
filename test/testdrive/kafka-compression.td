@@ -82,37 +82,55 @@ world
   FORMAT JSON ENVELOPE UPSERT
 contains:invalid COMPRESSION TYPE: pied-piper
 
+> CREATE CLUSTER none_sink_implicit_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK none_sink_implicit
+  IN CLUSTER none_sink_implicit_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression', COMPRESSION TYPE 'none')
   KEY (a) NOT ENFORCED
   FORMAT JSON ENVELOPE UPSERT
 
+> CREATE CLUSTER none_sink_explicit_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK none_sink_explicit
+  IN CLUSTER none_sink_explicit_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression')
   KEY (a) NOT ENFORCED
   FORMAT JSON ENVELOPE UPSERT
 
+> CREATE CLUSTER gzip_sink_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK gzip_sink
+  IN CLUSTER gzip_sink_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression', COMPRESSION TYPE 'gzip')
   KEY (a) NOT ENFORCED
   FORMAT JSON ENVELOPE UPSERT
 
+> CREATE CLUSTER gzip_sink_spongebob_case_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK gzip_sink_spongebob_case
+  IN CLUSTER gzip_sink_spongebob_case_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression', COMPRESSION TYPE 'gZiP')
   KEY (a) NOT ENFORCED
   FORMAT JSON ENVELOPE UPSERT
 
+> CREATE CLUSTER lz4_sink_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK lz4_sink
+  IN CLUSTER lz4_sink_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression', COMPRESSION TYPE 'lz4')
   KEY (a) NOT ENFORCED
   FORMAT JSON ENVELOPE UPSERT
 
+> CREATE CLUSTER zstd_sink_cluster SIZE '${arg.default-storage-size}';
+
 > CREATE SINK zstd_sink
+  IN CLUSTER zstd_sink_cluster
   FROM feed
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'sink-compression', COMPRESSION TYPE 'zstd')
   KEY (a) NOT ENFORCED
@@ -134,3 +152,12 @@ $ kafka-verify-data format=json key=false sink=materialize.public.none_sink_impl
 {"a": "world"}
 {"a": "hello"}
 {"a": "world"}
+
+# Clusters do not get automatically cleaned up, so remove them.
+> DROP CLUSTER
+  gzip_sink_cluster,
+  gzip_sink_spongebob_case_cluster,
+  lz4_sink_cluster,
+  none_sink_explicit_cluster,
+  none_sink_implicit_cluster,
+  zstd_sink_cluster CASCADE;
