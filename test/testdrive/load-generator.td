@@ -11,7 +11,7 @@
 
 > SHOW SOURCES
 accounts                subsource      <null>                         <null>
-auction_house           load-generator ${arg.default-storage-size}    materialize_public_auction_house
+auction_house           load-generator ${arg.default-replica-size}    default
 auction_house_progress  progress       <null>                         <null>
 auctions                subsource      <null>                         <null>
 bids                    subsource      <null>                         <null>
@@ -31,7 +31,7 @@ contains:LOAD GENERATOR source validation: FOR TABLES (..) unsupported
 
 > SHOW SOURCES FROM another;
 accounts                subsource      <null>                       <null>
-auction_house           load-generator ${arg.default-storage-size}  materialize_another_auction_house
+auction_house           load-generator ${arg.default-replica-size}  default
 auction_house_progress  progress       <null>                       <null>
 auctions                subsource      <null>                       <null>
 bids                    subsource      <null>                       <null>
@@ -41,7 +41,9 @@ users                   subsource      <null>                       <null>
 > CREATE CONNECTION IF NOT EXISTS kafka_conn TO KAFKA (BROKER '${testdrive.kafka-addr}', SECURITY PROTOCOL PLAINTEXT);
 
 # Validate that the ID column of the load generator data is usable as a key.
-> CREATE SINK accounts_sink FROM accounts
+> CREATE SINK accounts_sink
+  IN CLUSTER ${arg.single-replica-cluster}
+  FROM accounts
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-accounts-${testdrive.seed}')
   KEY (id)
   FORMAT JSON

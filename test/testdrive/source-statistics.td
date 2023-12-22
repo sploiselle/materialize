@@ -50,11 +50,13 @@ goofus,gallant
   );
 
 > CREATE SOURCE metrics_test_source (a, b)
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC 'testdrive-metrics-test-${testdrive.seed}')
   FORMAT CSV WITH 2 COLUMNS
   INCLUDE OFFSET
 
 > CREATE SOURCE upsert
+  IN CLUSTER ${arg.single-replica-cluster}
   FROM KAFKA CONNECTION kafka_conn (TOPIC
   'testdrive-upsert-${testdrive.seed}'
   )
