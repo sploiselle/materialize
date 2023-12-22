@@ -96,8 +96,32 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
     with c.override(testdrive, materialized):
         c.up(*dependencies)
 
+        # TODO: should we drop clusters as part of resetting the MZ state?
+        c.sql(
+            "ALTER SYSTEM SET max_clusters = 50;",
+            port=6877,
+            user="mz_system",
+        )
+
+        # Ensure we have a single-replica cluster for use with storage items. We
+        # create this unconditionally because many tests rely on the output of
+        # SHOW CLUSTERS
+        c.sql(
+            f"""
+            CREATE CLUSTER default_single_replica SIZE = '{materialized.default_replica_size}';
+            GRANT ALL PRIVILEGES ON CLUSTER default_single_replica TO materialize;
+            """,
+            user="mz_system",
+            port=6877,
+        )
+
         if args.replicas > 1:
             c.sql("DROP CLUSTER default CASCADE", user="mz_system", port=6877)
+            c.sql(
+                "DROP CLUSTER IF EXISTS single_replica_cluster CASCADE",
+                user="mz_system",
+                port=6877,
+            )
             # Make sure a replica named 'r1' always exists
             replica_names = [
                 "r1" if replica_id == 0 else f"replica{replica_id}"
@@ -113,10 +137,15 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
                 port=6877,
             )
 
+            single_replica_cluster = "default_single_replica"
+        else:
+            single_replica_cluster = "default"
+
         junit_report = ci_util.junit_report_filename(c.name)
 
         try:
             junit_report = ci_util.junit_report_filename(c.name)
+            print("")
             for file in args.files:
                 c.run(
                     "testdrive",
@@ -124,6 +153,7 @@ def workflow_default(c: Composition, parser: WorkflowArgumentParser) -> None:
                     f"--var=replicas={args.replicas}",
                     f"--var=default-replica-size={materialized.default_replica_size}",
                     f"--var=default-storage-size={materialized.default_storage_size}",
+                    f"--var=single-replica-cluster={single_replica_cluster}",
                     file,
                 )
                 c.sanity_restart_mz()

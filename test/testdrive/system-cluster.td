@@ -13,6 +13,7 @@ $ postgres-connect name=mz_system url=postgres://mz_system:materialize@${testdri
 mz_system
 mz_introspection
 default
+default_single_replica
 
 $ postgres-execute connection=postgres://mz_system@${testdrive.materialize-internal-sql-addr}/materialize
 ALTER SYSTEM SET enable_rbac_checks TO false

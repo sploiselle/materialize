@@ -24,7 +24,8 @@ ALTER SYSTEM SET enable_unmanaged_cluster_replicas = true
 > INSERT INTO t VALUES ('key1', 'value')
 
 # Setup various sinks and sources
-> CREATE SINK sink_size FROM simple_view
+> CREATE SINK sink_size
+  FROM simple_view
   INTO KAFKA CONNECTION kafka_conn (TOPIC 'topic-${testdrive.seed}')
   KEY (a)
   FORMAT JSON
