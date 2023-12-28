@@ -190,6 +190,26 @@ static SINK_STATUS_UPDATES: Lazy<IntrospectionStatusUpdate> = Lazy::new(|| {
     }
 });
 
+static PRIVATELINK_STATUS_UPDATES: Lazy<IntrospectionStatusUpdate> =
+    Lazy::new(|| IntrospectionStatusUpdate {
+        global_id_idx: healthcheck::MZ_PRIVATELINK_CONNECTION_STATUS_HISTORY_DESC
+            .get_by_name(&ColumnName::from("connection_id"))
+            .expect("schema has not changed")
+            .0,
+
+        value_idx: healthcheck::MZ_PRIVATELINK_CONNECTION_STATUS_HISTORY_DESC
+            .get_by_name(&ColumnName::from("occurred_at"))
+            .expect("schema has not changed")
+            .0,
+
+        produce_new_value: |prev: Datum, new: Datum| -> bool {
+            let new = new.unwrap_timestamptz();
+            let prev = prev.unwrap_timestamptz();
+
+            prev < new
+        },
+    });
+
 impl<T> IntrospectionStatusManager<T>
 where
     T: Timestamp + Lattice + Codec64 + TimestampManipulation + From<EpochMillis>,
@@ -328,6 +348,7 @@ where
         //
         // TODO(guswynn): clean up dropped sources/sinks from status history tables, at some point.
     }
+
     /// Marks the sources as dropped.
     ///
     /// # Panics
