@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 anyhow = "1.0.66"
 backtrace = "0.3.66"
-flate2 = "1.0.24"
+flate2 = "1.0.28"
 libc = "0.2.138"
 once_cell = "1.16.0"
 mz-ore = { path = "../ore", default-features = false }

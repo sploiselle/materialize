@@ -43,7 +43,7 @@ debugid = { version = "0.8.0", default-features = false, features = ["serde"] }
 dec = { version = "0.4.8", default-features = false, features = ["serde"] }
 digest = { version = "0.10.6", features = ["mac", "std"] }
 either = { version = "1.8.0", features = ["serde"] }
-flate2 = { version = "1.0.24", features = ["zlib"] }
+flate2 = { version = "1.0.28", features = ["zlib"] }
 futures-channel = { version = "0.3.28", features = ["sink"] }
 futures-core = { version = "0.3.28" }
 futures-executor = { version = "0.3.25" }
@@ -156,7 +156,7 @@ debugid = { version = "0.8.0", default-features = false, features = ["serde"] }
 dec = { version = "0.4.8", default-features = false, features = ["serde"] }
 digest = { version = "0.10.6", features = ["mac", "std"] }
 either = { version = "1.8.0", features = ["serde"] }
-flate2 = { version = "1.0.24", features = ["zlib"] }
+flate2 = { version = "1.0.28", features = ["zlib"] }
 futures-channel = { version = "0.3.28", features = ["sink"] }
 futures-core = { version = "0.3.28" }
 futures-executor = { version = "0.3.25" }
