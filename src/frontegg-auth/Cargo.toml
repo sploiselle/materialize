@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0.66"
-base64 = "0.13.1"
+base64 = "0.21.5"
 clap = { version = "3.2.24", features = ["wrap_help", "env", "derive"] }
 derivative = "2.2.0"
 futures = "0.3.25"
