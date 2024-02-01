@@ -175,7 +175,7 @@ impl SourceRender for PostgresSourceConnection {
             config,
             self,
             subsource_resume_uppers,
-            table_info,
+            table_info.into_iter().map(|(k, v)| (k, vec![v])).collect(),
             &rewinds,
             resume_uppers,
             metrics,

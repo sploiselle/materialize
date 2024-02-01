@@ -142,7 +142,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     config: RawSourceCreationConfig,
     connection: PostgresSourceConnection,
     subsource_resume_uppers: BTreeMap<GlobalId, Antichain<MzOffset>>,
-    table_info: BTreeMap<u32, (usize, PostgresTableDesc, Vec<MirScalarExpr>)>,
+    table_info: BTreeMap<u32, Vec<(usize, PostgresTableDesc, Vec<MirScalarExpr>)>>,
     rewind_stream: &Stream<G, RewindRequest>,
     committed_uppers: impl futures::Stream<Item = Antichain<MzOffset>> + 'static,
     metrics: PgSourceMetrics,
@@ -167,12 +167,15 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
     metrics.tables.set(u64::cast_from(table_info.len()));
 
-    let mut reader_table_info = BTreeMap::new();
+    let mut reader_table_info: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut casts_by_output_idx = BTreeMap::new();
 
-    for (oid, (output_idx, table_desc, casts)) in table_info {
-        reader_table_info.insert(oid, (output_idx, table_desc));
-        casts_by_output_idx.insert(output_idx, casts);
+    for (oid, tables) in table_info {
+        for (output_idx, table_desc, casts) in tables {
+            let table_info = reader_table_info.entry(oid).or_default();
+            table_info.push((output_idx, table_desc));
+            casts_by_output_idx.insert(output_idx, casts);
+        }
     }
 
     let (button, transient_errors) = builder.build_fallible(move |caps| {
@@ -231,7 +234,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                             );
                             // If the replication stream cannot be obtained from the resume point there is nothing
                             // else to do. These errors are not retractable.
-                            for (output_idx, _) in table_info.into_values() {
+                            for (output_idx, _) in table_info.into_values().flatten() {
                                 // We pick `u64::MAX` as the LSN which will (in practice) never conflict
                                 // any previously revealed portions of the TVC.
                                 let update =
@@ -278,7 +281,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 Err(err) => {
                     // If the replication stream cannot be obtained in a definite way there is
                     // nothing else to do. These errors are not retractable.
-                    for (output_idx, _) in table_info.into_values() {
+                    for (output_idx, _) in table_info.into_values().flatten() {
                         // We pick `u64::MAX` as the LSN which will (in practice) never conflict
                         // any previously revealed portions of the TVC.
                         let update = ((output_idx, Err(err.clone())), MzOffset::from(u64::MAX), 1);
@@ -330,26 +333,42 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                                     at {commit_lsn}"
                             );
                             while let Some((oid, event, diff)) = tx.try_next().await? {
-                                let output_idx = match table_info.get(&oid) {
-                                    Some((output_idx, _)) => *output_idx,
+                                let data = match table_info.get(&oid) {
+                                    Some(table_info) => {
+                                        let mut data = Vec::with_capacity(table_info.len());
+                                        // Remains to be seen if avoiding the
+                                        // clone is worth this obnoxious dance.
+                                        let ((last_output_idx, _), head) = table_info
+                                            .split_last()
+                                            .expect("must have at least one table");
+
+                                        for (output_idx, _) in head {
+                                            data.push((*output_idx, event.clone()));
+                                        }
+                                        data.push((*last_output_idx, event));
+                                        data
+                                    }
                                     None => continue,
                                 };
 
-                                let data = (output_idx, event);
-                                if let Some((rewind_caps, req)) = rewinds.get(&oid) {
-                                    let [data_cap, _upper_cap] = rewind_caps;
-                                    if commit_lsn <= req.snapshot_lsn {
-                                        let update = (data.clone(), MzOffset::from(0), -diff);
-                                        data_output.give(data_cap, update).await;
+                                for data in data {
+                                    // TODO: `RewindRequest` must be scoped to
+                                    // individual output indexes.
+                                    if let Some((rewind_caps, req)) = rewinds.get(&oid) {
+                                        let [data_cap, _upper_cap] = rewind_caps;
+                                        if commit_lsn <= req.snapshot_lsn {
+                                            let update = (data.clone(), MzOffset::from(0), -diff);
+                                            data_output.give(data_cap, update).await;
+                                        }
                                     }
+                                    assert!(
+                                        new_upper <= commit_lsn,
+                                        "new_upper={} tx_lsn={}",
+                                        new_upper,
+                                        commit_lsn
+                                    );
+                                    container.push((data, commit_lsn, diff));
                                 }
-                                assert!(
-                                    new_upper <= commit_lsn,
-                                    "new_upper={} tx_lsn={}",
-                                    new_upper,
-                                    commit_lsn
-                                );
-                                container.push((data, commit_lsn, diff));
                             }
                             new_upper = commit_lsn + 1;
                             if container.len() > max_capacity {
@@ -542,7 +561,7 @@ fn extract_transaction<'a>(
     stream: impl AsyncStream<Item = Result<ReplicationMessage<LogicalReplicationMessage>, TransientError>>
         + 'a,
     commit_lsn: MzOffset,
-    table_info: &'a BTreeMap<u32, (usize, PostgresTableDesc)>,
+    table_info: &'a BTreeMap<u32, Vec<(usize, PostgresTableDesc)>>,
     connection_config: &'a mz_postgres_util::Config,
     ssh_tunnel_manager: &'a SshTunnelManager,
     metrics: &'a PgSourceMetrics,
@@ -606,7 +625,7 @@ fn extract_transaction<'a>(
                 },
                 Relation(body) => {
                     let rel_id = body.rel_id();
-                    if let Some((_, expected_desc)) = table_info.get(&rel_id) {
+                    if let Some(table_info) = table_info.get(&rel_id) {
                         // Because the replication stream doesn't include columns' attnums, we need
                         // to check the current local schema against the current remote schema to
                         // ensure e.g. we haven't received a schema update with the same terminal
@@ -621,9 +640,16 @@ fn extract_transaction<'a>(
                         .map_err(PostgresError::from)?;
                         let upstream_info = upstream_info.into_iter().map(|t| (t.oid, t)).collect();
 
-                        if let Err(err) = verify_schema(rel_id, expected_desc, &upstream_info) {
-                            errored_tables.insert(rel_id);
-                            yield (rel_id, Err(err), 1);
+                        // TODO: if we demux the data inside this fn, we don't
+                        // need to error all instance of this table on an
+                        // invalid schema change. However, demuxed tables are
+                        // designed to support adding columns, so erroring on
+                        // thw widest version of the table seems fine.
+                        for (_, expected_desc) in table_info.iter() {
+                            if let Err(err) = verify_schema(rel_id, expected_desc, &upstream_info) {
+                                errored_tables.insert(rel_id);
+                                yield (rel_id, Err(err), 1);
+                            }
                         }
                     }
                 }
