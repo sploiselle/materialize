@@ -222,17 +222,26 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
         .collect();
 
     // A filtered table info containing only the tables that this worker should snapshot.
-    let reader_snapshot_table_info: BTreeMap<_, _> = table_info
-        .iter()
+    let tables_to_snapshot = table_info
+        .into_iter()
         .filter(|(oid, (output_index, _, _))| {
             mz_ore::soft_assert_or_log!(
                 *output_index != 0,
                 "primary collection should not be represented in table info"
             );
             exports_to_snapshot.contains(output_index) && config.responsible_for(oid)
-        })
-        .map(|(k, v)| (*k, v.clone()))
-        .collect();
+        });
+
+    // Table info the reader needs while reading.
+    let mut reader_snapshot_table_info = BTreeMap::new();
+
+    // Output info the primary worker needs to output data from the dataflow.
+    let mut casts_by_output_idx = BTreeMap::new();
+
+    for (oid, (output_idx, table_desc, casts)) in tables_to_snapshot {
+        reader_snapshot_table_info.insert(oid, (output_idx, table_desc));
+        casts_by_output_idx.insert(output_idx, casts);
+    }
 
     let (button, transient_errors) = builder.build_fallible(move |caps| {
         Box::pin(async move {
@@ -363,7 +372,10 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 // nothing else to do. These errors are not retractable.
                 Err(PublicationInfoError::PublicationMissing(publication)) => {
                     let err = DefiniteError::PublicationDropped(publication);
-                    for oid in reader_snapshot_table_info.keys() {
+                    for output_idx in reader_snapshot_table_info
+                        .values()
+                        .map(|(output_idx, _)| output_idx)
+                    {
                         // Produce a definite error here and then exit to ensure
                         // a missing publication doesn't generate a transient
                         // error and restart this dataflow indefinitely.
@@ -371,7 +383,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                         // We pick `u64::MAX` as the LSN which will (in
                         // practice) never conflict any previously revealed
                         // portions of the TVC.
-                        let update = ((*oid, Err(err.clone())), MzOffset::from(u64::MAX), 1);
+                        let update = ((*output_idx, Err(err.clone())), MzOffset::from(u64::MAX), 1);
                         raw_handle.give(&data_cap_set[0], update).await;
                     }
 
@@ -391,7 +403,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             let worker_tables = reader_snapshot_table_info
                 .iter()
-                .map(|(_, (_, desc, _))| {
+                .map(|(_, (_, desc))| {
                     (
                         format!(
                             "{}.{}",
@@ -414,12 +426,15 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             )
             .await?;
 
-            for (&oid, (_, expected_desc, _)) in reader_snapshot_table_info.iter() {
+            for (&oid, (output_idx, expected_desc)) in reader_snapshot_table_info.iter() {
                 let desc = match verify_schema(oid, expected_desc, &upstream_info) {
                     Ok(()) => expected_desc,
                     Err(err) => {
                         raw_handle
-                            .give(&data_cap_set[0], ((oid, Err(err)), MzOffset::minimum(), 1))
+                            .give(
+                                &data_cap_set[0],
+                                ((*output_idx, Err(err)), MzOffset::minimum(), 1),
+                            )
                             .await;
                         continue;
                     }
@@ -442,7 +457,10 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
                 while let Some(bytes) = stream.try_next().await? {
                     raw_handle
-                        .give(&data_cap_set[0], ((oid, Ok(bytes)), MzOffset::minimum(), 1))
+                        .give(
+                            &data_cap_set[0],
+                            ((*output_idx, Ok(bytes)), MzOffset::minimum(), 1),
+                        )
                         .await;
                 }
             }
@@ -476,8 +494,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     let mut text_row = Row::default();
     let mut final_row = Row::default();
     let mut datum_vec = DatumVec::new();
-    let snapshot_updates = raw_collection.map(move |(oid, event)| {
-        let (output_index, _, casts) = &table_info[&oid];
+    let snapshot_updates = raw_collection.map(move |(ouput_idx, event)| {
+        let casts = &casts_by_output_idx[&ouput_idx];
 
         let event = event.and_then(|bytes| {
             decode_copy_row(&bytes, casts.len(), &mut text_row)?;
@@ -486,7 +504,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             Ok(final_row.clone())
         });
 
-        (*output_index, event.err_into())
+        (ouput_idx, event.err_into())
     });
 
     let errors = definite_errors.concat(&transient_errors.map(ReplicationError::from));
