@@ -166,7 +166,10 @@ impl SourceRender for PostgresSourceConnection {
             config.clone(),
             self.clone(),
             subsource_resume_uppers.clone(),
-            table_info.clone(),
+            table_info
+                .iter()
+                .map(|(k, v)| (*k, vec![v.clone()]))
+                .collect(),
             metrics.snapshot_metrics.clone(),
         );
 

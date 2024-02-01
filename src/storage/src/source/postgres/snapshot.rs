@@ -177,7 +177,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     config: RawSourceCreationConfig,
     connection: PostgresSourceConnection,
     subsource_resume_uppers: BTreeMap<GlobalId, Antichain<MzOffset>>,
-    table_info: BTreeMap<u32, (usize, PostgresTableDesc, Vec<MirScalarExpr>)>,
+    table_info: BTreeMap<u32, Vec<(usize, PostgresTableDesc, Vec<MirScalarExpr>)>>,
     metrics: PgSnapshotMetrics,
 ) -> (
     Collection<G, (usize, Result<Row, SourceReaderError>), Diff>,
@@ -224,7 +224,14 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     // A filtered table info containing only the tables that this worker should snapshot.
     let tables_to_snapshot = table_info
         .into_iter()
-        .filter(|(oid, (output_index, _, _))| {
+        // flatmap the oid into the tuple describing the tables
+        .flat_map(|(oid, tables)| {
+            tables
+                .into_iter()
+                .map(move |(output_idx, table_desc, casts)| (oid, output_idx, table_desc, casts))
+        })
+        // retain only the tables this worker will snapshot
+        .filter(|(oid, output_index, _, _)| {
             mz_ore::soft_assert_or_log!(
                 *output_index != 0,
                 "primary collection should not be represented in table info"
@@ -233,13 +240,16 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
         });
 
     // Table info the reader needs while reading.
-    let mut reader_snapshot_table_info = BTreeMap::new();
+    let mut reader_snapshot_table_info: BTreeMap<_, Vec<_>> = BTreeMap::new();
 
     // Output info the primary worker needs to output data from the dataflow.
     let mut casts_by_output_idx = BTreeMap::new();
 
-    for (oid, (output_idx, table_desc, casts)) in tables_to_snapshot {
-        reader_snapshot_table_info.insert(oid, (output_idx, table_desc));
+    for (oid, output_idx, table_desc, casts) in tables_to_snapshot {
+        reader_snapshot_table_info
+            .entry(oid)
+            .or_default()
+            .push((output_idx, table_desc));
         casts_by_output_idx.insert(output_idx, casts);
     }
 
@@ -374,6 +384,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                     let err = DefiniteError::PublicationDropped(publication);
                     for output_idx in reader_snapshot_table_info
                         .values()
+                        .flatten()
                         .map(|(output_idx, _)| output_idx)
                     {
                         // Produce a definite error here and then exit to ensure
@@ -403,15 +414,17 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
             let worker_tables = reader_snapshot_table_info
                 .iter()
-                .map(|(_, (_, desc))| {
-                    (
-                        format!(
-                            "{}.{}",
-                            Ident::new_unchecked(desc.namespace.clone()).to_ast_string(),
-                            Ident::new_unchecked(desc.name.clone()).to_ast_string()
-                        ),
-                        desc.oid.clone(),
-                    )
+                .flat_map(|(_, table_info)| {
+                    table_info.iter().map(|(_, desc)| {
+                        (
+                            format!(
+                                "{}.{}",
+                                Ident::new_unchecked(desc.namespace.clone()).to_ast_string(),
+                                Ident::new_unchecked(desc.name.clone()).to_ast_string()
+                            ),
+                            desc.oid.clone(),
+                        )
+                    })
                 })
                 .collect();
 
@@ -426,18 +439,33 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             )
             .await?;
 
-            for (&oid, (output_idx, expected_desc)) in reader_snapshot_table_info.iter() {
-                let desc = match verify_schema(oid, expected_desc, &upstream_info) {
-                    Ok(()) => expected_desc,
-                    Err(err) => {
-                        raw_handle
-                            .give(
-                                &data_cap_set[0],
-                                ((*output_idx, Err(err)), MzOffset::minimum(), 1),
-                            )
-                            .await;
-                        continue;
-                    }
+            for (&oid, table_details) in reader_snapshot_table_info.iter() {
+                // Ensure that we determine if any desc is valid, and which
+                // outputs have a valid desc.
+                let mut desc = None;
+                let mut output_idxs = vec![];
+
+                for (output_idx, expected_desc) in table_details {
+                    match verify_schema(oid, expected_desc, &upstream_info) {
+                        Ok(()) => {
+                            output_idxs.push(*output_idx);
+                            desc = Some(expected_desc);
+                        }
+                        Err(err) => {
+                            raw_handle
+                                .give(
+                                    &data_cap_set[0],
+                                    ((*output_idx, Err(err)), MzOffset::minimum(), 1),
+                                )
+                                .await;
+                        }
+                    };
+                }
+
+                // Ensure that we got a desc to work from and that there are values to output.
+                let desc = match desc {
+                    Some(desc) if !output_idxs.is_empty() => desc,
+                    _ => continue,
                 };
 
                 trace!(
@@ -456,10 +484,18 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 let mut stream = pin!(client.copy_out_simple(&query).await?);
 
                 while let Some(bytes) = stream.try_next().await? {
+                    for output_idx in &output_idxs[1..] {
+                        raw_handle
+                            .give(
+                                &data_cap_set[0],
+                                ((*output_idx, Ok(bytes.clone())), MzOffset::minimum(), 1),
+                            )
+                            .await;
+                    }
                     raw_handle
                         .give(
                             &data_cap_set[0],
-                            ((*output_idx, Ok(bytes)), MzOffset::minimum(), 1),
+                            ((output_idxs[0], Ok(bytes)), MzOffset::minimum(), 1),
                         )
                         .await;
                 }
@@ -586,7 +622,7 @@ async fn record_table_sizes(
     snapshot: &str,
     metrics: PgSnapshotMetrics,
     // The table names and oids owned by this worker.
-    tables: Vec<(String, Oid)>,
+    tables: BTreeSet<(String, Oid)>,
     // An optimization: when `wait_for_count` is true, we can use the client
     // used for replication.
     replication_client: Arc<Client>,
