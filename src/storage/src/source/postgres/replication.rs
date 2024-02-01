@@ -167,7 +167,14 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
 
     metrics.tables.set(u64::cast_from(table_info.len()));
 
-    let reader_table_info = table_info.clone();
+    let mut reader_table_info = BTreeMap::new();
+    let mut casts_by_output_idx = BTreeMap::new();
+
+    for (oid, (output_idx, table_desc, casts)) in table_info {
+        reader_table_info.insert(oid, (output_idx, table_desc));
+        casts_by_output_idx.insert(output_idx, casts);
+    }
+
     let (button, transient_errors) = builder.build_fallible(move |caps| {
         let table_info = reader_table_info;
         Box::pin(async move {
@@ -224,10 +231,11 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                             );
                             // If the replication stream cannot be obtained from the resume point there is nothing
                             // else to do. These errors are not retractable.
-                            for &oid in table_info.keys() {
+                            for (output_idx, _) in table_info.into_values() {
                                 // We pick `u64::MAX` as the LSN which will (in practice) never conflict
                                 // any previously revealed portions of the TVC.
-                                let update = ((oid, Err(err.clone())), MzOffset::from(u64::MAX), 1);
+                                let update =
+                                    ((output_idx, Err(err.clone())), MzOffset::from(u64::MAX), 1);
                                 data_output.give(&data_cap_set[0], update).await;
                             }
                             definite_error_handle
@@ -270,10 +278,10 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                 Err(err) => {
                     // If the replication stream cannot be obtained in a definite way there is
                     // nothing else to do. These errors are not retractable.
-                    for &oid in table_info.keys() {
+                    for (output_idx, _) in table_info.into_values() {
                         // We pick `u64::MAX` as the LSN which will (in practice) never conflict
                         // any previously revealed portions of the TVC.
-                        let update = ((oid, Err(err.clone())), MzOffset::from(u64::MAX), 1);
+                        let update = ((output_idx, Err(err.clone())), MzOffset::from(u64::MAX), 1);
                         data_output.give(&data_cap_set[0], update).await;
                     }
 
@@ -322,10 +330,12 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
                                     at {commit_lsn}"
                             );
                             while let Some((oid, event, diff)) = tx.try_next().await? {
-                                if !table_info.contains_key(&oid) {
-                                    continue;
-                                }
-                                let data = (oid, event);
+                                let output_idx = match table_info.get(&oid) {
+                                    Some((output_idx, _)) => *output_idx,
+                                    None => continue,
+                                };
+
+                                let data = (output_idx, event);
                                 if let Some((rewind_caps, req)) = rewinds.get(&oid) {
                                     let [data_cap, _upper_cap] = rewind_caps;
                                     if commit_lsn <= req.snapshot_lsn {
@@ -386,8 +396,8 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
     // We now process the slot updates and apply the cast expressions
     let mut final_row = Row::default();
     let mut datum_vec = DatumVec::new();
-    let replication_updates = raw_collection.map(move |(oid, event)| {
-        let (output_index, _, casts) = &table_info[&oid];
+    let replication_updates = raw_collection.map(move |(output_idx, event)| {
+        let casts = &casts_by_output_idx[&output_idx];
         let event = event.and_then(|row| {
             let mut datums = datum_vec.borrow();
             for col in row.iter() {
@@ -398,7 +408,7 @@ pub(crate) fn render<G: Scope<Timestamp = MzOffset>>(
             Ok(final_row.clone())
         });
 
-        (*output_index, event.err_into())
+        (output_idx, event.err_into())
     });
 
     let errors = definite_errors.concat(&transient_errors.map(ReplicationError::from));
@@ -532,7 +542,7 @@ fn extract_transaction<'a>(
     stream: impl AsyncStream<Item = Result<ReplicationMessage<LogicalReplicationMessage>, TransientError>>
         + 'a,
     commit_lsn: MzOffset,
-    table_info: &'a BTreeMap<u32, (usize, PostgresTableDesc, Vec<MirScalarExpr>)>,
+    table_info: &'a BTreeMap<u32, (usize, PostgresTableDesc)>,
     connection_config: &'a mz_postgres_util::Config,
     ssh_tunnel_manager: &'a SshTunnelManager,
     metrics: &'a PgSourceMetrics,
@@ -596,7 +606,7 @@ fn extract_transaction<'a>(
                 },
                 Relation(body) => {
                     let rel_id = body.rel_id();
-                    if let Some((_, expected_desc, _)) = table_info.get(&rel_id) {
+                    if let Some((_, expected_desc)) = table_info.get(&rel_id) {
                         // Because the replication stream doesn't include columns' attnums, we need
                         // to check the current local schema against the current remote schema to
                         // ensure e.g. we haven't received a schema update with the same terminal
