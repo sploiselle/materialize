@@ -28,7 +28,7 @@ anyhow = "1.0.66"
 chrono-tz = { version = "0.8.1", features = ["serde", "case-insensitive"] }
 mz-ore = { path = "../ore" }
 phf_codegen = "0.11.1"
-prost-build = "0.11.2"
+prost-build = "0.12.3"
 protobuf-src = "1.1.0"
 uncased = "0.9.7"
 
