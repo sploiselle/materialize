@@ -57,6 +57,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2969dcb958b36655471fc61f7e416fa76033bdd4bfed0678d8fee1e2d07a1f0"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1285,8 +1294,8 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2895653b4d9f1538a83970077cb01dfc77a4810524e51a110944688e916b18e"
 dependencies = [
- "prost",
- "prost-types",
+ "prost 0.11.9",
+ "prost-types 0.11.9",
  "tonic",
  "tracing-core",
 ]
@@ -1303,7 +1312,7 @@ dependencies = [
  "futures",
  "hdrhistogram",
  "humantime",
- "prost-types",
+ "prost-types 0.11.9",
  "serde",
  "serde_json",
  "thread_local",
@@ -2410,7 +2419,7 @@ version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a1e17342619edbc21a964c2afbeb6c820c6a2560032872f397bb97ea127bd0a"
 dependencies = [
- "aho-corasick",
+ "aho-corasick 0.7.20",
  "bstr 0.2.14",
  "fnv",
  "log",
@@ -3606,7 +3615,7 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
+ "prost 0.11.9",
  "qcell",
  "rand",
  "rand_chacha",
@@ -3830,8 +3839,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rand",
  "semver",
@@ -3886,7 +3895,7 @@ dependencies = [
  "native-tls",
  "once_cell",
  "openssl",
- "prost-build",
+ "prost-build 0.12.3",
  "protobuf-src",
  "reqwest",
  "serde",
@@ -3984,8 +3993,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "regex",
  "serde",
@@ -4115,8 +4124,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "regex",
  "serde",
@@ -4146,8 +4155,8 @@ dependencies = [
  "mz-storage-types",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "timely",
@@ -4210,8 +4219,8 @@ dependencies = [
  "mz-proto",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "tracing",
@@ -4342,7 +4351,7 @@ dependencies = [
 name = "mz-expr"
 version = "0.0.0"
 dependencies = [
- "aho-corasick",
+ "aho-corasick 0.7.20",
  "anyhow",
  "bytes",
  "bytesize",
@@ -4379,11 +4388,11 @@ dependencies = [
  "proc-macro2",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "regex",
- "regex-syntax",
+ "regex-syntax 0.6.28",
  "serde",
  "serde_json",
  "serde_regex",
@@ -4442,9 +4451,9 @@ dependencies = [
  "openssl",
  "postgres-openssl",
  "postgres-protocol",
- "prost",
- "prost-build",
- "prost-types",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
+ "prost-types 0.11.9",
  "protobuf-src",
  "reqwest",
  "serde",
@@ -4566,8 +4575,8 @@ dependencies = [
  "mz-repr",
  "once_cell",
  "ordered-float",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "prost-reflect",
  "protobuf-src",
  "serde_json",
@@ -4593,8 +4602,8 @@ dependencies = [
  "mz-ore",
  "mz-ssh-util",
  "num_cpus",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rand",
  "rdkafka",
@@ -4701,8 +4710,8 @@ dependencies = [
  "mz-ssh-util",
  "once_cell",
  "proptest",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "thiserror",
@@ -4738,7 +4747,7 @@ dependencies = [
  "derivative",
  "futures-core",
  "mz-ore",
- "prost",
+ "prost 0.11.9",
  "protobuf-src",
  "serde",
  "tonic-build",
@@ -4908,8 +4917,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rand",
  "serde",
@@ -4954,8 +4963,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "semver",
  "sentry-tracing",
@@ -4989,8 +4998,8 @@ dependencies = [
  "mz-persist-types",
  "mz-timely-util",
  "prometheus",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rand",
  "serde",
@@ -5015,8 +5024,8 @@ dependencies = [
  "parquet2",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "serde_json",
@@ -5090,8 +5099,8 @@ dependencies = [
  "phf_codegen",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "uncased",
@@ -5188,8 +5197,8 @@ dependencies = [
  "postgres-openssl",
  "postgres_array",
  "proptest",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "thiserror",
@@ -5222,8 +5231,8 @@ dependencies = [
  "mz-proc",
  "once_cell",
  "pprof",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "tempfile",
  "tikv-jemalloc-ctl",
@@ -5270,8 +5279,8 @@ dependencies = [
  "num",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "regex",
  "serde",
@@ -5328,8 +5337,8 @@ dependencies = [
  "postgres-protocol",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rand",
  "regex",
@@ -5379,8 +5388,8 @@ dependencies = [
  "prometheus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rocksdb",
  "serde",
@@ -5404,8 +5413,8 @@ dependencies = [
  "num_cpus",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "tonic-build",
@@ -5498,8 +5507,8 @@ dependencies = [
  "os_info",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "semver",
  "sentry-tracing",
@@ -5569,7 +5578,7 @@ dependencies = [
  "postgres_array",
  "proptest",
  "proptest-derive",
- "prost",
+ "prost 0.11.9",
  "protobuf-native",
  "rdkafka",
  "regex",
@@ -5729,7 +5738,7 @@ dependencies = [
  "postgres-openssl",
  "prometheus",
  "proptest",
- "prost",
+ "prost 0.11.9",
  "rand",
  "serde",
  "timely",
@@ -5757,7 +5766,7 @@ dependencies = [
  "mz-storage-types",
  "mz-tls-util",
  "once_cell",
- "prost",
+ "prost 0.11.9",
  "serde_json",
  "tokio",
  "tokio-postgres",
@@ -5775,7 +5784,7 @@ dependencies = [
  "mz-proto",
  "paste",
  "prometheus",
- "prost",
+ "prost 0.11.9",
  "serde",
  "tokio-postgres",
  "workspace-hack",
@@ -5843,7 +5852,7 @@ dependencies = [
  "once_cell",
  "postgres-protocol",
  "prometheus",
- "prost",
+ "prost 0.11.9",
  "protobuf-src",
  "rand",
  "rdkafka",
@@ -5893,8 +5902,8 @@ dependencies = [
  "once_cell",
  "prometheus",
  "proptest",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rdkafka",
  "serde",
@@ -5936,7 +5945,7 @@ dependencies = [
  "mz-tls-util",
  "once_cell",
  "proptest",
- "prost",
+ "prost 0.11.9",
  "serde",
  "serde_json",
  "timely",
@@ -6016,8 +6025,8 @@ dependencies = [
  "openssl",
  "proptest",
  "proptest-derive",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "rdkafka",
  "scopeguard",
@@ -6108,7 +6117,7 @@ dependencies = [
  "mz-tls-util",
  "once_cell",
  "postgres_array",
- "prost",
+ "prost 0.11.9",
  "prost-reflect",
  "protobuf-src",
  "rand",
@@ -6196,8 +6205,8 @@ dependencies = [
  "mz-ore",
  "mz-proto",
  "proptest",
- "prost",
- "prost-build",
+ "prost 0.11.9",
+ "prost-build 0.12.3",
  "protobuf-src",
  "serde",
  "tonic-build",
@@ -6582,7 +6591,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.11.9",
  "thiserror",
  "tokio",
  "tonic",
@@ -6595,7 +6604,7 @@ source = "git+https://github.com/MaterializeInc/opentelemetry-rust?rev=9d300167e
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.11.9",
  "tonic",
 ]
 
@@ -7200,7 +7209,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rand_xorshift",
- "regex-syntax",
+ "regex-syntax 0.6.28",
 ]
 
 [[package]]
@@ -7220,7 +7229,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b82eaa1d779e9a4bc1c3217db8ffbeabaae1dca241bf70183242128d48681cd"
 dependencies = [
  "bytes",
- "prost-derive",
+ "prost-derive 0.11.9",
+]
+
+[[package]]
+name = "prost"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "146c289cda302b98a28d40c8b3b90498d6e526dd24ac2ecea73e4e491685b94a"
+dependencies = [
+ "bytes",
+ "prost-derive 0.12.3",
 ]
 
 [[package]]
@@ -7237,10 +7256,32 @@ dependencies = [
  "multimap",
  "petgraph",
  "prettyplease 0.1.25",
- "prost",
- "prost-types",
+ "prost 0.11.9",
+ "prost-types 0.11.9",
  "regex",
  "syn 1.0.107",
+ "tempfile",
+ "which",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c55e02e35260070b6f716a2423c2ff1c3bb1642ddca6f99e1f26d06268a0e2d2"
+dependencies = [
+ "bytes",
+ "heck",
+ "itertools",
+ "log",
+ "multimap",
+ "once_cell",
+ "petgraph",
+ "prettyplease 0.2.4",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
+ "regex",
+ "syn 2.0.39",
  "tempfile",
  "which",
 ]
@@ -7259,6 +7300,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-derive"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efb6c9a1dd1def8e2124d17e83a20af56f1570d6c2d2bd9e266ccb768df3840e"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.39",
+]
+
+[[package]]
 name = "prost-reflect"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7266,8 +7320,8 @@ checksum = "000e1e05ebf7b26e1eba298e66fe4eee6eb19c567d0ffb35e0dd34231cdac4c8"
 dependencies = [
  "base64 0.21.5",
  "once_cell",
- "prost",
- "prost-types",
+ "prost 0.11.9",
+ "prost-types 0.11.9",
  "serde",
  "serde-value",
 ]
@@ -7278,7 +7332,16 @@ version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
 dependencies = [
- "prost",
+ "prost 0.11.9",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "193898f59edcf43c26227dcd4c8427f00d99d61e95dcde58dabd49fa291d470e"
+dependencies = [
+ "prost 0.12.3",
 ]
 
 [[package]]
@@ -7525,13 +7588,13 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.7.0"
+version = "1.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e076559ef8e241f2ae3479e36f97bd5741c0330689e217ad51ce2c76808b868a"
+checksum = "d0ab3ca65655bb1e41f2a8c8cd662eb4fb035e67c3f78da1d61dffe89d07300f"
 dependencies = [
- "aho-corasick",
+ "aho-corasick 1.1.2",
  "memchr",
- "regex-syntax",
+ "regex-syntax 0.7.5",
 ]
 
 [[package]]
@@ -7541,7 +7604,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae1ded71d66a4a97f5e961fd0cb25a5f366a42a41570d16a763a69c092c26ae4"
 dependencies = [
  "byteorder",
- "regex-syntax",
+ "regex-syntax 0.6.28",
 ]
 
 [[package]]
@@ -7561,6 +7624,12 @@ name = "regex-syntax"
 version = "0.6.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456c603be3e8d448b072f410900c09faf164fbce2d480456f50eea6e25f9c848"
+
+[[package]]
+name = "regex-syntax"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbb5fb1acd8a1a18b3dd5be62d25485eb770e05afb408a9627d14d451bae12da"
 
 [[package]]
 name = "reqwest"
@@ -9112,7 +9181,7 @@ dependencies = [
  "hyper-timeout",
  "percent-encoding",
  "pin-project",
- "prost",
+ "prost 0.11.9",
  "tokio",
  "tokio-stream",
  "tower",
@@ -9128,7 +9197,7 @@ source = "git+https://github.com/MaterializeInc/tonic?rev=0d86e360ab45779770ca15
 dependencies = [
  "prettyplease 0.1.25",
  "proc-macro2",
- "prost-build",
+ "prost-build 0.11.9",
  "quote",
  "syn 1.0.107",
 ]
@@ -9965,15 +10034,15 @@ dependencies = [
  "postgres-types",
  "predicates",
  "proc-macro2",
- "prost",
+ "prost 0.11.9",
  "prost-reflect",
- "prost-types",
+ "prost-types 0.11.9",
  "quote",
  "rand",
  "rand_chacha",
  "rdkafka-sys",
  "regex",
- "regex-syntax",
+ "regex-syntax 0.6.28",
  "reqwest",
  "ring",
  "schemars",
