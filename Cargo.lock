@@ -2933,6 +2933,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-openapi"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "301f367a36090b7dfdaac248ee3ed4f14a6a8292e7bec0f1c5e6e2e1f181cd33"
+dependencies = [
+ "base64 0.21.5",
+ "chrono",
+ "serde",
+ "serde-value",
+ "serde_json",
+]
+
+[[package]]
 name = "keyed_priority_queue"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2947,9 +2960,9 @@ version = "0.87.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e34392aea935145070dcd5b39a6dea689ac6534d7d117461316c3d157b1d0fc3"
 dependencies = [
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
  "kube-client",
- "kube-core",
+ "kube-core 0.87.1",
  "kube-derive",
  "kube-runtime",
 ]
@@ -2972,8 +2985,8 @@ dependencies = [
  "hyper-openssl",
  "hyper-timeout",
  "jsonpath_lib",
- "k8s-openapi",
- "kube-core",
+ "k8s-openapi 0.20.0",
+ "kube-core 0.87.1",
  "openssl",
  "pem",
  "pin-project",
@@ -3001,7 +3014,25 @@ dependencies = [
  "form_urlencoded",
  "http",
  "json-patch",
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
+ "once_cell",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "kube-core"
+version = "0.88.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6b42844e9172f631b8263ea9ce003b9251da13beb1401580937ad206dd82f4c"
+dependencies = [
+ "chrono",
+ "form_urlencoded",
+ "http",
+ "json-patch",
+ "k8s-openapi 0.21.0",
  "once_cell",
  "schemars",
  "serde",
@@ -3035,7 +3066,7 @@ dependencies = [
  "futures",
  "hashbrown 0.14.0",
  "json-patch",
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
  "kube-client",
  "parking_lot",
  "pin-project",
@@ -3929,7 +3960,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
  "kube",
  "mz-ore",
  "mz-repr",
@@ -4778,7 +4809,7 @@ dependencies = [
  "clap",
  "fail",
  "futures",
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
  "kube",
  "maplit",
  "mz-cloud-resources",
@@ -10050,10 +10081,10 @@ dependencies = [
  "hyper",
  "indexmap 1.9.1",
  "itertools",
- "k8s-openapi",
+ "k8s-openapi 0.20.0",
  "kube",
  "kube-client",
- "kube-core",
+ "kube-core 0.88.1",
  "libc",
  "libz-sys",
  "log",
