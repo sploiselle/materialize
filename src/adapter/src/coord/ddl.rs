@@ -508,7 +508,7 @@ impl Coordinator {
                 }
             }
             if !sources_to_drop.is_empty() {
-                self.drop_sources(sources_to_drop);
+                self.drop_sources(sources_to_drop).await;
             }
             if !tables_to_drop.is_empty() {
                 let ts = self.get_local_write_ts().await;
@@ -545,7 +545,8 @@ impl Coordinator {
                 self.drop_indexes(indexes_to_drop);
             }
             if !materialized_views_to_drop.is_empty() {
-                self.drop_materialized_views(materialized_views_to_drop);
+                self.drop_materialized_views(materialized_views_to_drop)
+                    .await;
             }
             if !secrets_to_drop.is_empty() {
                 self.drop_secrets(secrets_to_drop).await;
@@ -682,7 +683,16 @@ impl Coordinator {
             .expect("dropping replica must not fail");
     }
 
-    fn drop_sources(&mut self, sources: Vec<GlobalId>) {
+    /// A convenience method for dropping sources.
+    ///
+    /// This code is "infected" with `async` only because some sources require
+    /// `async` to begin rendering and dropping a source can require a source to
+    /// re-render.
+    ///
+    /// This code shouldn't require being run in a task currently, but should
+    /// follow the lead of whatever the adapter does when calling
+    /// `StorageController::create_collections`.
+    async fn drop_sources(&mut self, sources: Vec<GlobalId>) {
         for id in &sources {
             self.active_webhooks.remove(id);
             self.drop_storage_read_policy(id);
@@ -691,6 +701,7 @@ impl Coordinator {
         self.controller
             .storage
             .drop_sources(storage_metadata, sources)
+            .await
             .unwrap_or_terminate("cannot fail to drop sources");
     }
 
@@ -701,7 +712,7 @@ impl Coordinator {
         self.controller
             .storage
             .drop_tables(tables, ts)
-            .unwrap_or_terminate("cannot fail to drop sources");
+            .unwrap_or_terminate("cannot fail to drop tables");
     }
 
     fn restart_webhook_sources(&mut self, sources: impl IntoIterator<Item = GlobalId>) {
@@ -835,7 +846,16 @@ impl Coordinator {
         }
     }
 
-    fn drop_materialized_views(&mut self, mviews: Vec<(ClusterId, GlobalId)>) {
+    /// A convenience method for dropping sources.
+    ///
+    /// This code is "infected" with `async` only because some sources require
+    /// `async` to begin rendering and dropping a source can require a source to
+    /// re-render.
+    ///
+    /// This code shouldn't require being run in a task currently, but should
+    /// follow the lead of whatever the adapter does when calling
+    /// `StorageController::create_collections`.
+    async fn drop_materialized_views(&mut self, mviews: Vec<(ClusterId, GlobalId)>) {
         let mut by_cluster: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut source_ids = Vec::new();
         for (cluster_id, id) in mviews {
@@ -855,7 +875,7 @@ impl Coordinator {
         }
 
         // Drop storage sources.
-        self.drop_sources(source_ids)
+        self.drop_sources(source_ids).await
     }
 
     async fn drop_secrets(&mut self, secrets: Vec<GlobalId>) {
