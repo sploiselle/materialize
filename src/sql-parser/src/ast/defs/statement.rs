@@ -2338,6 +2338,10 @@ pub enum AlterSourceAction<T: AstInfo> {
     ResetOptions(Vec<CreateSourceOptionName>),
     AddSubsources {
         subsources: Vec<CreateSourceSubsource<T>>,
+        options: Vec<AlterSourceAddSubsourceOption<T>>,
+    },
+    AddSubsourcesPurified {
+        subsources: Vec<CreateSubsourceStatement<T>>,
         details: Option<WithOptionValue<T>>,
         options: Vec<AlterSourceAddSubsourceOption<T>>,
     },
@@ -2393,12 +2397,29 @@ impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
             }
             AlterSourceAction::AddSubsources {
                 subsources,
-                details: _,
                 options,
             } => {
                 f.write_str("ADD SUBSOURCE ");
 
                 f.write_node(&display::comma_separated(subsources));
+
+                if !options.is_empty() {
+                    f.write_str(" WITH (");
+                    f.write_node(&display::comma_separated(options));
+                    f.write_str(")");
+                }
+            }
+            AlterSourceAction::AddSubsourcesPurified {
+                subsources,
+                details: _,
+                options,
+            } => {
+                // n.b. this doesn't roundtrip.
+                f.write_str("ADD SUBSOURCE (");
+
+                f.write_node(&display::comma_separated(subsources));
+
+                f.write_str(") ");
 
                 if !options.is_empty() {
                     f.write_str(" WITH (");
