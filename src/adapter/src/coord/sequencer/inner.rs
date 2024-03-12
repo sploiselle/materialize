@@ -295,6 +295,17 @@ impl Coordinator {
                                 set_read_policies,
                             )
                         }
+                        DataSourceDesc::IngestionExport {
+                            ingestion_id,
+                            external_reference,
+                        } => (
+                            DataSource::IngestionExport {
+                                ingestion_id,
+                                external_reference,
+                            },
+                            source_status_collection_id,
+                            vec![],
+                        ),
                         // Subsources use source statuses.
                         DataSourceDesc::Source => (
                             DataSource::Other(DataSourceOther::Source),
