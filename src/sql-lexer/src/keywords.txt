@@ -150,6 +150,7 @@ Expected
 Explain
 Expose
 Expressions
+External
 Extract
 Factor
 False
@@ -330,6 +331,7 @@ Reassign
 Recursion
 Recursive
 Redacted
+Reference
 References
 Refresh
 Regex
