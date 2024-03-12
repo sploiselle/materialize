@@ -16,6 +16,7 @@ use std::iter;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::ast::AlterSourceAddSubsourceOption;
 use anyhow::anyhow;
 use itertools::Itertools;
 use mz_ccsr::{Client, GetByIdError, GetBySubjectError, Schema as CcsrSchema};
@@ -27,7 +28,7 @@ use mz_ore::iter::IteratorExt;
 use mz_ore::str::StrExt;
 use mz_postgres_util::replication::WalLevel;
 use mz_proto::RustType;
-use mz_repr::{strconv, GlobalId, Timestamp};
+use mz_repr::{strconv, Timestamp};
 use mz_sql_parser::ast::display::AstDisplay;
 use mz_sql_parser::ast::visit::{visit_function, Visit};
 use mz_sql_parser::ast::visit_mut::{visit_expr_mut, VisitMut};
@@ -218,6 +219,27 @@ fn validate_subsource_names<T>(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PurifiedStatement {
+    PurifiedCreateSource {
+        create_progress_subsource_stmt: CreateSubsourceStatement<Aug>,
+        create_source_stmt: CreateSourceStatement<Aug>,
+        create_subsource_stmts: Vec<CreateSubsourceStatement<Aug>>,
+    },
+    PurifiedAlterSource {
+        alter_source_stmt: AlterSourceStatement<Aug>,
+    },
+    PurifiedAlterSourceAddSubsources {
+        // This just saves us an annoying catalog lookup
+        altered_id: mz_repr::GlobalId,
+        /// Options that we will need the values of to update the source's
+        /// definition.
+        options: Vec<AlterSourceAddSubsourceOption<Aug>>,
+        create_subsource_stmts: Vec<CreateSubsourceStatement<Aug>>,
+    },
+    PurifiedCreateSink(CreateSinkStatement<Aug>),
+}
+
 /// Purifies a statement, removing any dependencies on external state.
 ///
 /// See the section on [purification](crate#purification) in the crate
@@ -232,16 +254,7 @@ pub async fn purify_statement(
     now: u64,
     stmt: Statement<Aug>,
     storage_configuration: &StorageConfiguration,
-) -> (
-    Result<
-        (
-            Vec<(GlobalId, CreateSubsourceStatement<Aug>)>,
-            Statement<Aug>,
-        ),
-        PlanError,
-    >,
-    Option<ClusterId>,
-) {
+) -> (Result<PurifiedStatement, PlanError>, Option<ClusterId>) {
     match stmt {
         Statement::CreateSource(stmt) => {
             let cluster_id = stmt.in_cluster.as_ref().map(|cluster| cluster.id.clone());
@@ -256,10 +269,10 @@ pub async fn purify_statement(
         ),
         Statement::CreateSink(stmt) => {
             let cluster_id = stmt.in_cluster.as_ref().map(|cluster| cluster.id.clone());
-            match purify_create_sink(catalog, stmt, storage_configuration).await {
-                Ok(r) => (Ok((vec![], r)), cluster_id),
-                Err(e) => (Err(e), cluster_id),
-            }
+            (
+                purify_create_sink(catalog, stmt, storage_configuration).await,
+                cluster_id,
+            )
         }
         o => unreachable!("{:?} does not need to be purified", o),
     }
@@ -372,14 +385,14 @@ pub(crate) fn add_materialize_comments(
 /// preferable to leaking state in users' environments.
 async fn purify_create_sink(
     catalog: impl SessionCatalog,
-    mut stmt: CreateSinkStatement<Aug>,
+    mut create_sink_stmt: CreateSinkStatement<Aug>,
     storage_configuration: &StorageConfiguration,
-) -> Result<Statement<Aug>, PlanError> {
-    add_materialize_comments(&catalog, &mut stmt)?;
+) -> Result<PurifiedStatement, PlanError> {
+    add_materialize_comments(&catalog, &mut create_sink_stmt)?;
     // General purification
     let CreateSinkStatement {
         connection, format, ..
-    } = &stmt;
+    } = &create_sink_stmt;
 
     match &connection {
         CreateSinkConnection::Kafka {
@@ -484,21 +497,15 @@ async fn purify_create_sink(
         }
     }
 
-    Ok(Statement::CreateSink(stmt))
+    Ok(PurifiedStatement::PurifiedCreateSink(create_sink_stmt))
 }
 
 async fn purify_create_source(
     catalog: impl SessionCatalog,
     now: u64,
-    mut stmt: CreateSourceStatement<Aug>,
+    mut create_source_stmt: CreateSourceStatement<Aug>,
     storage_configuration: &StorageConfiguration,
-) -> Result<
-    (
-        Vec<(GlobalId, CreateSubsourceStatement<Aug>)>,
-        Statement<Aug>,
-    ),
-    PlanError,
-> {
+) -> Result<PurifiedStatement, PlanError> {
     let CreateSourceStatement {
         name: source_name,
         connection,
@@ -508,7 +515,7 @@ async fn purify_create_source(
         referenced_subsources,
         progress_subsource,
         ..
-    } = &mut stmt;
+    } = &mut create_source_stmt;
 
     // Disallow manually targetting subsources, this syntax is reserved for purification only
     named_subsource_err(progress_subsource)?;
@@ -523,13 +530,7 @@ async fn purify_create_source(
         }
     }
 
-    let mut subsource_id_counter = 0;
-    let mut get_transient_subsource_id = move || {
-        subsource_id_counter += 1;
-        subsource_id_counter
-    };
-
-    let mut subsources = vec![];
+    let mut create_subsource_stmts = vec![];
 
     let progress_desc = match &connection {
         CreateSourceConnection::Kafka { .. } => {
@@ -846,27 +847,29 @@ async fn purify_create_source(
                 .iter_mut()
                 .find(|option| option.name == PgConfigOptionName::TextColumns)
             {
-                let mut seq: Vec<_> = text_columns
-                    .into_iter()
-                    .map(WithOptionValue::UnresolvedItemName)
-                    .collect();
-
-                seq.sort();
-                seq.dedup();
-
-                text_cols_option.value = Some(WithOptionValue::Sequence(seq));
+                text_columns.sort();
+                text_columns.dedup();
+                text_cols_option.value = Some(WithOptionValue::Sequence(
+                    text_columns
+                        .into_iter()
+                        .map(WithOptionValue::UnresolvedItemName)
+                        .collect(),
+                ));
             }
 
-            let (targeted_subsources, new_subsources) = postgres::generate_targeted_subsources(
+            let (new_subsources, referenced_tables) = postgres::generate_targeted_subsources(
                 &scx,
+                None,
                 validated_requested_subsources,
                 text_cols_dict,
-                get_transient_subsource_id,
                 &publication_tables,
             )?;
 
-            *referenced_subsources = Some(ReferencedSubsources::SubsetTables(targeted_subsources));
-            subsources.extend(new_subsources);
+            // Now that we know which subsources to create alongside this
+            // statement, remove the references so it is not canonicalized as
+            // part of the `CREATE SOURCE` statement in the catalog.
+            *referenced_subsources = None;
+            create_subsource_stmts.extend(new_subsources);
 
             // Record the active replication timeline_id to allow detection of a future upstream
             // point-in-time-recovery that will put the source into an error state.
@@ -878,7 +881,7 @@ async fn purify_create_source(
             // Remove any old detail references
             options.retain(|PgConfigOption { name, .. }| name != &PgConfigOptionName::Details);
             let details = PostgresSourcePublicationDetails {
-                tables: publication_tables,
+                tables: referenced_tables,
                 slot: format!(
                     "materialize_{}",
                     Uuid::new_v4().to_string().replace('-', "")
@@ -1124,14 +1127,13 @@ async fn purify_create_source(
             )
             .await?;
 
-            let (targeted_subsources, new_subsources) = mysql::generate_targeted_subsources(
-                &scx,
-                validated_requested_subsources,
-                get_transient_subsource_id,
-            )?;
+            let new_subsources =
+                mysql::generate_targeted_subsources(&scx, validated_requested_subsources)?;
 
-            *referenced_subsources = Some(ReferencedSubsources::SubsetTables(targeted_subsources));
-            subsources.extend(new_subsources);
+            // Now that we know which subsources to create alongside this
+            // statement, remove the references so it is not canonicalized as
+            // part of the `CREATE SOURCE` statement in the catalog.
+            *referenced_subsources = None;
 
             // Retrieve the current @gtid_executed value of the server to mark as the effective
             // initial snapshot point such that we can ensure consistency if the initial source
@@ -1146,6 +1148,9 @@ async fn purify_create_source(
                 tables,
                 initial_gtid_set,
             };
+
+            create_subsource_stmts.extend(new_subsources);
+
             options.push(MySqlConfigOption {
                 name: MySqlConfigOptionName::Details,
                 value: Some(WithOptionValue::Value(Value::String(hex::encode(
@@ -1158,8 +1163,6 @@ async fn purify_create_source(
 
             let (_load_generator, available_subsources) =
                 load_generator_ast_to_generator(&scx, generator, options, include_metadata)?;
-
-            let mut targeted_subsources = vec![];
 
             let mut validated_requested_subsources = vec![];
             match referenced_subsources {
@@ -1192,17 +1195,6 @@ async fn purify_create_source(
             {
                 let (columns, table_constraints) = scx.relation_desc_into_table_defs(desc)?;
 
-                // Create the targeted AST node for the original CREATE SOURCE statement
-                let transient_id = GlobalId::Transient(get_transient_subsource_id());
-
-                let subsource =
-                    scx.allocate_resolved_item_name(transient_id, subsource_name.clone())?;
-
-                targeted_subsources.push(CreateSourceSubsource {
-                    reference: upstream_name,
-                    subsource: Some(DeferredItemName::Named(subsource)),
-                });
-
                 // Create the subsource statement
                 let subsource = CreateSubsourceStatement {
                     name: subsource_name,
@@ -1215,33 +1207,29 @@ async fn purify_create_source(
                     constraints: table_constraints,
                     if_not_exists: false,
                     with_options: vec![CreateSubsourceOption {
-                        name: CreateSubsourceOptionName::References,
-                        value: Some(WithOptionValue::Value(Value::Boolean(true))),
+                        name: CreateSubsourceOptionName::ExternalReference,
+                        value: Some(WithOptionValue::UnresolvedItemName(upstream_name)),
                     }],
                 };
-                subsources.push((transient_id, subsource));
+                create_subsource_stmts.push(subsource);
             }
-            if available_subsources.is_some() {
-                *referenced_subsources =
-                    Some(ReferencedSubsources::SubsetTables(targeted_subsources));
-            }
+
+            // Now that we know which subsources to create alongside this
+            // statement, remove the references so it is not canonicalized as
+            // part of the `CREATE SOURCE` statement in the catalog.
+            *referenced_subsources = None;
         }
     }
 
     // Generate progress subsource
 
     // Create the targeted AST node for the original CREATE SOURCE statement
-    let transient_id = GlobalId::Transient(subsource_id_counter);
-
     let scx = StatementContext::new(None, &catalog);
 
     // Take name from input or generate name
-    let (name, subsource) = match progress_subsource {
+    let name = match progress_subsource {
         Some(name) => match name {
-            DeferredItemName::Deferred(name) => (
-                name.clone(),
-                scx.allocate_resolved_item_name(transient_id, name.clone())?,
-            ),
+            DeferredItemName::Deferred(name) => name.clone(),
             DeferredItemName::Named(_) => unreachable!("already checked for this value"),
         },
         None => {
@@ -1263,24 +1251,14 @@ async fn purify_create_source(
             let qualified_name = scx.allocate_qualified_name(full_name)?;
             let full_name = scx.catalog.resolve_full_name(&qualified_name);
 
-            (
-                UnresolvedItemName::from(full_name.clone()),
-                crate::names::ResolvedItemName::Item {
-                    id: transient_id,
-                    qualifiers: qualified_name.qualifiers,
-                    full_name,
-                    print_id: true,
-                },
-            )
+            UnresolvedItemName::from(full_name.clone())
         }
     };
 
     let (columns, constraints) = scx.relation_desc_into_table_defs(progress_desc)?;
 
-    *progress_subsource = Some(DeferredItemName::Named(subsource));
-
     // Create the subsource statement
-    let subsource = CreateSubsourceStatement {
+    let create_progress_subsource_stmt = CreateSubsourceStatement {
         name,
         columns,
         of_source: None,
@@ -1291,7 +1269,6 @@ async fn purify_create_source(
             value: Some(WithOptionValue::Value(Value::Boolean(true))),
         }],
     };
-    subsources.push((transient_id, subsource));
 
     purify_source_format(
         &catalog,
@@ -1302,44 +1279,48 @@ async fn purify_create_source(
     )
     .await?;
 
-    Ok((subsources, Statement::CreateSource(stmt)))
+    Ok(PurifiedStatement::PurifiedCreateSource {
+        create_progress_subsource_stmt,
+        create_source_stmt,
+        create_subsource_stmts,
+    })
 }
 
 /// Equivalent to `purify_create_source` but for `AlterSourceStatement`.
 ///
-/// On success, returns the `GlobalId` and `CreateSubsourceStatement`s for any
-/// subsources created by this statement, in addition to the
-/// `AlterSourceStatement` with any modifications that are only accessible while
-/// we are permitted to use async code.
+/// On success, returns the a set of statements that sequencing expects for
+/// handling `ALTER SOURCE` statements.
 async fn purify_alter_source(
     catalog: impl SessionCatalog,
-    mut stmt: AlterSourceStatement<Aug>,
+    stmt: AlterSourceStatement<Aug>,
     storage_configuration: &StorageConfiguration,
-) -> Result<
-    (
-        Vec<(GlobalId, CreateSubsourceStatement<Aug>)>,
-        Statement<Aug>,
-    ),
-    PlanError,
-> {
+) -> Result<PurifiedStatement, PlanError> {
     let scx = StatementContext::new(None, &catalog);
     let AlterSourceStatement {
-        source_name,
+        source_name: unresolved_source_name,
         action,
         if_exists,
-    } = &mut stmt;
+    } = stmt;
+
+    // Get name.
+    let item = match scx.resolve_item(RawItemName::Name(unresolved_source_name.clone())) {
+        Ok(item) => item,
+        Err(_) if if_exists => {
+            return Ok(PurifiedStatement::PurifiedAlterSource {
+                alter_source_stmt: AlterSourceStatement {
+                    source_name: unresolved_source_name,
+                    action,
+                    if_exists,
+                },
+            });
+        }
+        Err(e) => return Err(e),
+    };
+
+    let altered_id = item.id();
 
     // Get connection
-    let pg_source_connection = {
-        // Get name.
-        let item = match scx.resolve_item(RawItemName::Name(source_name.clone())) {
-            Ok(item) => item,
-            Err(_) if *if_exists => {
-                return Ok((vec![], Statement::AlterSource(stmt)));
-            }
-            Err(e) => return Err(e),
-        };
-
+    let (resolved_source_name, pg_source_connection, mut current_references) = {
         // Ensure it's an ingestion-based and alterable source.
         let desc = match item.source_desc()? {
             Some(desc) => desc.clone().into_inline_connection(scx.catalog),
@@ -1348,9 +1329,29 @@ async fn purify_alter_source(
             }
         };
 
-        // Ensure it's a source that supports ALTER SOURCE...
+        let name = item.name();
+        let full_name = scx.catalog.resolve_full_name(name);
+        let resolved_source_name = ResolvedItemName::Item {
+            id: item.id(),
+            qualifiers: item.name().qualifiers.clone(),
+            full_name,
+            print_id: true,
+        };
+
+        let references: BTreeSet<_> = item
+            .used_by()
+            .iter()
+            .filter_map(|id| {
+                scx.get_item(id)
+                    .subsource_details()
+                    .map(|(_id, external_reference)| external_reference)
+            })
+            .collect();
+
         match desc.connection {
-            GenericSourceConnection::Postgres(pg_connection) => pg_connection,
+            GenericSourceConnection::Postgres(pg_connection) => {
+                (resolved_source_name, pg_connection, references)
+            }
             _ => sql_bail!(
                 "{} is a {} source, which does not support ALTER SOURCE.",
                 scx.catalog.minimal_qualification(item.name()),
@@ -1360,24 +1361,28 @@ async fn purify_alter_source(
     };
 
     // If we don't need to handle added subsources, early return.
-    let (targeted_subsources, details, options) = match action {
+    let (mut targeted_subsources, mut options) = match action {
         AlterSourceAction::AddSubsources {
             subsources,
-            details,
             options,
-        } => (subsources, details, options),
-        _ => return Ok((vec![], Statement::AlterSource(stmt))),
+        } => (subsources, options.to_vec()),
+        action => {
+            return Ok(PurifiedStatement::PurifiedAlterSource {
+                alter_source_stmt: AlterSourceStatement {
+                    source_name: unresolved_source_name,
+                    action,
+                    if_exists,
+                },
+            });
+        }
     };
-
-    assert!(
-        details.is_none(),
-        "details cannot be set before purification"
-    );
 
     let crate::plan::statement::ddl::AlterSourceAddSubsourceOptionExtracted {
         mut text_columns,
+        details,
         ..
     } = options.clone().try_into()?;
+    assert!(details.is_none(), "details cannot be explicitly set");
 
     for CreateSourceSubsource {
         subsource,
@@ -1409,14 +1414,14 @@ async fn purify_alter_source(
         Err(PgSourcePurificationError::InsufficientReplicationSlotsAvailable { count: 1 })?;
     }
 
-    let mut publication_tables = mz_postgres_util::publication_info(
+    let new_publication_tables = mz_postgres_util::publication_info(
         &storage_configuration.connection_context.ssh_tunnel_manager,
         &config,
         &pg_source_connection.publication,
     )
     .await?;
 
-    if publication_tables.is_empty() {
+    if new_publication_tables.is_empty() {
         Err(PgSourcePurificationError::EmptyPublication(
             pg_source_connection.publication.to_string(),
         ))?;
@@ -1424,33 +1429,17 @@ async fn purify_alter_source(
 
     let publication_catalog = postgres::derive_catalog_from_publication_tables(
         &pg_connection.database,
-        &publication_tables,
+        &new_publication_tables,
     )?;
 
-    let validated_requested_subsources =
-        subsource_gen(targeted_subsources, &publication_catalog, source_name)?;
-
-    // Determine duplicate references to tables by cross-referencing the table
-    // positions in the current publication info to thei
-    let mut current_subsources = BTreeMap::new();
-    for idx in pg_source_connection.table_casts.keys() {
-        // Table casts all have their values increased by to accommodate for the
-        // primary source--this means that to look them up in the publication
-        // tables you must subtract one.
-        let native_idx = *idx - 1;
-        let table_desc = &pg_source_connection.publication_details.tables[native_idx];
-        current_subsources.insert(
-            UnresolvedItemName(vec![
-                Ident::new(pg_connection.database.clone())?,
-                Ident::new(table_desc.namespace.clone())?,
-                Ident::new(table_desc.name.clone())?,
-            ]),
-            native_idx,
-        );
-    }
+    let validated_requested_subsources = subsource_gen(
+        &mut targeted_subsources,
+        &publication_catalog,
+        &unresolved_source_name,
+    )?;
 
     for RequestedSubsource { upstream_name, .. } in validated_requested_subsources.iter() {
-        if current_subsources.contains_key(upstream_name) {
+        if current_references.contains(upstream_name) {
             Err(PlanError::SubsourceAlreadyReferredTo {
                 name: upstream_name.clone(),
             })?;
@@ -1465,11 +1454,6 @@ async fn purify_alter_source(
         &storage_configuration.connection_context.ssh_tunnel_manager,
     )
     .await?;
-    let mut subsource_id_counter = 0;
-    let get_transient_subsource_id = move || {
-        subsource_id_counter += 1;
-        subsource_id_counter
-    };
 
     let text_cols_dict = postgres::generate_text_columns(
         &publication_catalog,
@@ -1482,58 +1466,52 @@ async fn purify_alter_source(
         .iter_mut()
         .find(|option| option.name == AlterSourceAddSubsourceOptionName::TextColumns)
     {
-        let mut seq: Vec<_> = text_columns
-            .into_iter()
-            .map(WithOptionValue::UnresolvedItemName)
-            .collect();
-
-        seq.sort();
-        seq.dedup();
-
-        text_cols_option.value = Some(WithOptionValue::Sequence(seq));
+        text_columns.sort();
+        text_columns.dedup();
+        text_cols_option.value = Some(WithOptionValue::Sequence(
+            text_columns
+                .into_iter()
+                .map(WithOptionValue::UnresolvedItemName)
+                .collect(),
+        ));
     }
 
-    let (named_subsources, new_subsources) = postgres::generate_targeted_subsources(
+    let (create_subsource_stmts, mut referenced_tables) = postgres::generate_targeted_subsources(
         &scx,
+        Some(resolved_source_name),
         validated_requested_subsources,
         text_cols_dict,
-        get_transient_subsource_id,
-        &publication_tables,
+        &new_publication_tables,
     )?;
 
-    *targeted_subsources = named_subsources;
+    // Look over all of the current publication tables' details.
+    for table in pg_source_connection.publication_details.tables {
+        let name = UnresolvedItemName(vec![
+            Ident::new(pg_connection.database.clone())?,
+            Ident::new(table.namespace.clone())?,
+            Ident::new(table.name.clone())?,
+        ]);
 
-    // An index from table name -> output index.
-    let mut new_name_to_output_map = BTreeMap::new();
-    for (i, table) in publication_tables.iter().enumerate() {
-        new_name_to_output_map.insert(
-            UnresolvedItemName(vec![
-                Ident::new(pg_connection.database.clone())?,
-                Ident::new(table.namespace.clone())?,
-                Ident::new(table.name.clone())?,
-            ]),
-            i,
-        );
-    }
-
-    // Fixup the publication info
-    for (name, idx) in current_subsources {
-        let table = pg_source_connection.publication_details.tables[idx].clone();
-
-        // Determine if this current subsource is in the new publication tables.
-        match new_name_to_output_map.get(&name) {
-            // These are tables that were previously defined; we want to
-            // duplicate their definition to the new `publication_tables`
-            // because this command is meant only to add new tables, not update
-            // the schema of existing tables.
-            Some(cur_idx) => publication_tables[*cur_idx] = table,
-            // These are tables that no longer exist in the publication but the
-            // user has kept around. When the ingestion restarts after adding
-            // the new table, they will error out, but that is not the problem
-            // or scope of this function.
-            None => publication_tables.push(table),
+        // Retain the definition of only those that are still referenced. This
+        // lets us retain only the minimal set of publication details, which can
+        // help avoid issues when generating PostgreSQL table casts.
+        //
+        // For example, if a table in the publication contains a column whose
+        // cast requires using `TEXT COLUMNS` but the table is not an ingested
+        // subsource. This poses an issue because `TEXT COLUMNS` requires that
+        // the columns refer only to referenced subsources. The best solution to
+        // this is to ensure that we simply don't try to generate the table cast
+        // in the first place.
+        if current_references.remove(&name) {
+            referenced_tables.push(table);
         }
     }
+
+    mz_ore::soft_assert_or_log!(
+        current_references.is_empty(),
+        "expected all references to be moved into new table details, but still have reference to {:?}",
+        current_references
+    );
 
     let timeline_id = match pg_source_connection.publication_details.timeline_id {
         None => {
@@ -1548,17 +1526,24 @@ async fn purify_alter_source(
     };
 
     let new_details = PostgresSourcePublicationDetails {
-        tables: publication_tables,
+        tables: referenced_tables,
         slot: pg_source_connection.publication_details.slot.clone(),
         timeline_id,
         database: pg_source_connection.publication_details.database,
     };
 
-    *details = Some(WithOptionValue::Value(Value::String(hex::encode(
-        new_details.into_proto().encode_to_vec(),
-    ))));
+    options.push(AlterSourceAddSubsourceOption {
+        name: mz_sql_parser::ast::AlterSourceAddSubsourceOptionName::Details,
+        value: Some(WithOptionValue::Value(Value::String(hex::encode(
+            new_details.into_proto().encode_to_vec(),
+        )))),
+    });
 
-    Ok((new_subsources, Statement::AlterSource(stmt)))
+    Ok(PurifiedStatement::PurifiedAlterSourceAddSubsources {
+        altered_id,
+        options,
+        create_subsource_stmts,
+    })
 }
 
 async fn purify_source_format(

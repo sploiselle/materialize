@@ -4639,7 +4639,6 @@ impl<'a> Parser<'a> {
                         if_exists,
                         action: AlterSourceAction::AddSubsources {
                             subsources,
-                            details: None,
                             options,
                         },
                     })

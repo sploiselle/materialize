@@ -2293,12 +2293,16 @@ impl<T: AstInfo> AstDisplay for AlterSinkStatement<T> {
 pub enum AlterSourceAddSubsourceOptionName {
     /// Columns whose types you want to unconditionally format as text
     TextColumns,
+    /// Updated `DETAILS` for an ingestion, e.g.
+    /// [`PgConfigOptionName::Details`].
+    Details,
 }
 
 impl AstDisplay for AlterSourceAddSubsourceOptionName {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str(match self {
             AlterSourceAddSubsourceOptionName::TextColumns => "TEXT COLUMNS",
+            AlterSourceAddSubsourceOptionName::Details => "DETAILS",
         })
     }
 }
@@ -2312,7 +2316,8 @@ impl WithOptionName for AlterSourceAddSubsourceOptionName {
     /// on the conservative side and return `true`.
     fn redact_value(&self) -> bool {
         match self {
-            AlterSourceAddSubsourceOptionName::TextColumns => false,
+            AlterSourceAddSubsourceOptionName::Details
+            | AlterSourceAddSubsourceOptionName::TextColumns => false,
         }
     }
 }
@@ -2332,7 +2337,6 @@ pub enum AlterSourceAction<T: AstInfo> {
     ResetOptions(Vec<CreateSourceOptionName>),
     AddSubsources {
         subsources: Vec<CreateSourceSubsource<T>>,
-        details: Option<WithOptionValue<T>>,
         options: Vec<AlterSourceAddSubsourceOption<T>>,
     },
     DropSubsources {
@@ -2342,23 +2346,12 @@ pub enum AlterSourceAction<T: AstInfo> {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AlterSourceStatement<T: AstInfo> {
-    pub source_name: UnresolvedItemName,
-    pub if_exists: bool,
-    pub action: AlterSourceAction<T>,
-}
-
-impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
-    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
-        f.write_str("ALTER SOURCE ");
-        if self.if_exists {
-            f.write_str("IF EXISTS ");
-        }
-        f.write_node(&self.source_name);
-        f.write_str(" ");
-
-        match &self.action {
+impl<T: AstInfo> AstDisplay for AlterSourceAction<T> {
+    fn fmt<W>(&self, f: &mut AstFormatter<W>)
+    where
+        W: fmt::Write,
+    {
+        match &self {
             AlterSourceAction::SetOptions(options) => {
                 f.write_str("SET (");
                 f.write_node(&display::comma_separated(options));
@@ -2387,7 +2380,6 @@ impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
             }
             AlterSourceAction::AddSubsources {
                 subsources,
-                details: _,
                 options,
             } => {
                 f.write_str("ADD SUBSOURCE ");
@@ -2401,6 +2393,25 @@ impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AlterSourceStatement<T: AstInfo> {
+    pub source_name: UnresolvedItemName,
+    pub if_exists: bool,
+    pub action: AlterSourceAction<T>,
+}
+
+impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
+    fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
+        f.write_str("ALTER SOURCE ");
+        if self.if_exists {
+            f.write_str("IF EXISTS ");
+        }
+        f.write_node(&self.source_name);
+        f.write_str(" ");
+        f.write_node(&self.action)
     }
 }
 
