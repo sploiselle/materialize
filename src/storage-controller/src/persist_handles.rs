@@ -167,6 +167,7 @@ impl<T: Timestamp + Lattice + TotalOrder + Codec64> PersistReadWorker<T> {
                         let epoch = since_handle.opaque().clone();
 
                         let result = if since.is_empty() {
+                            tracing::info!("PersistReadWorker termainl downgrade: {}", id);
                             // A shard's since reaching the empty frontier is a prereq for being
                             // able to finalize a shard, so the final downgrade should never be
                             // rate-limited.
@@ -199,6 +200,7 @@ impl<T: Timestamp + Lattice + TotalOrder + Codec64> PersistReadWorker<T> {
                         if !since.is_empty() {
                             Some((id, (since_handle)))
                         } else {
+                            tracing::info!("PersistReadWorker dropped: {}", id);
                             None
                         }
                     });

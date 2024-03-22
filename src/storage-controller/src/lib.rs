@@ -1819,11 +1819,19 @@ where
                         //
                         // If we fail to downgrade the since the process will halt, but as a back
                         // stop we only notify the storage-controller if it succeeds.
-                        if downgrade_notif.await.is_ok() {
-                            // Notify that this ID has been dropped, which will start finalization of
-                            // the shard.
-                            let _ = internal_response_sender
-                                .send(StorageResponse::DroppedIds([id].into()));
+                        tracing::info!("id {id}: awaiting downgrade notif");
+                        let downgrade_res =  downgrade_notif.await;
+                        tracing::info!("id {id}: downgrade notif {:?}", downgrade_res);
+                        match downgrade_res {
+                            Ok(()) => {
+                                // Notify that this ID has been dropped, which will start finalization of
+                                // the shard.
+                                let _ = internal_response_sender
+                                .send(StorageResponse::DroppedIds([id].into()))
+                            },
+                            Err(()) => {
+                                tracing::warn!("{id} downgrade failed")
+                            }
                         }
                     });
                 }
@@ -3067,6 +3075,8 @@ where
                     .is_finalized::<SourceData, (), T, Diff>(shard_id, diagnostics)
                     .await
                     .expect("invalid persist usage");
+
+                tracing::info!("{shard_id} is {}finalized", if is_finalized {""} else {"not "});
 
                 if is_finalized {
                     Some(shard_id)
