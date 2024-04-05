@@ -1497,6 +1497,8 @@ impl CatalogEntry {
     }
 
     /// Returns the mapping of `GloablIds` to output indices for this source.
+    // TODO: this should be deprecated/move to the catalog after we implement
+    // subsource dependency inveersion.
     pub fn source_exports(&self) -> BTreeMap<GlobalId, usize> {
         match &self.item() {
             CatalogItem::Source(source) => match &source.data_source {
