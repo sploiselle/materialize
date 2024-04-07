@@ -376,7 +376,7 @@ contains:creating source would violate max_sources limit (desired: 4, limit: 3, 
 # Can add them in smaller quantities
 > ALTER SOURCE mz_source2 ADD SUBSOURCE t1, t2;
 
-> ALTER SOURCE mz_source2 DROP SUBSOURCE t1;
+> DROP SOURCE t1;
 
 ! ALTER SOURCE mz_source2 ADD SUBSOURCE t1, t3;
 contains:creating source would violate max_sources limit (desired: 4, limit: 3, current: 2)
