@@ -2299,12 +2299,15 @@ impl<T: AstInfo> AstDisplay for AlterSinkStatement<T> {
 pub enum AlterSourceAddSubsourceOptionName {
     /// Columns whose types you want to unconditionally format as text
     TextColumns,
+    // This is meant for internal use only and is intentionally unparseable,
+    Details,
 }
 
 impl AstDisplay for AlterSourceAddSubsourceOptionName {
     fn fmt<W: fmt::Write>(&self, f: &mut AstFormatter<W>) {
         f.write_str(match self {
             AlterSourceAddSubsourceOptionName::TextColumns => "TEXT COLUMNS",
+            AlterSourceAddSubsourceOptionName::Details => "DETAILS",
         })
     }
 }
@@ -2318,7 +2321,8 @@ impl WithOptionName for AlterSourceAddSubsourceOptionName {
     /// on the conservative side and return `true`.
     fn redact_value(&self) -> bool {
         match self {
-            AlterSourceAddSubsourceOptionName::TextColumns => false,
+            AlterSourceAddSubsourceOptionName::Details
+            | AlterSourceAddSubsourceOptionName::TextColumns => false,
         }
     }
 }
@@ -2336,13 +2340,11 @@ impl_display_t!(AlterSourceAddSubsourceOption);
 pub enum AlterSourceAction<T: AstInfo> {
     SetOptions(Vec<CreateSourceOption<T>>),
     ResetOptions(Vec<CreateSourceOptionName>),
+    // This is meant for internal use only and cannot be roundtripped through
+    // parsing.
+    SetAlterSourceOptions(Vec<AlterSourceAddSubsourceOption<T>>),
     AddSubsources {
         subsources: Vec<CreateSourceSubsource<T>>,
-        options: Vec<AlterSourceAddSubsourceOption<T>>,
-    },
-    AddSubsourcesPurified {
-        subsources: Vec<CreateSubsourceStatement<T>>,
-        details: Option<WithOptionValue<T>>,
         options: Vec<AlterSourceAddSubsourceOption<T>>,
     },
     DropSubsources {
@@ -2379,6 +2381,11 @@ impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
                 f.write_node(&display::comma_separated(options));
                 f.write_str(")");
             }
+            AlterSourceAction::SetAlterSourceOptions(options) => {
+                f.write_str("SET ALTER SOURCE (");
+                f.write_node(&display::comma_separated(options));
+                f.write_str(")");
+            }
             AlterSourceAction::DropSubsources {
                 if_exists,
                 cascade,
@@ -2402,24 +2409,6 @@ impl<T: AstInfo> AstDisplay for AlterSourceStatement<T> {
                 f.write_str("ADD SUBSOURCE ");
 
                 f.write_node(&display::comma_separated(subsources));
-
-                if !options.is_empty() {
-                    f.write_str(" WITH (");
-                    f.write_node(&display::comma_separated(options));
-                    f.write_str(")");
-                }
-            }
-            AlterSourceAction::AddSubsourcesPurified {
-                subsources,
-                details: _,
-                options,
-            } => {
-                // n.b. this doesn't roundtrip.
-                f.write_str("ADD SUBSOURCE (");
-
-                f.write_node(&display::comma_separated(subsources));
-
-                f.write_str(") ");
 
                 if !options.is_empty() {
                     f.write_str(" WITH (");

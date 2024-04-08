@@ -46,8 +46,8 @@ use mz_repr::role_id::RoleId;
 use mz_repr::{ColumnName, Diff, GlobalId, RelationDesc, Row, ScalarType, Timestamp};
 use mz_sql_parser::ast::{
     AlterSourceAddSubsourceOption, ClusterScheduleOptionValue, ConnectionOptionName,
-    CreateSubsourceStatement, QualifiedReplica, TransactionIsolationLevel, TransactionMode, Value,
-    WithOptionValue,
+    CreateSourceOption, CreateSubsourceStatement, QualifiedReplica, TransactionIsolationLevel,
+    TransactionMode, Value, WithOptionValue,
 };
 use mz_storage_types::connections::inline::ReferencedConnection;
 use mz_storage_types::sinks::{SinkEnvelope, StorageSinkConnection};
@@ -994,7 +994,7 @@ pub struct AlterConnectionPlan {
 #[derive(Debug)]
 pub enum AddSubsourceExportsState {
     Purified(Vec<CreateSubsourceStatement<Aug>>),
-    Planned(Vec<CreateSourcePlans>),
+    Planned(),
 }
 
 #[derive(Debug)]
@@ -1003,8 +1003,7 @@ pub enum AlterSourceAction {
         to_drop: BTreeSet<GlobalId>,
     },
     AddSubsourceExports {
-        subsources: AddSubsourceExportsState,
-        details: Option<WithOptionValue<Aug>>,
+        subsources: Vec<CreateSourcePlans>,
         options: Vec<AlterSourceAddSubsourceOption<Aug>>,
     },
 }

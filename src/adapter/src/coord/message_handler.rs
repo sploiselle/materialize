@@ -23,9 +23,9 @@ use mz_ore::now::EpochMillis;
 use mz_ore::task;
 use mz_ore::tracing::OpenTelemetryContext;
 use mz_persist_client::usage::ShardsUsageReferenced;
-use mz_sql::ast::Statement;
+use mz_sql::ast::{CreateSubsourceStatement, Statement};
 use mz_sql::names::ResolvedIds;
-use mz_sql::plan::{AlterSourceAction, Plan};
+use mz_sql::plan::{AlterSourceAction, AlterSourcePlan, Plan};
 use mz_storage_types::controller::CollectionMetadata;
 use opentelemetry::trace::TraceContextExt;
 use rand::{rngs, Rng, SeedableRng};
@@ -445,6 +445,8 @@ impl Coordinator {
             otel_ctx,
         }: PurifiedStatementReady,
     ) {
+        use mz_sql::catalog::SessionCatalog;
+
         otel_ctx.attach_as_parent();
 
         // Ensure that all dependencies still exist after purification, as a
@@ -474,6 +476,63 @@ impl Coordinator {
         // Look at the first statement which will determine how to execute the
         // set of statements.
         let (plan, resolved_ids) = match &stmts[0] {
+            Statement::AlterSource(_) if stmts.len() > 1 => {
+                let catalog = self.catalog.for_session(&ctx.session);
+                let stmt = stmts.remove(0);
+                // Determine all dependencies, not just those in the statement
+                // itself.
+                let resolved_ids = mz_sql::names::visit_dependencies(&stmt);
+
+                let (id, options) = match stmt {
+                    Statement::AlterSource(stmt) => {
+                        let name = stmt.source_name;
+                        let id = match (|| {
+                            let name = mz_sql::normalize::unresolved_item_name(name)?;
+                            let item = catalog.resolve_item(&name)?;
+                            Ok(item.id())
+                        })() {
+                            Ok(id) => id,
+                            Err(e) => return ctx.retire(Err(e)),
+                        };
+
+                        match stmt.action {
+                            mz_sql::ast::AlterSourceAction::SetAlterSourceOptions(options) => {
+                                (id, options)
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+
+                let mut subsources = Vec::with_capacity(stmts.len());
+
+                for stmt in stmts {
+                    let subsource_stmt = match stmt {
+                        Statement::CreateSubsource(stmt) => stmt,
+                        _ => unreachable!(),
+                    };
+
+                    match self
+                        .plan_subsource(ctx.session(), &params, subsource_stmt)
+                        .await
+                    {
+                        Ok(s) => subsources.push(s),
+                        Err(e) => return ctx.retire(Err(e)),
+                    }
+                }
+
+                (
+                    Plan::AlterSource(AlterSourcePlan {
+                        id,
+                        action: AlterSourceAction::AddSubsourceExports {
+                            subsources,
+                            options,
+                        },
+                    }),
+                    resolved_ids,
+                )
+            }
             Statement::AlterSource(_) | Statement::CreateSink(_) => {
                 // These must have only only a single statement.
                 let stmt = stmts.remove(0);
@@ -484,38 +543,7 @@ impl Coordinator {
                 let resolved_ids = mz_sql::names::visit_dependencies(&stmt);
 
                 match self.plan_statement(ctx.session(), stmt, &params, &resolved_ids) {
-                    Ok(plan @ (Plan::AlterNoop(..) | Plan::CreateSink(_))) => (plan, resolved_ids),
-                    Ok(Plan::AlterSource(mut plan)) => {
-                        // When adding subsource exports, we need to plan them.
-                        if let AlterSourceAction::AddSubsourceExports { subsources, .. } =
-                            &mut plan.action
-                        {
-                            let planned = match subsources {
-                                mz_sql::plan::AddSubsourceExportsState::Purified(inner) => {
-                                    let mut plans = Vec::with_capacity(inner.len());
-                                    for subsource_stmt in inner.clone() {
-                                        match self
-                                            .plan_subsource(ctx.session(), &params, subsource_stmt)
-                                            .await
-                                        {
-                                            Ok(s) => plans.push(s),
-                                            Err(e) => return ctx.retire(Err(e)),
-                                        }
-                                    }
-                                    mz_sql::plan::AddSubsourceExportsState::Planned(plans)
-                                }
-                                mz_sql::plan::AddSubsourceExportsState::Planned(_) => {
-                                    unreachable!("planning does not return planned subsources");
-                                }
-                            };
-                            *subsources = planned;
-                        }
-
-                        (Plan::AlterSource(plan), resolved_ids)
-                    }
-                    Ok(p) => {
-                        unreachable!("{:?} is not purified", p)
-                    }
+                    Ok(plan) => (plan, resolved_ids),
                     Err(e) => return ctx.retire(Err(e)),
                 }
             }

@@ -3532,7 +3532,6 @@ impl Coordinator {
             }
             plan::AlterSourceAction::AddSubsourceExports {
                 subsources: _,
-                details,
                 options,
             } => {
                 // TODO: change subsource handling.
@@ -3589,10 +3588,10 @@ impl Coordinator {
                 curr_options
                     .retain(|PgConfigOption { name, .. }| name != &PgConfigOptionName::Details);
 
-                curr_options.push(PgConfigOption {
-                    name: PgConfigOptionName::Details,
-                    value: details,
-                });
+                // curr_options.push(PgConfigOption {
+                //     name: PgConfigOptionName::Details,
+                //     value: details,
+                // });
 
                 // Merge text columns
                 let curr_text_columns = curr_options
