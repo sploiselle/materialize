@@ -134,7 +134,7 @@ see the [Terraform module repository](https://github.com/MaterializeInc/terrafor
       and **5432** and select the target group you created in the previous
       step.
 
-1. In the security group of your Aurora instance, [allow traffic from the the
+1. In the security group of your Aurora instance, [allow traffic from the
    network load balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/target-group-register-targets.html).
 
     If [client IP preservation](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html#client-ip-preservation)
