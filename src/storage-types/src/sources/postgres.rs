@@ -105,7 +105,8 @@ impl<C: ConnectionAccess> SourceConnection for PostgresSourceConnection<C> {
         vec![]
     }
 
-    fn output_idx_for_name(&self, name: &mz_sql_parser::ast::UnresolvedItemName) -> Option<usize> {
+    fn output_idx_for_name(&self, name: &UnresolvedItemName) -> Option<usize> {
+        // TODO: cannot curently validate database.
         self.publication_details.output_idx_for_name(name)
     }
 }
