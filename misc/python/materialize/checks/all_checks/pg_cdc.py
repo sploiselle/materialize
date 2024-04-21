@@ -132,6 +132,13 @@ class PgCdcBase:
                   (PUBLICATION 'postgres_source{self.suffix}')
                   FOR TABLES (postgres_source_table{self.suffix} AS postgres_source_tableC{self.suffix});
 
+                -- Create a view with a complex dependency structure
+                > CREATE VIEW multi_source_count AS
+                    SELECT
+                        COUNT(*) FROM postgres_source_tableA{self.suffix}
+                        + COUNT(*) FROM postgres_source_tableb{self.suffix}
+                        + COUNT(*) FROM postgres_source_tableC{self.suffix};
+
                 $ postgres-execute connection=postgres://postgres:postgres@postgres
                 INSERT INTO postgres_source_table{self.suffix} SELECT 'G', i, REPEAT('G', {self.repeats} - i) FROM generate_series(1,100) AS i;
                 UPDATE postgres_source_table{self.suffix} SET f2 = f2 + 100;
@@ -192,6 +199,9 @@ class PgCdcBase:
             F 400 {self.expects}
             G 300 {self.expects}
             H 200 {self.expects}
+
+            SELECT count FROM multi_source_count;
+            1
             """
         )
 
