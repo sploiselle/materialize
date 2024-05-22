@@ -190,8 +190,8 @@ impl<C: ConnectionAccess> SourceConnection for KafkaSourceConnection<C> {
             .collect()
     }
 
-    fn output_idx_for_name(&self, _name: &mz_sql_parser::ast::UnresolvedItemName) -> Option<usize> {
-        None
+    fn get_subsource_resolver(&self, id: GlobalId) -> super::SubsourceResolver {
+        super::SubsourceResolver::new::<()>(id, "".to_string(), &[])
     }
 }
 
