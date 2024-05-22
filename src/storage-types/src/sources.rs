@@ -34,6 +34,7 @@ use mz_repr::{
     ColumnType, Datum, DatumDecoderT, DatumEncoderT, GlobalId, ProtoRow, RelationDesc, Row,
     RowDecoder, RowEncoder,
 };
+use mz_sql_parser::ast::display::AstDisplay as _;
 use mz_sql_parser::ast::UnresolvedItemName;
 use proptest::prelude::any;
 use proptest_derive::Arbitrary;
@@ -1264,6 +1265,177 @@ impl Schema<SourceData> for RelationDesc {
             ok,
             err,
         })
+    }
+}
+
+/// Describes how subsource references should be organized in a multi-level
+/// hierarchy.
+///
+/// For both PostgreSQL and MySQL sources, these levels of reference are
+/// intrinsic to the items which we're referencing. If there are other naming
+/// schemas for other types of sources we discover, we might need to revisit
+/// this.
+pub trait SubsourceCatalogReference {
+    /// The "second" level of namespacing for the reference.
+    fn schema_name(&self) -> String;
+    /// The lowest level of namespacing for the reference.
+    fn item_name(&self) -> String;
+}
+
+impl SubsourceCatalogReference for mz_mysql_util::MySqlTableDesc {
+    fn schema_name(&self) -> String {
+        self.schema_name.clone()
+    }
+
+    fn item_name(&self) -> String {
+        self.name.clone()
+    }
+}
+
+impl SubsourceCatalogReference for mz_postgres_util::desc::PostgresTableDesc {
+    fn schema_name(&self) -> String {
+        self.namespace.clone()
+    }
+
+    fn item_name(&self) -> String {
+        self.name.clone()
+    }
+}
+
+impl SubsourceCatalogReference for () {
+    fn schema_name(&self) -> String {
+        panic!(
+            "SubsourceCatalogReference::schema_name must not be called for sources w/o subsources"
+        )
+    }
+
+    fn item_name(&self) -> String {
+        panic!("SubsourceCatalogReference::item_name must not be called for sources w/o subsources")
+    }
+}
+
+/// Stores and resolves references to a `&[T: SubsourceCatalogTable]`.
+///
+/// This is meant to provide an API to quickly look up a source's subsources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Arbitrary)]
+pub struct SubsourceResolver {
+    // The ingestion containing the subsources forms a kind of prefix for the
+    // resolvable names, so include it.
+    id: GlobalId,
+    // TODO: this only needs to be a two-level lookup; the PG database name is
+    // duplicative/unnecessary because each source can only connect to a single
+    // database.
+    inner: BTreeMap<String, BTreeMap<String, BTreeMap<String, usize>>>,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SubsourceResolutionError {
+    #[error("reference to {name} not found in source")]
+    Dne { name: String },
+    #[error(
+        "reference to {name} is ambiguous, consider specifying an additional \
+    layer of qualification"
+    )]
+    Ambiguous { name: String },
+}
+
+impl<'a> SubsourceResolver {
+    pub fn new<T: SubsourceCatalogReference>(
+        id: GlobalId,
+        database: String,
+        tables: &'a [T],
+    ) -> SubsourceResolver {
+        // An index from table name -> schema name -> database name -> PostgresTableDesc
+        let mut inner = BTreeMap::new();
+        for (table_pos, table) in tables.iter().enumerate() {
+            inner
+                .entry(table.item_name())
+                .or_insert_with(BTreeMap::new)
+                .entry(table.schema_name())
+                .or_insert_with(BTreeMap::new)
+                .entry(database.clone())
+                .or_insert(table_pos);
+        }
+
+        SubsourceResolver { id, inner }
+    }
+
+    /// Returns the index from which it originated in the `tables` provided to
+    /// [`Self::new`].
+    ///
+    /// # Errors
+    /// - If the `UnresolvedItemName` does not resolve to an item in
+    ///   `self.inner`.
+    fn resolve_details_idx(
+        &self,
+        id: GlobalId,
+        name: &UnresolvedItemName,
+    ) -> Result<usize, SubsourceResolutionError> {
+        let provided_name = name.to_ast_string();
+        let name_inner = &name.0;
+
+        // Names must be composed of three elements.
+        if !(1..=3).contains(&name_inner.len()) || id != self.id {
+            Err(SubsourceResolutionError::Dne {
+                name: provided_name.clone(),
+            })?;
+        }
+
+        // Fill on the leading elements with `None` if they aren't present.
+        let mut names = std::iter::repeat(None)
+            .take(3 - name_inner.len())
+            .chain(name_inner.iter().map(|n| Some(n.as_str())));
+
+        let database = names.next().flatten();
+        let schema = names.next().flatten();
+        let item = names
+            .next()
+            .flatten()
+            .expect("must have provided the item name");
+
+        assert!(names.next().is_none(), "expected a 3-element iterator");
+
+        let schemas = self
+            .inner
+            .get(item)
+            .ok_or_else(|| SubsourceResolutionError::Dne {
+                name: provided_name.clone(),
+            })?;
+
+        let schema =
+            match schema {
+                Some(schema) => schema,
+                None => schemas.keys().exactly_one().map_err(|_e| {
+                    SubsourceResolutionError::Ambiguous {
+                        name: provided_name.clone(),
+                    }
+                })?,
+            };
+
+        let databases = schemas
+            .get(schema)
+            .ok_or_else(|| SubsourceResolutionError::Dne {
+                name: provided_name.clone(),
+            })?;
+
+        let database = match database {
+            Some(database) => database,
+            None => databases.keys().exactly_one().map_err(|_e| {
+                SubsourceResolutionError::Ambiguous {
+                    name: provided_name.clone(),
+                }
+            })?,
+        };
+
+        let idx = databases
+            .get(database)
+            .ok_or_else(|| SubsourceResolutionError::Dne {
+                name: provided_name.clone(),
+            })?;
+
+        // TODO: this same function could also be used to generate canonical
+        // references for subsources.
+        Ok(*idx)
     }
 }
 
